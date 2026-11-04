@@ -1,0 +1,244 @@
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import type { Server } from 'node:http';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+interface ChatRequest {
+  messages: Array<{ role: string; content: string }>;
+  tools: Array<{ function: { name: string } }>;
+}
+
+const cli = resolve('dist/cli.js');
+const secret = 'interactive-test-secret';
+
+function response(content: string | null, call?: { name: string; arguments?: Record<string, unknown> }) {
+  return {
+    id: 'chatcmpl-test', model: 'test-model', created: 1,
+    choices: [{ index: 0, finish_reason: call ? 'tool_calls' : 'stop', message: {
+      role: 'assistant', content,
+      ...(call ? { tool_calls: [{ id: `call_${call.name}`, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments ?? {}) } }] } : {}),
+    } }],
+    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+  };
+}
+
+describe('interactive compiled CLI', () => {
+  let cwd: string;
+  let server: Server;
+  let requests: ChatRequest[];
+  let reply: (request: ChatRequest, index: number) => { status?: number; body: unknown } | undefined;
+  let onRequest: () => void = () => undefined;
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(join(tmpdir(), 'qhy-interactive-'));
+    requests = [];
+    reply = () => ({ body: response('回答完成。') });
+    server = createServer((req, res) => {
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk as Uint8Array));
+        const body = JSON.parse(Buffer.concat(chunks).toString()) as ChatRequest;
+        requests.push(body);
+        onRequest();
+        const result = reply(body, requests.length);
+        if (result === undefined) return;
+        if (result.status !== undefined && result.status !== 200) {
+          res.writeHead(result.status, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result.body));
+          return;
+        }
+        const completion = result.body as { choices: Array<{ finish_reason: string; message: { content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> } }> };
+        const choice = completion.choices[0];
+        if (!choice) throw new Error('Missing fixture choice');
+        const delta = choice.message.tool_calls
+          ? { tool_calls: choice.message.tool_calls.map((toolCall, index) => ({ index, ...toolCall })) }
+          : { content: choice.message.content };
+        const firstChunk = { id: 'chatcmpl-test', object: 'chat.completion.chunk', created: 1, model: 'test-model', choices: [{ index: 0, delta, finish_reason: null }] };
+        const lastChunk = { id: 'chatcmpl-test', object: 'chat.completion.chunk', created: 1, model: 'test-model', choices: [{ index: 0, delta: {}, finish_reason: choice.finish_reason }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } };
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end(`data: ${JSON.stringify(firstChunk)}\n\ndata: ${JSON.stringify(lastChunk)}\n\ndata: [DONE]\n\n`);
+      })().catch(() => { res.writeHead(500); res.end(); });
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing fixture address');
+    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+      model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${address.port}/v1`,
+      workspace: '.', timeoutMs: 3000, maxSteps: 20,
+    }));
+  });
+
+  afterEach(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((done) => server.close(() => done()));
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  function run(input: string, args: string[] = []) {
+    return new Promise<{ code: number; stdout: string; stderr: string }>((done) => {
+      const child = spawn(process.execPath, [cli, ...args], { cwd, env: { ...process.env, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      const timer = setTimeout(() => child.kill('SIGKILL'), 8000);
+      child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      child.once('exit', (code) => { clearTimeout(timer); done({ code: code ?? -1, stdout, stderr }); });
+      child.stdin.end(input);
+    });
+  }
+
+  function logs(stderr: string) {
+    return stderr.trim().split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  it('accepts multiple ordered turns until /exit and persists their full exchange', async () => {
+    reply = (_request, index) => ({ body: response(`第${index}轮回答。`) });
+    const result = await run('第一条\n第二条\n/exit\n');
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('第1轮回答。');
+    expect(result.stdout).toContain('第2轮回答。');
+    expect(requests).toHaveLength(2);
+    const started = logs(result.stderr).find((event) => event.event === 'run.started');
+    const finished = logs(result.stderr).find((event) => event.event === 'run.finished');
+    expect(started?.conversationId).toEqual(expect.any(String));
+    expect(finished?.runId).toBe(started?.runId);
+    const history = JSON.parse(await readFile(join(cwd, '.agent', 'conversations', `${started?.conversationId}.json`), 'utf8')) as Array<{ role: string }>;
+    expect(history.map(({ role }) => role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+  });
+
+  it('resumes a conversation by ID', async () => {
+    const id = 'resume-test';
+    await mkdir(join(cwd, '.agent', 'conversations'), { recursive: true });
+    await writeFile(join(cwd, '.agent', 'conversations', `${id}.json`), JSON.stringify([
+      { role: 'user', content: '以前说过的事' }, { role: 'assistant', content: '旧回答' },
+    ]));
+    const result = await run('继续\n/exit\n', ['--conversation-id', id]);
+    expect(result.code).toBe(0);
+    expect(requests[0]?.messages.some(({ content }) => content.includes('旧回答'))).toBe(true);
+  });
+
+  it('does not save a failed turn and continues to the next input', async () => {
+    reply = (_request, index) => index === 1
+      ? { status: 500, body: { error: { message: 'fixture failure' } } }
+      : { body: response('恢复成功。') };
+    const result = await run('失败轮次\n恢复轮次\n/exit\n');
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('恢复成功。');
+    const started = logs(result.stderr).find((event) => event.event === 'run.started');
+    const history = JSON.parse(await readFile(join(cwd, '.agent', 'conversations', `${started?.conversationId}.json`), 'utf8')) as Array<{ role: string; content: string }>;
+    expect(history).toEqual([{ role: 'user', content: '恢复轮次' }, expect.objectContaining({ role: 'assistant' })]);
+  });
+
+  it('reads and writes workspace files through a tool round trip, displaying names only', async () => {
+    await writeFile(join(cwd, 'note.txt'), 'before');
+    reply = (_request, index) => {
+      if (index === 1) return { body: response(null, { name: 'read_file', arguments: { path: join(cwd, 'note.txt') } }) };
+      if (index === 2) return { body: response(null, { name: 'write_file', arguments: { path: 'note.txt', content: 'after' } }) };
+      return { body: response('已完成修改。') };
+    };
+    const result = await run('请修改 note.txt\n/exit\n');
+    expect(result.code).toBe(0);
+    expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('after');
+    expect(JSON.stringify(requests[1])).toContain('before');
+    expect(JSON.stringify(requests[2])).toContain('after');
+    expect(result.stdout).toContain('read_file');
+    expect(result.stdout).toContain('write_file');
+    expect(result.stdout).not.toContain('before');
+    expect(result.stdout).not.toContain('after');
+    expect(result.stdout).toContain('已完成修改。');
+  });
+
+  it('returns a workspace boundary error to the model without revealing file contents', async () => {
+    await writeFile(join(cwd, 'outside.txt'), 'private-outside-content');
+    await mkdir(join(cwd, 'workspace'));
+    await symlink(join(cwd, 'outside.txt'), join(cwd, 'workspace', 'escape.txt'));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing fixture address');
+    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+      model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${address.port}/v1`,
+      workspace: 'workspace', timeoutMs: 3000, maxSteps: 20,
+    }));
+    reply = (_request, index) => {
+      if (index === 1) return { body: response(null, { name: 'read_file', arguments: { path: '../outside.txt' } }) };
+      if (index === 2) return { body: response(null, { name: 'read_file', arguments: { path: 'escape.txt' } }) };
+      if (index === 3) return { body: response(null, { name: 'write_file', arguments: { path: 'escape.txt', content: 'overwritten' } }) };
+      return { body: response('该路径超出工作区。') };
+    };
+    const result = await run('读取文件\n/exit\n');
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain('private-outside-content');
+    expect(await readFile(join(cwd, 'outside.txt'), 'utf8')).toBe('private-outside-content');
+  });
+
+  it('reports a missing write parent to the model without creating the directory', async () => {
+    reply = (request, index) => {
+      if (index === 1) return { body: response(null, { name: 'write_file', arguments: { path: 'missing/note.txt', content: 'written' } }) };
+      expect(request.messages.some(({ content }) => content.includes('父目录必须存在'))).toBe(true);
+      return { body: response('父目录不存在，写入失败。') };
+    };
+    const result = await run('写入缺失目录中的文件\n/exit\n');
+    expect(result.code).toBe(0);
+    await expect(readFile(join(cwd, 'missing', 'note.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(result.stdout).not.toContain('written');
+  });
+
+  it('smoke mode forces read_file and verifies the probe in the final answer', async () => {
+    reply = (request, index) => {
+      if (index === 1) {
+        const prompt = request.messages.find(({ role }) => role === 'user')?.content ?? '';
+        const path = prompt.match(/读取 (\.agent-smoke-[a-f0-9-]+\.txt)/)?.[1];
+        if (!path) throw new Error('Smoke probe path was not provided');
+        return { body: response(null, { name: 'read_file', arguments: { path } }) };
+      }
+      const toolResult = request.messages.find(({ role }) => role === 'tool');
+      return { body: response(toolResult?.content ?? '') };
+    };
+    const result = await run('', ['--smoke-tool']);
+    expect(result.code).toBe(0);
+    expect(requests).toHaveLength(2);
+    expect(JSON.stringify(requests[1])).toContain('agent-smoke');
+    expect(result.stderr).toContain('"toolSmokePassed":true');
+  });
+
+  it('continues to another message after the configured step limit fails a turn', async () => {
+    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+      model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+      workspace: '.', timeoutMs: 3000, maxSteps: 1,
+    }));
+    reply = (_request, index) => index === 1
+      ? { body: response(null, { name: 'runtimeInfo' }) }
+      : { body: response('下一轮完成。') };
+    const result = await run('超限轮次\n下一轮\n/exit\n');
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain('STEP_LIMIT');
+    expect(result.stdout).toContain('下一轮完成。');
+    expect(requests).toHaveLength(2);
+  });
+
+  it('keeps total request timeout and SIGINT cancellation behavior', async () => {
+    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+      model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+      workspace: '.', timeoutMs: 120, maxSteps: 20,
+    }));
+    reply = () => undefined;
+    const result = await run('请求超时\n/exit\n');
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain('TIMEOUT');
+
+    const requestStarted = new Promise<void>((done) => { onRequest = done; });
+    const child = spawn(process.execPath, [cli], {
+      cwd, env: { ...process.env, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    const exited = new Promise<number | null>((done) => child.once('exit', done));
+    child.stdin.write('cancel this request\n');
+    await requestStarted;
+    child.kill('SIGINT');
+    expect(await exited).toBe(130);
+    expect(stderr).toContain('CANCELLED');
+  });
+});
