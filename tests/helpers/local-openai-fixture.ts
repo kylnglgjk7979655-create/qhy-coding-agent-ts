@@ -15,7 +15,7 @@ export interface FixtureRequest {
 export type FixtureResponse = { content: string } | { calls: FixtureToolCall[] };
 
 export async function startLocalOpenAIModel(
-  respond: (request: FixtureRequest, index: number) => FixtureResponse | undefined,
+  respond: (request: FixtureRequest, index: number) => FixtureResponse | undefined | Promise<FixtureResponse | undefined>,
 ): Promise<{ baseURL: string; requests: FixtureRequest[]; close: () => Promise<void> }> {
   const requests: FixtureRequest[] = [];
   const server: Server = createServer((req, res) => {
@@ -24,7 +24,7 @@ export async function startLocalOpenAIModel(
       for await (const chunk of req) chunks.push(Buffer.from(chunk as Uint8Array));
       const request = JSON.parse(Buffer.concat(chunks).toString()) as FixtureRequest;
       requests.push(request);
-      const reply = respond(request, requests.length);
+      const reply = await respond(request, requests.length);
       if (reply === undefined) return;
       const firstDelta = 'calls' in reply
         ? { tool_calls: reply.calls.map((call, index) => ({ index, ...call })) }

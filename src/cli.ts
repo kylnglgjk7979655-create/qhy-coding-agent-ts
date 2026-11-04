@@ -136,7 +136,15 @@ async function runTurn(
       smokeTool,
       history,
       onText: (chunk) => process.stdout.write(chunk),
-      onToolCall: (name) => process.stdout.write(`\n[工具] ${name}\n`),
+      onToolEvent: ({ toolName, status }) => {
+        const label = {
+          started: '开始',
+          succeeded: '成功',
+          failed: '失败',
+          rejected: '拒绝',
+        }[status];
+        process.stdout.write(`\n[工具] ${toolName}：${label}\n`);
+      },
       signal,
     });
     signal.throwIfAborted();
