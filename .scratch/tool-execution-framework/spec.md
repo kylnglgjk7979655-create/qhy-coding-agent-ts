@@ -1,6 +1,6 @@
 # 工具执行框架
 
-Status: ready-for-agent
+Status: resolved
 
 ## Problem Statement
 
@@ -144,4 +144,4 @@ CLI 实时显示工具名称及开始、成功、失败或拒绝状态。调用�
 - 术语使用“对话”“对话轮次”“工具调用”“工具批次”“工具结果”和“执行事件”，保持与领域术语表一致。
 - 遵守工作区文件访问及工具调用失败隔离两项现有架构决策。
 - 本规格的执行事件展示在既有工具名称提示上增加状态，参数和完整结果仍只交给 Agent。
-- Status 为 ready-for-agent，可据此开展实现。
+- 完成记录（2026-11-04）：最终审查修复及双轴审查结论见[review.md](review.md)；验证结果见[docs/verification.md](../../docs/verification.md)。
