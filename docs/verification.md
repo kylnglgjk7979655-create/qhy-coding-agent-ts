@@ -1,0 +1,41 @@
+# 基础 CLI 验收记录
+
+日期：2026-11-03。运行时：Node.js 24.22.2，pnpm 9.12.3，macOS arm64。
+
+| 检查 | 结果 |
+| --- | --- |
+| pnpm 精确依赖安装及严格 peer 校验 | 通过，主项目和 demo 均有 lockfile |
+| `pnpm check` | 通过：严格类型检查、ESM 构建、36 个测试 |
+| 全新临时副本，清空环境变量，`pnpm install --frozen-lockfile --offline`、`pnpm check` | 通过，依赖从本机 pnpm store 导入，无现有 node_modules/dist |
+| 编译后 CLI 缺少凭据 | 明确记录 CONFIG_ERROR，退出 2 |
+| 本地 HTTP fixture：模型文本回答、工具执行与结果回传 | 通过，使用实际 ai SDK 和 OpenAI provider，不替换 Agent 实现 |
+| 本地 HTTP fixture：工具选择被忽略、结果未被模型使用 | 明确退出 6 |
+| 本地 HTTP fixture：总超时、401/403、429、步数上限、截断回答、SIGINT | 通过，对应非零退出码和终态日志 |
+| `pnpm dev --help` | 通过 |
+| 默认 Node.js 26.5.0 终端直接执行 `pnpm dev --workspace ./demo "介绍你的能力"` | 通过：`.npmrc` 自动选择 Node.js 24.22.2，真实模型回答退出 0，1807ms |
+| 默认 Node.js 26.5.0 终端执行 `pnpm check` | 通过：自动使用锁定运行时，类型检查、构建和 36 个测试均通过 |
+| `pnpm demo:test` | 3 个基础测试通过 |
+| `pnpm demo:bug` | 按预期失败：100 !== 90 |
+| `pnpm demo:init` | 已创建独立 `.demo-workspace/`，起始提交 `0a75d5fcd99c8109e30d6a59da77f0ddacaf81b8`，标签 `demo-start` |
+| 独立副本 frozen 安装、类型检查及基础测试 | 通过，Git 工作区保持干净 |
+| 真实模型成功回答 | 通过：方舟 `doubao-seed-2.0-mini`，退出 0，4805ms |
+| 真实 provider 工具兼容冒烟 | 通过：2 步、1 次工具执行、退出 0，2187ms，`toolSmokePassed: true` |
+| 当前配置缺失凭据 | 通过：临时引用空环境变量，CONFIG_ERROR，退出 2 |
+| 当前服务鉴权失败 | 通过：使用独立无效测试凭据，AUTH_ERROR，退出 3，187ms |
+| 当前配置超时 | 通过：临时设置总时限 1ms，TIMEOUT，退出 4，29ms（含配置及 SDK 初始化） |
+
+真实验收于 2026-11-03 18:38–18:39（Asia/Shanghai）完成，使用 `https://ark.cn-beijing.volces.com/api/coding/v3`，通过 OpenAI 兼容 Chat Completions 协议调用。密钥仅存入被 Git 忽略的 `.env`，文件权限 0600；扫描确认工程可分发文件不包含该密钥。
+
+成功回答的 run ID 为 `35118e14-0655-4b16-ad66-8d7d24ae6b05`；工具冒烟的 run ID 为 `e65ab0cd-7bc3-4486-8cfc-cb2b5544adef`。工具返回的随机探针未预置于 prompt，模型最终回答包含相同探针，确认工具执行及结果回传可用。
+
+错误路径使用独立临时配置，没有改动正式凭据。1ms 超时验证总 deadline 的中止行为；服务挂起时的超时另由本地 HTTP fixture 验证。
+
+本机已配置 `ARK_API_KEY`。其他终端在根目录 `.env` 填入自己的同名凭据后，用项目锁定的 Node.js/pnpm 执行：
+
+```sh
+pnpm build
+pnpm exec node dist/cli.js --workspace ./demo "介绍你的能力"
+pnpm smoke
+```
+
+正常回答须非空、退出 0。工具验收须退出 0，且终态日志包含 `toolSmokePassed: true`。配置其他服务时，修改 `agent.config.json` 的 `baseURL`、`model` 和 `apiKeyEnv`，重新运行上述验收。
