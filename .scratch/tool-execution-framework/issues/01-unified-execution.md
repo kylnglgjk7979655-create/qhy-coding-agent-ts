@@ -1,7 +1,7 @@
 # 01：统一工具执行与反馈
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 无
 
 ## What to build
@@ -16,4 +16,8 @@ Blocked by: 无
 - 本票负责公共实现和新测试；CLI 展示与冒烟包装由 03 接入，批次配对和顺序由 02 加固。
 
 ## Comments
+
+## Answer
+
+三个现有工具共用统一成功/失败结果；读写 schema 严格拒绝额外字段，runtimeInfo 保持宽松。SDK 参数错误与未知工具转为统一拒绝结果，执行事件通知异常只输出诊断，不影响本批其他调用。新增 CLI + 本地 HTTP 行为覆盖及公共 `runAgent` 通知失败覆盖，共享夹具位于 `tests/helpers/local-openai-fixture.ts`。完整验证中 34 项通过；既有 smoke 检查仍假定旧的裸成功输出，待工单 03 更新。
 

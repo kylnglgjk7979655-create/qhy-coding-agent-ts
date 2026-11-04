@@ -151,6 +151,59 @@ describe('interactive compiled CLI', () => {
     expect(result.stdout).toContain('已完成修改。');
   });
 
+  it('returns a unified success envelope in the tool message with its call ID', async () => {
+    await writeFile(join(cwd, 'envelope.txt'), 'known-content');
+    reply = (_request, index) => index === 1
+      ? { body: response(null, { name: 'read_file', arguments: { path: 'envelope.txt' } }) }
+      : { body: response('读取完成。') };
+    const result = await run('读取文件\n/exit\n');
+    expect(result.code).toBe(0);
+    const toolMessage = requests[1]?.messages.find(({ role }) => role === 'tool') as unknown as { tool_call_id: string; content: string };
+    expect(toolMessage.tool_call_id).toBe('call_read_file');
+    expect(JSON.parse(toolMessage.content)).toEqual({ is_error: false, output: { content: 'known-content' } });
+  });
+
+  it('returns a unified execution failure envelope with the original call ID', async () => {
+    reply = (_request, index) => index === 1
+      ? { body: response(null, { name: 'read_file', arguments: { path: 'missing.txt' } }) }
+      : { body: response('已知文件不存在。') };
+    const result = await run('读取缺失文件\n/exit\n');
+    expect(result.code).toBe(0);
+    const toolMessage = requests[1]?.messages.find(({ role }) => role === 'tool') as unknown as { tool_call_id: string; content: string };
+    expect(toolMessage.tool_call_id).toBe('call_read_file');
+    expect(JSON.parse(toolMessage.content)).toEqual({ is_error: true, error: {
+      code: 'TOOL_EXECUTION_ERROR', message: '无法访问文件：目标必须存在且位于工作区内。',
+    } });
+  });
+
+  it('returns schema rejection as a unified result without touching the file', async () => {
+    await writeFile(join(cwd, 'guarded.txt'), 'unchanged');
+    reply = (_request, index) => index === 1
+      ? { body: response(null, { name: 'write_file', arguments: { path: 'guarded.txt', content: 'changed', extra: true } }) }
+      : { body: response('参数错误已修正。') };
+    const result = await run('写入文件\n/exit\n');
+    expect(result.code).toBe(0);
+    const toolMessage = requests[1]?.messages.find(({ role }) => role === 'tool') as unknown as { tool_call_id: string; content: string };
+    expect(toolMessage.tool_call_id).toBe('call_write_file');
+    expect(JSON.parse(toolMessage.content)).toEqual({ is_error: true, error: {
+      code: 'INVALID_TOOL_ARGUMENTS', message: '工具参数无效，请根据工具参数定义修正后重试。',
+    } });
+    expect(await readFile(join(cwd, 'guarded.txt'), 'utf8')).toBe('unchanged');
+  });
+
+  it('returns an unknown tool as a unified rejection result', async () => {
+    reply = (_request, index) => index === 1
+      ? { body: response(null, { name: 'missing_tool', arguments: {} }) }
+      : { body: response('工具不存在。') };
+    const result = await run('试用未知工具\n/exit\n');
+    expect(result.code).toBe(0);
+    const toolMessage = requests[1]?.messages.find(({ role }) => role === 'tool') as unknown as { tool_call_id: string; content: string };
+    expect(toolMessage.tool_call_id).toBe('call_missing_tool');
+    expect(JSON.parse(toolMessage.content)).toEqual({ is_error: true, error: {
+      code: 'UNKNOWN_TOOL', message: '不存在名为 missing_tool 的工具。',
+    } });
+  });
+
   it('returns a workspace boundary error to the model without revealing file contents', async () => {
     await writeFile(join(cwd, 'outside.txt'), 'private-outside-content');
     await mkdir(join(cwd, 'workspace'));
