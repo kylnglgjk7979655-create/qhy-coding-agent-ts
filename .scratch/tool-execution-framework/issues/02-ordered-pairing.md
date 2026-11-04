@@ -23,4 +23,3 @@ Blocked by: 01
 通过 SDK 等待的 `onStepFinish` 校验新增调用与结果按 ID 一一覆盖；配对异常触发内部 abort 并保留轮次错误，阻止下一次模型请求。未扫描或改写旧历史。共享 HTTP 夹具扩展了 SSE 分片、合帧和延迟结束响应；`tests/tool-pairing.test.ts` 全部通过编译后 CLI + 本地 HTTP 服务覆盖写后读、失败写后读取旧内容或再次失败、缺失/空/重复 ID、跨帧参数续片成功与重复 ID 拒绝、同名工具的不同 ID、`finish_reason: stop` 工具调用，以及文本事件已到达但响应流尚未结束时 CLI 立即输出。
 
 验证：`pnpm typecheck`、`pnpm build`、`pnpm exec vitest run tests/tool-pairing.test.ts tests/agent-execution.test.ts tests/tool-presentation.test.ts` 通过（15 项）；`git diff --check` 通过。配对验收通过编译 CLI 边界，通知回调异常仍由规格允许的公共 `runAgent` 定向测试覆盖。代码与测试见 [src/agent.ts](../../../src/agent.ts)、[tool-pairing.test.ts](../../../tests/tool-pairing.test.ts)。
-
