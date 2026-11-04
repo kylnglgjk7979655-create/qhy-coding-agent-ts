@@ -218,6 +218,53 @@ describe('interactive compiled CLI', () => {
     expect(requests).toHaveLength(2);
   });
 
+  it.skipIf(process.platform === 'win32').each([false, true])('真实终端 Ctrl+C 取消并退出（请求进行中：%s）', async (requestInProgress) => {
+    reply = () => undefined;
+    const requestStarted = new Promise<void>((done) => { onRequest = done; });
+    const command = [process.execPath, cli, '--conversation-id', 'terminal-cancel'];
+    const args = process.platform === 'darwin'
+      ? ['-q', '/dev/null', ...command]
+      : ['-q', '-e', '-c', command.map((part) => `'${part.replaceAll("'", "'\\''")}'`).join(' '), '/dev/null'];
+    // macOS script 不接受 Node 的 socket 类型 stdin，cat 将其转换为普通管道。
+    const child = spawn('/bin/sh', ['-c', 'cat | script "$@"', 'terminal-test', ...args], {
+      cwd, env: { ...process.env, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let output = '';
+    let ready: () => void;
+    const terminalReady = new Promise<void>((done) => { ready = done; });
+    const collect = (chunk: Buffer): void => {
+      output += chunk.toString();
+      if (output.includes('> ')) ready();
+    };
+    child.stdout.on('data', collect);
+    child.stderr.on('data', collect);
+    const exited = new Promise<number | null>((done, reject) => {
+      child.once('error', reject);
+      child.once('close', done);
+    });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 8000);
+    try {
+      await Promise.race([
+        terminalReady,
+        exited.then((code) => { throw new Error(`终端在就绪前退出：${code}\n${output}`); }),
+      ]);
+      if (requestInProgress) {
+        child.stdin.write('取消当前轮次\n');
+        await requestStarted;
+      }
+      child.stdin.end('\x03');
+      expect(await exited).toBe(130);
+      expect(output).toContain('CANCELLED');
+      expect(requests).toHaveLength(requestInProgress ? 1 : 0);
+      await expect(readFile(join(cwd, '.agent', 'conversations', 'terminal-cancel.json'), 'utf8'))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      clearTimeout(timer);
+      child.stdin.end();
+      child.kill('SIGKILL');
+    }
+  });
+
   it('keeps total request timeout and SIGINT cancellation behavior', async () => {
     await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
       model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
