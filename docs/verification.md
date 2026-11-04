@@ -1,5 +1,18 @@
 # 基础 CLI 验收记录
 
+## 工具执行框架最终审查修复
+
+日期：2026-11-04。基于集成分支 `feat/tool-execution-framework` 的 `22dd4ae`，在独立工作树执行。
+
+| 检查 | 结果 |
+| --- | --- |
+| `pnpm check` | 通过：类型检查、构建及 5 个测试文件共 69 项测试 |
+| 编译后 CLI + 本地 HTTP fixture | 通过：`maxSteps=1` 时 `finish_reason=stop` 且响应包含文本和实际工具调用，首轮报告 `STEP_LIMIT`、不发起额外模型请求、不保存失败轮，随后 CLI 可接收并保存下一轮 |
+| `git diff --check becf2db...HEAD` | 通过 |
+| 真实模型 `pnpm smoke` | 命令保留；本次未调用真实模型服务 |
+
+完整发现与修复说明见[工具执行框架审查记录](../.scratch/tool-execution-framework/review.md)。
+
 ## 工具执行框架 04 回归验收
 
 日期：2026-11-04。基于集成分支 `b2685c6`，在独立工作树执行。

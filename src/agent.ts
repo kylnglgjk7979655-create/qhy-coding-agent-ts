@@ -63,40 +63,31 @@ async function validatedOpenAIFetch(input: string | URL | Request, init?: Reques
     let emittedThisPull = 0;
     const batch = new Map<number, { id: string; argumentsText: string; argumentsComplete: boolean }>();
     const batchIds = new Set<string>();
+    function consumePendingEvents(controller: ReadableStreamDefaultController<Uint8Array>): boolean {
+      let boundary: number;
+      while ((boundary = pending.search(/\r?\n\r?\n/)) >= 0) {
+        const separator = pending.slice(boundary).match(/^\r?\n\r?\n/)![0];
+        processEvent(pending.slice(0, boundary + separator.length), controller);
+        pending = pending.slice(boundary + separator.length);
+      }
+      return emittedThisPull > 0;
+    }
     const stream = new ReadableStream<Uint8Array>({
       async pull(controller) {
         try {
           emittedThisPull = 0;
-          let bufferedBoundary: number;
-          while ((bufferedBoundary = pending.search(/\r?\n\r?\n/)) >= 0) {
-            const separator = pending.slice(bufferedBoundary).match(/^\r?\n\r?\n/)![0];
-            processEvent(pending.slice(0, bufferedBoundary + separator.length), controller);
-            pending = pending.slice(bufferedBoundary + separator.length);
-          }
-          if (emittedThisPull > 0) return;
+          if (consumePendingEvents(controller)) return;
           while (true) {
             const { done, value } = await reader.read();
             if (done) {
               pending += decoder.decode();
-              let boundary: number;
-              while ((boundary = pending.search(/\r?\n\r?\n/)) >= 0) {
-                const separator = pending.slice(boundary).match(/^\r?\n\r?\n/)![0];
-                processEvent(pending.slice(0, boundary + separator.length), controller);
-                pending = pending.slice(boundary + separator.length);
-              }
+              consumePendingEvents(controller);
               if (pending) processEvent(pending, controller);
               controller.close();
               return;
             }
             pending += decoder.decode(value, { stream: true });
-            let boundary: number;
-            while ((boundary = pending.search(/\r?\n\r?\n/)) >= 0) {
-              const separator = pending.slice(boundary).match(/^\r?\n\r?\n/)![0];
-              const event = pending.slice(0, boundary + separator.length);
-              pending = pending.slice(boundary + separator.length);
-              processEvent(event, controller);
-              if (emittedThisPull > 0) return;
-            }
+            if (consumePendingEvents(controller)) return;
           }
         } catch (error) { controller.error(error); }
       },
@@ -386,7 +377,7 @@ export async function runAgent(
     if (options.smokeTool && !toolSmokePassed) {
       throw new AgentError('TOOL_COMPATIBILITY_ERROR', '工具冒烟失败：没有完成工具执行与结果回传，请检查模型和 provider 兼容性。');
     }
-    if (finishReason === 'tool-calls' && steps.length >= config.maxSteps) {
+    if (steps.length >= config.maxSteps && steps.at(-1)?.toolCalls.length) {
       throw new AgentError('STEP_LIMIT', `已达到 ${config.maxSteps} 步上限，任务尚未生成最终回答。`);
     }
     if (finishReason !== 'stop' || !text.trim()) {

@@ -14,10 +14,10 @@ interface ChatRequest {
 const cli = resolve('dist/cli.js');
 const secret = 'interactive-test-secret';
 
-function response(content: string | null, call?: { name: string; id?: string; arguments?: Record<string, unknown>; argumentsJson?: string }) {
+function response(content: string | null, call?: { name: string; id?: string; arguments?: Record<string, unknown>; argumentsJson?: string }, finishReason?: string) {
   return {
     id: 'chatcmpl-test', model: 'test-model', created: 1,
-    choices: [{ index: 0, finish_reason: call ? 'tool_calls' : 'stop', message: {
+    choices: [{ index: 0, finish_reason: finishReason ?? (call ? 'tool_calls' : 'stop'), message: {
       role: 'assistant', content,
       ...(call ? { tool_calls: [{ id: call.id ?? `call_${call.name}`, type: 'function', function: { name: call.name, arguments: call.argumentsJson ?? JSON.stringify(call.arguments ?? {}) } }] } : {}),
     } }],
@@ -370,6 +370,25 @@ describe('interactive compiled CLI', () => {
     expect(result.stderr).toContain('STEP_LIMIT');
     expect(result.stdout).toContain('下一轮完成。');
     expect(requests).toHaveLength(2);
+  });
+
+  it('reports step exhaustion when stop includes tool calls and preserves recovery', async () => {
+    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+      model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+      workspace: '.', timeoutMs: 3000, maxSteps: 1,
+    }));
+    reply = (_request, index) => index === 1
+      ? { body: response('工具前置说明。', { name: 'runtimeInfo' }, 'stop') }
+      : { body: response('下一轮完成。') };
+    const result = await run('超限轮次\n下一轮\n/exit\n');
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain('STEP_LIMIT');
+    expect(result.stdout).toContain('下一轮完成。');
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.messages.some(({ role, content }) => role === 'user' && content === '超限轮次')).toBe(false);
+    const started = logs(result.stderr).find((event) => event.event === 'run.started');
+    const history = JSON.parse(await readFile(join(cwd, '.agent', 'conversations', `${started?.conversationId}.json`), 'utf8')) as Array<{ role: string; content?: string }>;
+    expect(history.filter(({ role }) => role === 'user').map(({ content }) => content)).toEqual(['下一轮']);
   });
 
   it.skipIf(process.platform === 'win32').each([false, true])('真实终端 Ctrl+C 取消并退出（请求进行中：%s）', async (requestInProgress) => {
