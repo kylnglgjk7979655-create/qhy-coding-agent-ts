@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createOpenAI } from '@ai-sdk/openai';
-import { isStepCount, ToolLoopAgent, tool } from 'ai';
+import { InvalidToolInputError, isStepCount, NoSuchToolError, ToolLoopAgent, tool } from 'ai';
 import type { ModelMessage } from 'ai';
 import { z } from 'zod';
 import type { ResolvedConfig } from './config.js';
@@ -19,6 +19,43 @@ export interface RunResult {
   toolSmokePassed: boolean;
 }
 
+export interface ToolExecutionEvent {
+  callId: string;
+  toolName: string;
+  status: 'started' | 'succeeded' | 'failed' | 'rejected';
+  errorCode?: 'INVALID_TOOL_ARGUMENTS' | 'UNKNOWN_TOOL' | 'TOOL_EXECUTION_ERROR';
+}
+
+type ToolErrorCode = NonNullable<ToolExecutionEvent['errorCode']>;
+type ToolFailure = { is_error: true; error: { code: ToolErrorCode; message: string } };
+
+function reportToolEvent(options: { onToolEvent?: (event: ToolExecutionEvent) => void }, event: ToolExecutionEvent): void {
+  try {
+    options.onToolEvent?.(event);
+  } catch {
+    // 事件通知只用于观察，不改变工具结果。
+    process.stderr.write('执行事件通知失败。\n');
+  }
+}
+
+async function executeTool<T>(
+  options: { onToolEvent?: (event: ToolExecutionEvent) => void },
+  callId: string,
+  toolName: string,
+  operation: () => Promise<T> | T,
+): Promise<{ is_error: false; output: T } | ToolFailure> {
+  reportToolEvent(options, { callId, toolName, status: 'started' });
+  try {
+    const output = await operation();
+    reportToolEvent(options, { callId, toolName, status: 'succeeded' });
+    return { is_error: false, output };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '工具执行失败。';
+    reportToolEvent(options, { callId, toolName, status: 'failed', errorCode: 'TOOL_EXECUTION_ERROR' });
+    return { is_error: true, error: { code: 'TOOL_EXECUTION_ERROR', message } };
+  }
+}
+
 export async function runAgent(
   config: ResolvedConfig,
   prompt: string,
@@ -27,6 +64,7 @@ export async function runAgent(
     history?: ModelMessage[];
     onText?: (chunk: string) => void;
     onToolCall?: (name: string) => void;
+    onToolEvent?: (event: ToolExecutionEvent) => void;
     signal?: AbortSignal;
   },
 ): Promise<RunResult> {
@@ -41,6 +79,26 @@ export async function runAgent(
   const probe = randomUUID();
   const smokeProbePath = `.agent-smoke-${probe}.txt`;
   if (options.smokeTool) await writeFile(join(config.workspace, smokeProbePath), probe, { encoding: 'utf8', flag: 'wx' });
+  const agentTools = {
+    runtimeInfo: tool({
+      description: '返回已配置的工作区绝对路径和本次运行探针。',
+      inputSchema: z.object({}),
+      execute: async (_input, { toolCallId }) => executeTool(options, toolCallId, 'runtimeInfo', () => ({ workspace: config.workspace, probe })),
+    }),
+    read_file: tool({
+      description: '读取工作区内的文本文件。',
+      inputSchema: z.strictObject({ path: z.string().min(1) }),
+      execute: async ({ path }, { toolCallId }) => executeTool(options, toolCallId, 'read_file', async () => ({ content: await readWorkspaceFile(config.workspace, path) })),
+    }),
+    write_file: tool({
+      description: '将工作区内文件完整替换为指定内容；目标不存在时创建文件，不会创建父目录。',
+      inputSchema: z.strictObject({ path: z.string().min(1), content: z.string() }),
+      execute: async ({ path, content }, { toolCallId }) => executeTool(options, toolCallId, 'write_file', async () => {
+        await writeWorkspaceFile(config.workspace, path, content);
+        return { success: true as const };
+      }),
+    }),
+  };
   const agent = new ToolLoopAgent({
     model: provider.chat(config.model),
     instructions: [
@@ -48,36 +106,7 @@ export async function runAgent(
       '可使用 read_file 读取工作区文件，使用 write_file 完整替换或创建工作区文件；文件访问仅限配置的工作区。',
       'runtimeInfo 可获取工作区路径和本次探针。没有执行命令的能力。',
     ].join('\n'),
-    tools: {
-      runtimeInfo: tool({
-        description: '返回已配置的工作区绝对路径和本次运行探针。',
-        inputSchema: z.object({}),
-        execute: async () => ({ workspace: config.workspace, probe }),
-      }),
-      read_file: tool({
-        description: '读取工作区内的文本文件。',
-        inputSchema: z.object({ path: z.string().min(1) }),
-        execute: async ({ path }) => {
-          try {
-            return { content: await readWorkspaceFile(config.workspace, path) };
-          } catch (error) {
-            return { error: error instanceof Error ? error.message : '无法读取工作区文件。' };
-          }
-        },
-      }),
-      write_file: tool({
-        description: '将工作区内文件完整替换为指定内容；目标不存在时创建文件，不会创建父目录。',
-        inputSchema: z.object({ path: z.string().min(1), content: z.string() }),
-        execute: async ({ path, content }) => {
-          try {
-            await writeWorkspaceFile(config.workspace, path, content);
-            return { success: true };
-          } catch (error) {
-            return { error: error instanceof Error ? error.message : '无法写入工作区文件。' };
-          }
-        },
-      }),
-    },
+    tools: agentTools,
     stopWhen: isStepCount(config.maxSteps),
     onError: () => undefined,
     // Avoid automatic retries hiding auth failures or extending the deadline.
@@ -108,6 +137,40 @@ export async function runAgent(
         },
       ],
       abortSignal: signal,
+      experimental_transform: () => new TransformStream({
+        transform(part, controller) {
+          if (part.type !== 'tool-error') {
+            controller.enqueue(part);
+            return;
+          }
+          const errorText = typeof part.error === 'string' ? part.error : '';
+          const invalidInput = InvalidToolInputError.isInstance(part.error)
+            || errorText.startsWith('AI_InvalidToolInputError:');
+          const unknownTool = NoSuchToolError.isInstance(part.error)
+            || errorText.startsWith('AI_NoSuchToolError:');
+          if (!invalidInput && !unknownTool) {
+            controller.enqueue(part);
+            return;
+          }
+          const code = unknownTool ? 'UNKNOWN_TOOL' : 'INVALID_TOOL_ARGUMENTS';
+          reportToolEvent(options, {
+            callId: part.toolCallId,
+            toolName: part.toolName,
+            status: 'rejected',
+            errorCode: code,
+          });
+          const message = invalidInput
+            ? '工具参数无效，请根据工具参数定义修正后重试。'
+            : `不存在名为 ${part.toolName} 的工具。`;
+          controller.enqueue({
+            type: 'tool-result',
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            input: part.input,
+            output: { is_error: true, error: { code, message } },
+          } as unknown as typeof part);
+        },
+      }),
       onStepFinish: ({ toolCalls }) => {
         for (const call of toolCalls) options.onToolCall?.(call.toolName);
       },
