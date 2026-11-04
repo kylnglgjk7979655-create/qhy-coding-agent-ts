@@ -14,7 +14,7 @@ export interface FixtureRequest {
 
 export type FixtureResponse = { content: string }
   | { calls: FixtureToolCall[] }
-  | { frames: Array<{ delta: Record<string, unknown>; finish_reason?: string | null }> };
+  | { frames: Array<{ delta: Record<string, unknown>; finish_reason?: string | null; delayMs?: number }>; endDelayMs?: number };
 
 export async function startLocalOpenAIModel(
   respond: (request: FixtureRequest, index: number) => FixtureResponse | undefined | Promise<FixtureResponse | undefined>,
@@ -29,13 +29,23 @@ export async function startLocalOpenAIModel(
       const reply = await respond(request, requests.length);
       if (reply === undefined) return;
       const chunks = 'frames' in reply
-        ? reply.frames.map((frame) => ({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta: frame.delta, finish_reason: frame.finish_reason ?? null }] }))
+        ? reply.frames.map((frame) => ({ delayMs: frame.delayMs, payload: { id: 'chatcmpl-fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta: frame.delta, finish_reason: frame.finish_reason ?? null }] } }))
         : [
-          { id: 'chatcmpl-fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta: 'calls' in reply ? { tool_calls: reply.calls.map((call, index) => ({ index, ...call })) } : { content: reply.content }, finish_reason: null }] },
-          { id: 'chatcmpl-fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta: {}, finish_reason: 'calls' in reply ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } },
+          { delayMs: undefined, payload: { id: 'chatcmpl-fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta: 'calls' in reply ? { tool_calls: reply.calls.map((call, index) => ({ index, ...call })) } : { content: reply.content }, finish_reason: null }] } },
+          { delayMs: undefined, payload: { id: 'chatcmpl-fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta: {}, finish_reason: 'calls' in reply ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } } },
         ];
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      res.end(`${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('')}data: [DONE]\n\n`);
+      let groupedEvents = '';
+      for (const chunk of chunks) {
+        if (chunk.delayMs) {
+          if (groupedEvents) { res.write(groupedEvents); groupedEvents = ''; }
+          await new Promise<void>((resolve) => setTimeout(resolve, chunk.delayMs));
+        }
+        groupedEvents += `data: ${JSON.stringify(chunk.payload)}\n\n`;
+      }
+      if (groupedEvents) res.write(groupedEvents);
+      if ('frames' in reply && reply.endDelayMs) await new Promise<void>((resolve) => setTimeout(resolve, reply.endDelayMs));
+      res.end('data: [DONE]\n\n');
     })().catch(() => { res.writeHead(500); res.end(); });
   });
   await new Promise<void>((resolve, reject) => {
