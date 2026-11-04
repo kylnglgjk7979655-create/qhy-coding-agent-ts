@@ -184,9 +184,14 @@ export async function runAgent(
       result.totalUsage,
     ]);
     const toolResults = steps.flatMap((step) => step.toolResults);
-    const toolSmokePassed = toolResults.some((item) =>
-      item.toolName === 'read_file' && z.object({ content: z.literal(probe) }).safeParse(item.output).success,
-    ) && text.includes(probe);
+    const toolSmokePassed = toolResults.some((item) => {
+      if (item.toolName !== 'read_file') return false;
+      const envelope = z.object({
+        is_error: z.literal(false),
+        output: z.object({ content: z.literal(probe) }),
+      }).safeParse(item.output);
+      return envelope.success;
+    }) && text.includes(probe);
 
     if (options.smokeTool && !toolSmokePassed) {
       throw new AgentError('TOOL_COMPATIBILITY_ERROR', '工具冒烟失败：没有完成工具执行与结果回传，请检查模型和 provider 兼容性。');
