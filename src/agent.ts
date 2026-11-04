@@ -49,10 +49,19 @@ async function validatedOpenAIFetch(input: string | URL | Request, init?: Reques
     const held: string[] = [];
     let pending = '';
     let collecting = false;
+    let emittedThisPull = 0;
     const batch = new Map<number, { id?: string; call: boolean }>();
     const stream = new ReadableStream<Uint8Array>({
       async pull(controller) {
         try {
+          emittedThisPull = 0;
+          let bufferedBoundary: number;
+          while ((bufferedBoundary = pending.search(/\r?\n\r?\n/)) >= 0) {
+            const separator = pending.slice(bufferedBoundary).match(/^\r?\n\r?\n/)![0];
+            processEvent(pending.slice(0, bufferedBoundary + separator.length), controller);
+            pending = pending.slice(bufferedBoundary + separator.length);
+          }
+          if (emittedThisPull > 0) return;
           while (true) {
             const { done, value } = await reader.read();
             if (done) {
@@ -74,33 +83,27 @@ async function validatedOpenAIFetch(input: string | URL | Request, init?: Reques
               const event = pending.slice(0, boundary + separator.length);
               pending = pending.slice(boundary + separator.length);
               processEvent(event, controller);
-              if (!collecting && event.includes('finish_reason')) return;
-            }
-            if (!collecting && pending && !pending.includes('data:')) {
-              controller.enqueue(encoder.encode(pending));
-              pending = '';
-              return;
-            }
-            if (!collecting && pending && pending.startsWith('data:')) {
-              // Wait for a complete SSE event before deciding whether this is tool traffic.
-              const dataEnd = pending.search(/\r?\n\r?\n/);
-              if (dataEnd < 0) continue;
+              if (emittedThisPull > 0) return;
             }
           }
         } catch (error) { controller.error(error); }
       },
       async cancel(reason) { await reader.cancel(reason); },
     });
+    function enqueue(controller: ReadableStreamDefaultController<Uint8Array>, event: string): void {
+      controller.enqueue(encoder.encode(event));
+      emittedThisPull += 1;
+    }
     function processEvent(event: string, controller: ReadableStreamDefaultController<Uint8Array>): void {
       const data = event.split(/\r?\n/).find((line) => line.startsWith('data:'))?.slice(5).trim();
       if (!data || data === '[DONE]') {
         if (collecting) held.push(event);
-        else controller.enqueue(encoder.encode(event));
+        else enqueue(controller, event);
         return;
       }
       let payload: unknown;
       try { payload = JSON.parse(data); } catch {
-        if (collecting) held.push(event); else controller.enqueue(encoder.encode(event));
+        if (collecting) held.push(event); else enqueue(controller, event);
         return;
       }
       const choices = payload && typeof payload === 'object' && 'choices' in payload && Array.isArray(payload.choices) ? payload.choices : [];
@@ -121,13 +124,13 @@ async function validatedOpenAIFetch(input: string | URL | Request, init?: Reques
         if ('finish_reason' in choice && (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop')) completedTools = true;
       }
       if (hasToolDelta) collecting = true;
-      if (collecting) held.push(event); else controller.enqueue(encoder.encode(event));
+      if (collecting) held.push(event); else enqueue(controller, event);
       if (completedTools) {
         const ids = [...batch.values()].map((item) => item.id);
         if (ids.some((id) => !id?.trim()) || new Set(ids).size !== ids.length) {
           throw new AgentError('PROVIDER_ERROR', '工具批次包含缺失、空或重复的调用 ID，已在执行前终止。');
         }
-        for (const item of held) controller.enqueue(encoder.encode(item));
+        for (const item of held) enqueue(controller, item);
         held.length = 0;
         collecting = false;
         batch.clear();
