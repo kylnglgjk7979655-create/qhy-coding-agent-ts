@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createOpenAI } from '@ai-sdk/openai';
-import { InvalidToolInputError, isStepCount, NoSuchToolError, ToolLoopAgent, tool } from 'ai';
+import { APICallError, InvalidToolInputError, isStepCount, NoSuchToolError, ToolChoiceViolationError, ToolLoopAgent, tool, wrapLanguageModel } from 'ai';
 import type { ModelMessage } from 'ai';
 import { z } from 'zod';
 import type { ResolvedConfig } from './config.js';
-import { AgentError } from './errors.js';
+import { AgentError, publicError } from './errors.js';
 import { readWorkspaceFile, writeWorkspaceFile } from './workspace-files.js';
 
 export interface RunResult {
@@ -29,9 +29,20 @@ export interface ToolExecutionEvent {
 type ToolErrorCode = NonNullable<ToolExecutionEvent['errorCode']>;
 type ToolFailure = { is_error: true; error: { code: ToolErrorCode; message: string } };
 
-function reportToolEvent(options: { onToolEvent?: (event: ToolExecutionEvent) => void }, event: ToolExecutionEvent): void {
+function modelStreamError(error: unknown): AgentError {
+  if (error instanceof AgentError) return error;
+  if (APICallError.isInstance(error) || ToolChoiceViolationError.isInstance(error)) return publicError(error);
+  return new AgentError('PROVIDER_ERROR', '模型响应流无效，已终止当前对话轮次。');
+}
+
+function reportToolEvent(options: { onToolEvent?: (event: ToolExecutionEvent) => unknown }, event: ToolExecutionEvent): void {
   try {
-    options.onToolEvent?.(event);
+    const notification = options.onToolEvent?.(event);
+    if (typeof notification === 'object' && notification !== null && 'then' in notification && typeof notification.then === 'function') {
+      void Promise.resolve(notification).catch(() => {
+        process.stderr.write('执行事件通知失败。\n');
+      });
+    }
   } catch {
     // 事件通知只用于观察，不改变工具结果。
     process.stderr.write('执行事件通知失败。\n');
@@ -175,7 +186,7 @@ async function validatedOpenAIFetch(input: string | URL | Request, init?: Reques
 }
 
 async function executeTool<T>(
-  options: { onToolEvent?: (event: ToolExecutionEvent) => void },
+  options: { onToolEvent?: (event: ToolExecutionEvent) => unknown },
   callId: string,
   toolName: string,
   operation: () => Promise<T> | T,
@@ -200,7 +211,7 @@ export async function runAgent(
     history?: ModelMessage[];
     onText?: (chunk: string) => void;
     onToolCall?: (name: string) => void;
-    onToolEvent?: (event: ToolExecutionEvent) => void;
+    onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
   },
 ): Promise<RunResult> {
@@ -236,8 +247,32 @@ export async function runAgent(
       }),
     }),
   };
-  const agent = new ToolLoopAgent({
+  const frameworkAbort = new AbortController();
+  let frameworkError: AgentError | undefined;
+  const model = wrapLanguageModel({
     model: provider.chat(config.model),
+    middleware: {
+      wrapStream: async ({ doStream }) => {
+        const result = await doStream();
+        return {
+          ...result,
+          stream: result.stream.pipeThrough(new TransformStream({
+            transform(part, controller) {
+              if (part.type === 'error') {
+                frameworkError = modelStreamError(part.error);
+                frameworkAbort.abort(frameworkError);
+                controller.error(frameworkError);
+                return;
+              }
+              controller.enqueue(part);
+            },
+          })),
+        };
+      },
+    },
+  });
+  const agent = new ToolLoopAgent({
+    model,
     instructions: [
       '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
       '可使用 read_file 读取工作区文件，使用 write_file 完整替换或创建工作区文件；文件访问仅限配置的工作区。',
@@ -246,7 +281,11 @@ export async function runAgent(
     tools: agentTools,
     toolCallConcurrency: 1,
     stopWhen: isStepCount(config.maxSteps),
-    onError: () => undefined,
+    onError: ({ error }) => {
+      if (InvalidToolInputError.isInstance(error) || NoSuchToolError.isInstance(error)) return;
+      frameworkError = modelStreamError(error);
+      frameworkAbort.abort(frameworkError);
+    },
     // Avoid automatic retries hiding auth failures or extending the deadline.
     maxRetries: 0,
     ...(options.smokeTool ? {
@@ -263,8 +302,8 @@ export async function runAgent(
   let pairingError: AgentError | undefined;
   const timer = setTimeout(() => deadline.abort(), config.timeoutMs);
   const signal = options.signal === undefined
-    ? AbortSignal.any([deadline.signal, pairingAbort.signal])
-    : AbortSignal.any([deadline.signal, pairingAbort.signal, options.signal]);
+    ? AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal])
+    : AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal, options.signal]);
   try {
     const result = await agent.stream({
       messages: [
@@ -289,7 +328,9 @@ export async function runAgent(
           const unknownTool = NoSuchToolError.isInstance(part.error)
             || errorText.startsWith('AI_NoSuchToolError:');
           if (!invalidInput && !unknownTool) {
-            controller.enqueue(part);
+            frameworkError = new AgentError('PROVIDER_ERROR', '工具执行发生不可恢复错误，已终止当前对话轮次。');
+            frameworkAbort.abort(frameworkError);
+            controller.error(frameworkError);
             return;
           }
           const code = unknownTool ? 'UNKNOWN_TOOL' : 'INVALID_TOOL_ARGUMENTS';
@@ -364,11 +405,12 @@ export async function runAgent(
       toolSmokePassed: options.smokeTool && toolSmokePassed,
     };
   } catch (error) {
-    if (pairingError) throw pairingError;
     if (options.signal?.aborted) throw new AgentError('CANCELLED', '请求已取消。');
     if (deadline.signal.aborted) {
       throw new AgentError('TIMEOUT', `请求超过 ${config.timeoutMs}ms，已终止。`);
     }
+    if (pairingError) throw pairingError;
+    if (frameworkError) throw frameworkError;
     throw error;
   } finally {
     clearTimeout(timer);

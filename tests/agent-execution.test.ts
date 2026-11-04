@@ -81,4 +81,62 @@ describe('公共工具执行边界', () => {
     } });
     expect(events).toEqual([{ callId: 'call_bad_args', toolName: 'read_file', status: 'rejected', errorCode: 'INVALID_TOOL_ARGUMENTS' }]);
   });
+
+  it('异步执行事件通知拒绝不阻塞工具结果或后续调用', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    await writeFile(join(workspace, 'note.txt'), '仍可读取');
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [
+        { id: 'async-notify-read', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'note.txt' }) } },
+        { id: 'async-notify-runtime', type: 'function', function: { name: 'runtimeInfo', arguments: '{}' } },
+      ] }
+      : { content: '后续模型请求完成。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as never);
+    try {
+      const result = await runAgent(config, '读取并检查运行信息', {
+        smokeTool: false,
+        onToolEvent: async () => { throw new Error('异步通知拒绝'); },
+      });
+      const toolMessages = fixture.requests[1]?.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ content: string; tool_call_id: string }>;
+      expect(toolMessages).toHaveLength(2);
+      expect(JSON.parse(toolMessages[0]!.content)).toEqual({ is_error: false, output: { content: '仍可读取' } });
+      expect(JSON.parse(toolMessages[1]!.content)).toMatchObject({ is_error: false, output: { workspace: config.workspace } });
+      expect(result.text).toBe('后续模型请求完成。');
+      expect(fixture.requests).toHaveLength(2);
+      expect(write.mock.calls.map(([chunk]) => String(chunk)).join('')).toContain('执行事件通知失败');
+    } finally {
+      write.mockRestore();
+    }
+  });
+
+  it('首个排队工具开始后取消，不启动同批后续工具或下一次模型请求', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [
+        { id: 'cancel-first-runtime', type: 'function', function: { name: 'runtimeInfo', arguments: '{}' } },
+        { id: 'cancel-second-write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'must-not-exist.txt', content: '不可写入' }) } },
+      ] }
+      : { content: '不应收到的回答。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+    const cancellation = new AbortController();
+    await expect(runAgent(config, '运行后取消', {
+      smokeTool: false,
+      onToolEvent: (event) => {
+        if (event.callId === 'cancel-first-runtime' && event.status === 'started') cancellation.abort();
+      },
+      signal: cancellation.signal,
+    })).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(fixture.requests).toHaveLength(1);
+    await expect(readFile(join(workspace, 'must-not-exist.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
 });

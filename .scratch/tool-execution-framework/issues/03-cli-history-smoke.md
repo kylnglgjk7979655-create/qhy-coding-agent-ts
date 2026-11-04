@@ -22,4 +22,3 @@ CLI 通过 01 提供的 `onToolEvent` 实时显示工具开始、成功、失败
 新增 `tests/tool-presentation.test.ts`：使用共享本地 OpenAI 夹具和编译后 CLI 验证事件在最终模型响应返回前可观察、每次调用只产生一个终结状态、输出脱敏；真实 SDK 旧格式的 tool-call/tool-result 历史原样保留，新格式工具结果保存、重载后可继续对话；本地工具冒烟识别统一包装。README 已同步终端状态说明，真实命令 `pnpm smoke` 和直接 CLI 冒烟命令保持不变。
 
 验证：`pnpm check` 通过，类型检查通过，4 个测试文件共 38 项通过。真实模型 `pnpm smoke` 命令保留，未在本地夹具验证之外调用真实服务。
-
