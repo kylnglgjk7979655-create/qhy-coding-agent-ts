@@ -17,7 +17,7 @@ export type FixtureResponse = { content: string }
   | { frames: Array<{ delta: Record<string, unknown>; finish_reason?: string | null }> };
 
 export async function startLocalOpenAIModel(
-  respond: (request: FixtureRequest, index: number) => FixtureResponse | undefined,
+  respond: (request: FixtureRequest, index: number) => FixtureResponse | undefined | Promise<FixtureResponse | undefined>,
 ): Promise<{ baseURL: string; requests: FixtureRequest[]; close: () => Promise<void> }> {
   const requests: FixtureRequest[] = [];
   const server: Server = createServer((req, res) => {
@@ -26,7 +26,7 @@ export async function startLocalOpenAIModel(
       for await (const chunk of req) requestChunks.push(Buffer.from(chunk as Uint8Array));
       const request = JSON.parse(Buffer.concat(requestChunks).toString()) as FixtureRequest;
       requests.push(request);
-      const reply = respond(request, requests.length);
+      const reply = await respond(request, requests.length);
       if (reply === undefined) return;
       const chunks = 'frames' in reply
         ? reply.frames.map((frame) => ({ id: 'chatcmpl-fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta: frame.delta, finish_reason: frame.finish_reason ?? null }] }))
