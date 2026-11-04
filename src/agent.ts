@@ -38,6 +38,106 @@ function reportToolEvent(options: { onToolEvent?: (event: ToolExecutionEvent) =>
   }
 }
 
+async function validatedOpenAIFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
+  const response = await fetch(input, init);
+  if (!response.ok || response.body === null) return response;
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('text/event-stream')) {
+    const reader = response.body.getReader();
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const held: string[] = [];
+    let pending = '';
+    let collecting = false;
+    const batch = new Map<number, { id?: string; call: boolean }>();
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+              pending += decoder.decode();
+              let boundary: number;
+              while ((boundary = pending.search(/\r?\n\r?\n/)) >= 0) {
+                const separator = pending.slice(boundary).match(/^\r?\n\r?\n/)![0];
+                processEvent(pending.slice(0, boundary + separator.length), controller);
+                pending = pending.slice(boundary + separator.length);
+              }
+              if (pending) processEvent(pending, controller);
+              controller.close();
+              return;
+            }
+            pending += decoder.decode(value, { stream: true });
+            let boundary: number;
+            while ((boundary = pending.search(/\r?\n\r?\n/)) >= 0) {
+              const separator = pending.slice(boundary).match(/^\r?\n\r?\n/)![0];
+              const event = pending.slice(0, boundary + separator.length);
+              pending = pending.slice(boundary + separator.length);
+              processEvent(event, controller);
+              if (!collecting && event.includes('finish_reason')) return;
+            }
+            if (!collecting && pending && !pending.includes('data:')) {
+              controller.enqueue(encoder.encode(pending));
+              pending = '';
+              return;
+            }
+            if (!collecting && pending && pending.startsWith('data:')) {
+              // Wait for a complete SSE event before deciding whether this is tool traffic.
+              const dataEnd = pending.search(/\r?\n\r?\n/);
+              if (dataEnd < 0) continue;
+            }
+          }
+        } catch (error) { controller.error(error); }
+      },
+      async cancel(reason) { await reader.cancel(reason); },
+    });
+    function processEvent(event: string, controller: ReadableStreamDefaultController<Uint8Array>): void {
+      const data = event.split(/\r?\n/).find((line) => line.startsWith('data:'))?.slice(5).trim();
+      if (!data || data === '[DONE]') {
+        if (collecting) held.push(event);
+        else controller.enqueue(encoder.encode(event));
+        return;
+      }
+      let payload: unknown;
+      try { payload = JSON.parse(data); } catch {
+        if (collecting) held.push(event); else controller.enqueue(encoder.encode(event));
+        return;
+      }
+      const choices = payload && typeof payload === 'object' && 'choices' in payload && Array.isArray(payload.choices) ? payload.choices : [];
+      let hasToolDelta = false;
+      let completedTools = false;
+      for (const choice of choices) {
+        if (!choice || typeof choice !== 'object') continue;
+        if ('delta' in choice && choice.delta && typeof choice.delta === 'object' && 'tool_calls' in choice.delta && Array.isArray(choice.delta.tool_calls)) {
+          hasToolDelta = true;
+          for (const item of choice.delta.tool_calls) {
+            if (!item || typeof item !== 'object' || typeof item.index !== 'number') continue;
+            const entry = batch.get(item.index) ?? { call: false };
+            entry.call = true;
+            if ('id' in item) entry.id = typeof item.id === 'string' ? item.id : undefined;
+            batch.set(item.index, entry);
+          }
+        }
+        if ('finish_reason' in choice && (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop')) completedTools = true;
+      }
+      if (hasToolDelta) collecting = true;
+      if (collecting) held.push(event); else controller.enqueue(encoder.encode(event));
+      if (completedTools) {
+        const ids = [...batch.values()].map((item) => item.id);
+        if (ids.some((id) => !id?.trim()) || new Set(ids).size !== ids.length) {
+          throw new AgentError('PROVIDER_ERROR', '工具批次包含缺失、空或重复的调用 ID，已在执行前终止。');
+        }
+        for (const item of held) controller.enqueue(encoder.encode(item));
+        held.length = 0;
+        collecting = false;
+        batch.clear();
+      }
+    }
+    return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers });
+  }
+  return response;
+}
+
 async function executeTool<T>(
   options: { onToolEvent?: (event: ToolExecutionEvent) => void },
   callId: string,
@@ -74,6 +174,7 @@ export async function runAgent(
 
   const provider = createOpenAI({
     apiKey: config.apiKey,
+    fetch: validatedOpenAIFetch,
     ...(config.baseURL === undefined ? {} : { baseURL: config.baseURL }),
   });
   const probe = randomUUID();
@@ -107,6 +208,7 @@ export async function runAgent(
       'runtimeInfo 可获取工作区路径和本次探针。没有执行命令的能力。',
     ].join('\n'),
     tools: agentTools,
+    toolCallConcurrency: 1,
     stopWhen: isStepCount(config.maxSteps),
     onError: () => undefined,
     // Avoid automatic retries hiding auth failures or extending the deadline.
@@ -121,10 +223,12 @@ export async function runAgent(
   });
 
   const deadline = new AbortController();
+  const pairingAbort = new AbortController();
+  let pairingError: AgentError | undefined;
   const timer = setTimeout(() => deadline.abort(), config.timeoutMs);
   const signal = options.signal === undefined
-    ? deadline.signal
-    : AbortSignal.any([deadline.signal, options.signal]);
+    ? AbortSignal.any([deadline.signal, pairingAbort.signal])
+    : AbortSignal.any([deadline.signal, pairingAbort.signal, options.signal]);
   try {
     const result = await agent.stream({
       messages: [
@@ -171,8 +275,17 @@ export async function runAgent(
           } as unknown as typeof part);
         },
       }),
-      onStepFinish: ({ toolCalls }) => {
+      onStepFinish: ({ toolCalls, toolResults }) => {
         for (const call of toolCalls) options.onToolCall?.(call.toolName);
+        // This callback is awaited by the SDK before it starts the next model request.
+        const callIds = toolCalls.map(({ toolCallId }) => toolCallId);
+        const resultIds = toolResults.map(({ toolCallId }) => toolCallId);
+        if (new Set(callIds).size !== callIds.length || callIds.some((id) => !id.trim())
+          || resultIds.length !== callIds.length || new Set(resultIds).size !== resultIds.length
+          || callIds.some((id) => !resultIds.includes(id))) {
+          pairingError = new AgentError('PROVIDER_ERROR', '工具调用与结果无法一一配对，已终止当前对话轮次。');
+          pairingAbort.abort(pairingError);
+        }
       },
     });
     for await (const chunk of result.textStream) options.onText?.(chunk);
@@ -210,6 +323,7 @@ export async function runAgent(
       toolSmokePassed: options.smokeTool && toolSmokePassed,
     };
   } catch (error) {
+    if (pairingError) throw pairingError;
     if (options.signal?.aborted) throw new AgentError('CANCELLED', '请求已取消。');
     if (deadline.signal.aborted) {
       throw new AgentError('TIMEOUT', `请求超过 ${config.timeoutMs}ms，已终止。`);
