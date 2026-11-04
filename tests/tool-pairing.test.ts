@@ -58,6 +58,7 @@ describe('工具批次顺序与新增往返配对', () => {
       : { content: '读取完成。' });
     const result = await run();
     expect(result.code).toBe(0);
+    expect(requests).toHaveLength(2);
     const tools = toolMessages();
     expect(tools.map(({ tool_call_id }) => tool_call_id)).toEqual(['write-first', 'read-second']);
     expect(JSON.parse(tools[1]!.content)).toEqual({ is_error: false, output: { content: '新内容' } });
@@ -164,6 +165,23 @@ describe('工具批次顺序与新增往返配对', () => {
     expect(result.stdout).toContain('错误：');
     expect(requests).toHaveLength(1);
     await expect(readFile(join(workspace, 'first.txt'), 'utf8')).rejects.toThrow();
+  });
+
+  it('接受同索引和同 ID 的重复元数据参数续片', async () => {
+    await setup((_request, index) => index === 1
+      ? { frames: [
+        { delta: { tool_calls: [{ index: 0, id: 'normal-repeat', type: 'function', function: { name: 'write_file', arguments: '{"path":' } }] } },
+        { delta: { tool_calls: [{ index: 0, id: 'normal-repeat', type: 'function', function: { arguments: '"first.txt","content":"ok"}' } }] } },
+        { delta: {}, finish_reason: 'tool_calls' },
+      ] }
+      : { content: '写入完成。' });
+    const result = await run();
+    expect(result.code).toBe(0);
+    expect(requests).toHaveLength(2);
+    const tools = toolMessages();
+    expect(tools.map(({ tool_call_id }) => tool_call_id)).toEqual(['normal-repeat']);
+    expect(JSON.parse(tools[0]!.content)).toEqual({ is_error: false, output: { success: true } });
+    expect(await readFile(join(workspace, 'first.txt'), 'utf8')).toBe('ok');
   });
 
   it('同一 SSE 批次重复使用工具索引和原始 ID 时拒绝两次写入', async () => {

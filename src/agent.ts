@@ -50,7 +50,7 @@ async function validatedOpenAIFetch(input: string | URL | Request, init?: Reques
     let pending = '';
     let collecting = false;
     let emittedThisPull = 0;
-    const batch = new Map<number, { id: string }>();
+    const batch = new Map<number, { id: string; argumentsText: string; argumentsComplete: boolean }>();
     const batchIds = new Set<string>();
     const stream = new ReadableStream<Uint8Array>({
       async pull(controller) {
@@ -119,11 +119,21 @@ async function validatedOpenAIFetch(input: string | URL | Request, init?: Reques
               throw new AgentError('PROVIDER_ERROR', '工具批次包含无法识别的调用项，已在执行前终止。');
             }
             const existing = batch.get(item.index);
+            const functionDelta = 'function' in item && item.function && typeof item.function === 'object'
+              ? item.function as Record<string, unknown>
+              : undefined;
+            const argumentFragment = typeof functionDelta?.arguments === 'string' ? functionDelta.arguments : '';
             if (existing) {
-              // OpenAI only sends id/type on a call's opening delta. A repeated opening
-              // marker at the same index is a new raw call that the SDK may normalize.
-              if ('id' in item || 'type' in item) {
-                throw new AgentError('PROVIDER_ERROR', '工具批次重复使用调用索引，已在执行前终止。');
+              if ('id' in item && item.id !== existing.id) {
+                throw new AgentError('PROVIDER_ERROR', '同一调用索引出现不同原始 ID，已在执行前终止。');
+              }
+              const isStructuredRestart = argumentFragment.trimStart().startsWith('{') || argumentFragment.trimStart().startsWith('[');
+              if (existing.argumentsComplete && typeof functionDelta?.name === 'string' && isStructuredRestart) {
+                throw new AgentError('PROVIDER_ERROR', '完整工具参数后出现重复的调用起始帧，已在执行前终止。');
+              }
+              if (argumentFragment) {
+                existing.argumentsText += argumentFragment;
+                try { JSON.parse(existing.argumentsText); existing.argumentsComplete = true; } catch { existing.argumentsComplete = false; }
               }
               continue;
             }
@@ -134,7 +144,12 @@ async function validatedOpenAIFetch(input: string | URL | Request, init?: Reques
             if (batchIds.has(id)) {
               throw new AgentError('PROVIDER_ERROR', '工具批次包含重复调用 ID，已在执行前终止。');
             }
-            batch.set(item.index, { id });
+            const argumentsText = argumentFragment;
+            let argumentsComplete = false;
+            if (argumentsText) {
+              try { JSON.parse(argumentsText); argumentsComplete = true; } catch { /* 仍在接收参数分片。 */ }
+            }
+            batch.set(item.index, { id, argumentsText, argumentsComplete });
             batchIds.add(id);
           }
         }
