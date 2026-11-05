@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -73,6 +73,39 @@ function run(terminal = true) {
 function results() {
   return fixture.requests.at(-1)!.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ tool_call_id: string; content: string }>;
 }
+
+it.skipIf(process.platform === 'win32')('人工审批 Bash 展示完整参数与实际 cwd，等待不启动命令且不扣整轮预算', async () => {
+  const command = 'printf approved > approved.txt';
+  await setup((_request, index) => index === 1 ? { calls: [
+    { id: 'bash-approve', type: 'function', function: { name: 'Bash', arguments: JSON.stringify({ command, cwd: 'alias' }) } },
+    { id: 'bash-deny', type: 'function', function: { name: 'Bash', arguments: '{"command":"touch denied.txt"}' } },
+    { id: 'read', type: 'function', function: { name: 'read_file', arguments: '{"path":"nested/approved.txt"}' } },
+  ] } : { content: 'Bash 审批完成' }, { timeoutMs: 600 });
+  await mkdir(join(cwd, 'nested'));
+  await symlink(join(cwd, 'nested'), join(cwd, 'alias'));
+  const running = run();
+  await running.waitFor('> ');
+  running.child.stdin.write('执行命令\n');
+  await running.waitFor('approve 1');
+  expect(running.output()).toContain(command);
+  expect(running.output()).toContain('"cwd": "alias"');
+  expect(running.output()).toContain(`实际工作目录：${await realpath(join(cwd, 'nested'))}`);
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  expect(running.output()).not.toContain('Bash：开始');
+  await expect(readFile(join(cwd, 'nested/approved.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  running.child.stdin.write('approve 1\n');
+  await running.waitFor('approve 2');
+  expect(await readFile(join(cwd, 'nested/approved.txt'), 'utf8')).toBe('approved');
+  expect(running.output()).toContain(`实际工作目录：${await realpath(cwd)}`);
+  running.child.stdin.write('deny 2\n');
+  await running.waitFor('Bash 审批完成');
+  running.child.stdin.end('/exit\n');
+  const result = await running.done;
+  expect(result.code, result.stdout + result.stderr).toBe(0);
+  expect(results().map(({ tool_call_id }) => tool_call_id)).toEqual(['bash-approve', 'bash-deny', 'read']);
+  expect(results().map(({ content }) => JSON.parse(content).is_error)).toEqual([false, true, false]);
+  await expect(readFile(join(cwd, 'denied.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+});
 
 it('非交互管道直接拒绝人工审批，后续需求不被当作答复且仍能完成', async () => {
   await setup((_request, index) => index === 1 ? { calls: [write('pipe')] } : { content: '继续完成' });

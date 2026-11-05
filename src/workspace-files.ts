@@ -1,7 +1,7 @@
 import { lstat, readFile, realpath, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
-function isWithinWorkspace(workspace: string, target: string): boolean {
+export function isWithinWorkspace(workspace: string, target: string): boolean {
   const pathFromWorkspace = relative(workspace, target);
   return pathFromWorkspace === ''
     || (!pathFromWorkspace.startsWith(`..${sep}`) && pathFromWorkspace !== '..' && !isAbsolute(pathFromWorkspace));

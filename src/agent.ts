@@ -11,6 +11,7 @@ import { readWorkspaceFile, writeWorkspaceFile } from './workspace-files.js';
 import { approveToolCall } from './tool-approval.js';
 import type { ApprovalControl } from './tool-approval.js';
 import { ToolRegistry } from './tool-registry.js';
+import { prepareBashInput, runHostBash } from './host-bash.js';
 import type { ToolExecutionEvent } from './tool-registry.js';
 
 export type { ApprovalControl } from './tool-approval.js';
@@ -186,6 +187,7 @@ export async function runAgent(
   const smokeProbePath = `.agent-smoke-${probe}.txt`;
   if (options.smokeTool) await writeFile(join(config.workspace, smokeProbePath), probe, { encoding: 'utf8', flag: 'wx' });
   const frameworkAbort = new AbortController();
+  const bashOperations = new Set<Promise<unknown>>();
   let frameworkError: AgentError | undefined;
   const registry = new ToolRegistry({
     ...options,
@@ -223,6 +225,18 @@ export async function runAgent(
       return { success: true as const };
     },
   });
+  registry.register({
+    name: 'Bash',
+    description: '使用独立宿主 Bash 执行命令，继承 CLI 环境；cwd 仅约束启动目录，不提供操作系统隔离。',
+    inputSchema: z.strictObject({ command: z.string().refine((value) => value.trim().length > 0), cwd: z.string().min(1).optional() }),
+    prepare: (input) => prepareBashInput(config.workspace, input),
+    execute: ({ command, cwd }, execution) => {
+      const operation = runHostBash(command, cwd ?? config.workspace, execution.abortSignal, config.bash?.timeoutMs);
+      bashOperations.add(operation);
+      void operation.finally(() => bashOperations.delete(operation)).catch(() => undefined);
+      return operation;
+    },
+  });
   const model = wrapLanguageModel({
     model: provider.chat(config.model),
     middleware: {
@@ -251,8 +265,9 @@ export async function runAgent(
     instructions: [
       '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
       '可使用 read_file 读取工作区文件，使用 write_file 完整替换或创建工作区文件；文件访问仅限配置的工作区。',
-      'write_file 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
-      'runtimeInfo 可获取工作区路径和本次探针。没有执行命令的能力。',
+      'write_file 和 Bash 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
+      'Bash 可运行命令和项目测试，每次使用独立 shell，继承 CLI 环境并以宿主当前用户权限执行；cwd 只约束启动位置，不提供文件系统或网络隔离。',
+      'runtimeInfo 可获取工作区路径和本次探针。',
     ].join('\n'),
     tools: registry.tools(),
     toolCallConcurrency: 1,
@@ -392,6 +407,7 @@ export async function runAgent(
     throw error;
   } finally {
     clearTimeout(timer);
+    await Promise.allSettled(bashOperations);
     if (options.smokeTool) await unlink(join(config.workspace, smokeProbePath)).catch(() => undefined);
   }
 }

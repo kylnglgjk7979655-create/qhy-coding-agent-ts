@@ -1,8 +1,8 @@
 # qhy-coding-agent-ts
 
-基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `read_file`、`write_file` 和 `runtimeInfo`，可读取配置工作区内的文件，并在工具策略允许或所选审批通过后修改文件。审批默认由独立模型完成，也可切换人工模式。会话历史保存在启动目录的 `.agent/conversations/`，支持用 conversation ID 跨进程继续对话。
+基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `read_file`、`write_file`、`runtimeInfo` 和 `Bash`，可读取工作区文件，并在工具策略允许或所选审批通过后修改文件、运行宿主命令。审批默认由独立模型完成，也可切换人工模式。会话历史保存在启动目录的 `.agent/conversations/`，支持用 conversation ID 跨进程继续对话。
 
-通过 `ToolLoopAgent.stream()` 运行工具循环，每个对话轮次使用独立的 `maxSteps` 限制，默认 20 步。当前没有执行 shell 或运行项目测试的工具。
+通过 `ToolLoopAgent.stream()` 运行工具循环，每个对话轮次使用独立的 `maxSteps` 限制，默认 20 步。Agent 可通过 Bash 运行项目测试，文件工具与 Bash 共用策略、审批、串行执行和结果路径。
 
 ## 从干净终端启动
 
@@ -76,6 +76,7 @@ pnpm dev --workspace ./demo
 | `workspace` | 默认 `./demo`；CLI 可覆盖 |
 | `timeoutMs` | 1–3,600,000ms；每轮独立计时，覆盖该轮的生成与工具循环；人工审批等待单独计时，超时通过 AbortSignal 中止请求 |
 | `maxSteps` | 1–100，默认 20；每轮独立计步，达到上限仍在调用工具时该轮失败，交互模式继续等待输入 |
+| `bash.timeoutMs` | 可选，默认 30,000ms，范围 1–3,600,000ms；单次命令上限，同时受整轮剩余时限约束；`bash` 只接受此字段 |
 
 未知字段、无效类型及越界数值会在网络请求前报错。自动重试关闭，避免鉴权失败反复请求。Ctrl+C 会中止当前请求。
 
@@ -90,10 +91,34 @@ pnpm dev --workspace ./demo
 | `read_file` | 接收 `path`，读取工作区内文本文件，将内容返回给 Agent |
 | `write_file` | 接收 `path` 和 `content`，完整替换目标文件；文件不存在时创建，不自动创建父目录 |
 | `runtimeInfo` | 返回工作区绝对路径和本轮运行探针 |
+| `Bash` | 接收 `command` 和可选 `cwd`，在工作区内的启动目录运行独立宿主 Bash |
 
 相对路径从配置的工作区解析；绝对路径仅在解析后的目标仍位于工作区内时允许。指向工作区外的符号链接会被拒绝。read_file 和 runtimeInfo 默认直接执行；write_file 默认在独立模型审批通过后执行。固定允许或审批通过均不能放宽文件路径与符号链接边界。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
 
 终端实时显示 `[工具] read_file：开始`、`[工具] read_file：成功`、`[工具] read_file：失败` 或 `[工具] read_file：拒绝` 等执行状态，不直接打印工具参数、文件内容或原始异常。一次调用只显示一个终结状态；普通调用失败后，同批后续调用仍会执行，Agent 会收到各次工具结果并决定如何继续。Agent 的最终回答可以按用户要求引用文件内容。
+
+## 宿主 Bash
+
+宿主 Bash 在支持 POSIX 进程组的系统（Linux/macOS）上使用 PATH 中的 `bash`，以 CLI 当前用户权限执行。它不提供操作系统沙箱、文件系统隔离或网络隔离。`cwd` 只限制启动位置，命令仍可能访问工作区外的资源；内置文件工具的工作区边界继续有效。
+
+`command` 必须为非空命令。省略 `cwd` 时从配置工作区启动；相对 `cwd` 从工作区解析，绝对路径也须位于工作区内。审批前解析实际目录，拒绝路径穿越、指向工作区外的符号链接、缺失目录及文件路径。人工审批展示原始完整参数和解析后的实际工作目录；启动前再次核验该目录，变化或不可用时拒绝执行并要求重新提交。批准不能放宽这些检查。
+
+每次调用使用独立 shell，继承 CLI 环境，不保留上次调用的 `cd`、环境修改或其他 shell 状态；不接受 `env` 或其他模型自定义环境参数。Bash 默认进入所选审批，固定规则使用精确工具名称 `Bash`。等待或拒绝期间不会启动命令。
+
+例如，将以下字段加入运行配置，缩短单次命令上限：
+
+```json
+{
+  "bash": { "timeoutMs": 10000 },
+  "approval": { "mode": "human", "humanTimeoutMs": 300000 }
+}
+```
+
+默认单命令上限为 30 秒，计时从实际启动命令开始；人工思考时间不消耗整轮执行预算。单命令超时返回普通调用失败，同批后续调用继续；整轮超时、Ctrl+C 或 SIGTERM 停止当前轮次，不启动后续工具或模型请求。超时和取消以 SIGKILL 终止所管理的命令进程组，并等待命令结束。已有文件和其他宿主副作用不会回滚；不提供后台任务管理。
+
+工具结果的 `output` 包含 `stdout`、`stderr`、`exitCode`、`signal` 和 `truncated`。输出按 UTF-8 文本返回，stdout 与 stderr 合计最多 64 KiB；超限标记 `truncated: true`，仍持续消费流以避免管道堵塞，截断处不返回残缺字符。结果不会直接打印到普通进度或日志，主模型可根据它回答用户。
+
+退出码为 0 时返回 `is_error: false`；非零退出、启动失败和单命令超时返回 `is_error: true`、`TOOL_EXECUTION_ERROR` 及可用输出。超时结果保留终止信号，错误消息说明超时；取消和整轮超时走轮次停止通路。常规验证通过本地模型夹具和受控进程完成，不能代替最终人工 QA。
 
 ## 工具策略与审批
 
@@ -262,4 +287,4 @@ pnpm test:bug   # 预期失败
 git status --short  # 依赖已忽略，工作区应仍然干净
 ```
 
-可用 `pnpm dev --workspace ./.demo-workspace` 启动 Agent，然后输入“读取 src/checkout.ts 和 regression/discount.test.ts，修复金额恰好为 100 时未打折的问题”。Agent 可以读取和修改文件；测试命令需由用户在该副本目录执行。
+可用 `pnpm dev --workspace ./.demo-workspace` 启动 Agent，然后输入“读取 src/checkout.ts 和 regression/discount.test.ts，修复金额恰好为 100 时未打折的问题，并运行测试”。Agent 可以读取和修改文件，并在策略允许或审批通过后通过 Bash 在副本中执行测试命令。

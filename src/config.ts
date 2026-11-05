@@ -27,6 +27,9 @@ export const configSchema = z.strictObject({
   workspace: z.string().trim().min(1).default('./demo'),
   timeoutMs: z.number().int().min(1).max(3_600_000).default(60_000),
   maxSteps: z.number().int().min(1).max(100).default(20),
+  bash: z.strictObject({
+    timeoutMs: z.number().int().min(1).max(3_600_000).default(30_000),
+  }).optional(),
   approval: z.strictObject({
     mode: z.enum(['model', 'human']).default('model'),
     rules: z.array(z.strictObject({
