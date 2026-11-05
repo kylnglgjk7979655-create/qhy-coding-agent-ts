@@ -22,6 +22,8 @@ export type { ToolExecutionEvent } from './tool-registry.js';
 export interface RunResult {
   text: string;
   responseMessages: ModelMessage[];
+  /** 本轮成功使用的完整有效历史，可直接用于保存及下一轮输入。 */
+  effectiveHistory: ModelMessage[];
   steps: number;
   toolCalls: number;
   finishReason: string;
@@ -315,16 +317,17 @@ export async function runAgent(
     });
 
     signal.throwIfAborted();
+    const messages: ModelMessage[] = [
+      ...(options.smokeTool ? [] : options.history ?? []),
+      {
+        role: 'user',
+        content: options.smokeTool
+          ? `调用 read_file 读取 ${smokeProbePath}，然后在最终回答中逐字写出文件内容。`
+          : prompt,
+      },
+    ];
     const result = await agent.stream({
-      messages: [
-        ...(options.smokeTool ? [] : options.history ?? []),
-        {
-          role: 'user',
-          content: options.smokeTool
-            ? `调用 read_file 读取 ${smokeProbePath}，然后在最终回答中逐字写出文件内容。`
-            : prompt,
-        },
-      ],
+      messages,
       abortSignal: signal,
       experimental_transform: () => new TransformStream({
         transform(part, controller) {
@@ -393,6 +396,7 @@ export async function runAgent(
     return {
       text,
       responseMessages,
+      effectiveHistory: [...messages, ...responseMessages],
       steps: steps.length,
       toolCalls: steps.reduce((count, step) => count + step.toolCalls.length, 0),
       finishReason,

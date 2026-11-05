@@ -115,7 +115,7 @@ describe('CLI 工具状态、历史与冒烟', () => {
     await mkdir(join(cwd, '.agent', 'conversations'), { recursive: true });
     await writeFile(historyPath, JSON.stringify(oldHistory));
 
-    const first = await run('读取并继续\n/exit\n', ['--conversation-id', conversationId]);
+    const first = await run('读取并继续\n再聊一轮\n/exit\n', ['--conversation-id', conversationId]);
     expect(first.code).toBe(0);
     const saved = JSON.parse(await readFile(historyPath, 'utf8')) as Array<Record<string, unknown>>;
     expect(saved.slice(0, 4)).toEqual(oldHistory);
@@ -126,13 +126,28 @@ describe('CLI 工具状态、历史与冒烟', () => {
     expect(newResultPart?.output).toEqual({
       type: 'json', value: { is_error: false, output: { content: 'new-content' } },
     });
+    expect(saved.map(({ role }) => role)).toEqual([
+      'user', 'assistant', 'assistant', 'tool',
+      'user', 'assistant', 'tool', 'assistant', 'user', 'assistant',
+    ]);
+    expect(saved.filter(({ role }) => role === 'user').map(({ content }) => content)).toEqual(['旧问题', '读取并继续', '再聊一轮']);
+    expect(fixture.requests[2]?.messages.filter(({ role }) => role === 'tool').map(({ content }) => JSON.parse(content))).toEqual([
+      { workspace: '/legacy/workspace', probe: 'legacy-probe' },
+      { is_error: false, output: { content: 'new-content' } },
+    ]);
 
     const second = await run('继续上一轮\n/exit\n', ['--conversation-id', conversationId]);
     expect(second.code).toBe(0);
     expect(fixture.requests.at(-1)?.messages.some((message) => message.role === 'tool' && message.content.includes('new-content'))).toBe(true);
     const afterReload = JSON.parse(await readFile(historyPath, 'utf8')) as Array<Record<string, unknown>>;
-    expect(afterReload.slice(0, 4)).toEqual(oldHistory);
-    expect(fixture.requests).toHaveLength(3);
+    expect(afterReload).toEqual([
+      ...saved,
+      { role: 'user', content: '继续上一轮' },
+      expect.objectContaining({ role: 'assistant', content: [{ type: 'text', text: '续聊回答4' }] }),
+    ]);
+    expect(fixture.requests.at(-1)?.messages.filter(({ role }) => role === 'user').map(({ content }) => content))
+      .toEqual(['旧问题', '读取并继续', '再聊一轮', '继续上一轮']);
+    expect(fixture.requests).toHaveLength(4);
   });
 
   it('本地工具冒烟识别统一成功包装并校验读取探针及最终回答', async () => {

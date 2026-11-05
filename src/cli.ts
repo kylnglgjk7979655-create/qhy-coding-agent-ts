@@ -147,11 +147,7 @@ async function runTurn(
       ...(config.approval.mode === 'human' && approvalControl ? { approvalControl } : {}),
     });
     signal.throwIfAborted();
-    const nextHistory = smokeTool ? history : [
-      ...history,
-      { role: 'user' as const, content: prompt },
-      ...result.responseMessages,
-    ];
+    const nextHistory = smokeTool ? history : result.effectiveHistory;
     if (!smokeTool) await saveConversation(conversationDirectory, conversationId, nextHistory);
     process.stdout.write('\n');
     log({

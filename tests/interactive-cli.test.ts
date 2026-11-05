@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -115,8 +115,42 @@ describe('interactive compiled CLI', () => {
     const finished = logs(result.stderr).find((event) => event.event === 'run.finished');
     expect(started?.conversationId).toEqual(expect.any(String));
     expect(finished?.runId).toBe(started?.runId);
-    const history = JSON.parse(await readFile(join(cwd, '.agent', 'conversations', `${started?.conversationId}.json`), 'utf8')) as Array<{ role: string }>;
+    const directory = join(cwd, '.agent', 'conversations');
+    const filename = `${started?.conversationId}.json`;
+    const history = JSON.parse(await readFile(join(directory, filename), 'utf8')) as Array<{ role: string }>;
     expect(history.map(({ role }) => role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(history).toEqual([
+      { role: 'user', content: '第一条' },
+      expect.objectContaining({ role: 'assistant', content: [{ type: 'text', text: '第1轮回答。' }] }),
+      { role: 'user', content: '第二条' },
+      expect.objectContaining({ role: 'assistant', content: [{ type: 'text', text: '第2轮回答。' }] }),
+    ]);
+    expect(requests[1]?.messages.filter(({ role }) => role !== 'system')).toEqual([
+      { role: 'user', content: '第一条' },
+      { role: 'assistant', content: '第1轮回答。' },
+      { role: 'user', content: '第二条' },
+    ]);
+    expect(await readdir(directory)).toEqual([filename]);
+    if (process.platform !== 'win32') {
+      expect((await stat(directory)).mode & 0o777).toBe(0o700);
+      expect((await stat(join(directory, filename))).mode & 0o777).toBe(0o600);
+    }
+
+    const resumed = await run('第三条\n/exit\n', ['--conversation-id', String(started?.conversationId)]);
+    expect(resumed.code).toBe(0);
+    expect(requests[2]?.messages.filter(({ role }) => role !== 'system')).toEqual([
+      { role: 'user', content: '第一条' },
+      { role: 'assistant', content: '第1轮回答。' },
+      { role: 'user', content: '第二条' },
+      { role: 'assistant', content: '第2轮回答。' },
+      { role: 'user', content: '第三条' },
+    ]);
+    const resumedHistory = JSON.parse(await readFile(join(directory, filename), 'utf8')) as unknown[];
+    expect(resumedHistory).toEqual([
+      ...history,
+      { role: 'user', content: '第三条' },
+      expect.objectContaining({ role: 'assistant', content: [{ type: 'text', text: '第3轮回答。' }] }),
+    ]);
   });
 
   it('resumes a conversation by ID', async () => {
@@ -130,16 +164,36 @@ describe('interactive compiled CLI', () => {
     expect(requests[0]?.messages.some(({ content }) => content.includes('旧回答'))).toBe(true);
   });
 
-  it('does not save a failed turn and continues to the next input', async () => {
-    reply = (_request, index) => index === 1
-      ? { status: 500, body: { error: { message: 'fixture failure' } } }
+  it.each(['http-error', 'incomplete'] as const)('保留成功历史，%s 轮次不保存且不进入下一轮输入', async (failure) => {
+    const id = 'failure-recovery';
+    const args = ['--conversation-id', id];
+    expect((await run('成功轮次\n/exit\n', args)).code).toBe(0);
+    const path = join(cwd, '.agent', 'conversations', `${id}.json`);
+    const previous = await readFile(path, 'utf8');
+    reply = (_request, index) => index === 2 || index === 3
+      ? failure === 'http-error'
+        ? { status: 500, body: { error: { message: 'fixture failure' } } }
+        : { body: response('尚未完成的回答', undefined, 'length') }
       : { body: response('恢复成功。') };
-    const result = await run('失败轮次\n恢复轮次\n/exit\n');
+    const failed = await run('失败轮次\n/exit\n', args);
+    expect(failed.code).toBe(0);
+    expect(failed.stderr).toContain('PROVIDER_ERROR');
+    expect(await readFile(path, 'utf8')).toBe(previous);
+
+    const result = await run('失败轮次\n恢复轮次\n/exit\n', args);
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('恢复成功。');
-    const started = logs(result.stderr).find((event) => event.event === 'run.started');
-    const history = JSON.parse(await readFile(join(cwd, '.agent', 'conversations', `${started?.conversationId}.json`), 'utf8')) as Array<{ role: string; content: string }>;
-    expect(history).toEqual([{ role: 'user', content: '恢复轮次' }, expect.objectContaining({ role: 'assistant' })]);
+    const history = JSON.parse(await readFile(path, 'utf8')) as unknown[];
+    expect(history).toEqual([
+      ...JSON.parse(previous) as unknown[],
+      { role: 'user', content: '恢复轮次' },
+      expect.objectContaining({ role: 'assistant', content: [{ type: 'text', text: '恢复成功。' }] }),
+    ]);
+    expect(requests[3]?.messages.filter(({ role }) => role !== 'system')).toEqual([
+      { role: 'user', content: '成功轮次' },
+      { role: 'assistant', content: '回答完成。' },
+      { role: 'user', content: '恢复轮次' },
+    ]);
     expect(result.stderr).toContain('PROVIDER_ERROR');
   });
 
@@ -394,6 +448,9 @@ describe('interactive compiled CLI', () => {
   });
 
   it.skipIf(process.platform === 'win32').each([false, true])('真实终端 Ctrl+C 取消并退出（请求进行中：%s）', async (requestInProgress) => {
+    const historyPath = join(cwd, '.agent', 'conversations', 'terminal-cancel.json');
+    expect((await run('已完成的轮次\n/exit\n', ['--conversation-id', 'terminal-cancel'])).code).toBe(0);
+    const previous = await readFile(historyPath, 'utf8');
     reply = () => undefined;
     const requestStarted = new Promise<void>((done) => { onRequest = done; });
     const command = [process.execPath, cli, '--conversation-id', 'terminal-cancel'];
@@ -430,9 +487,8 @@ describe('interactive compiled CLI', () => {
       child.stdin.end('\x03');
       expect(await exited).toBe(130);
       expect(output).toContain('CANCELLED');
-      expect(requests).toHaveLength(requestInProgress ? 1 : 0);
-      await expect(readFile(join(cwd, '.agent', 'conversations', 'terminal-cancel.json'), 'utf8'))
-        .rejects.toMatchObject({ code: 'ENOENT' });
+      expect(requests).toHaveLength(requestInProgress ? 2 : 1);
+      expect(await readFile(historyPath, 'utf8')).toBe(previous);
     } finally {
       clearTimeout(timer);
       child.stdin.end();

@@ -41,6 +41,8 @@ pnpm exec node dist/cli.js --workspace ./demo --conversation-id "$CONVERSATION_I
 
 将 `CONVERSATION_ID` 设置为日志中的实际 ID。每个成功轮次保存用户消息、工具往返和 Agent 回复；失败或未完成的轮次不保存。普通单轮错误会显示原因并返回输入循环，已有成功历史保留。历史文件按 conversation ID 区分并原子更新，目录权限设为仅当前用户可访问。会话历史不随 `--workspace` 切换位置。
 
+公共运行入口 `runAgent` 在成功时返回 `effectiveHistory`，包含输入历史、本轮用户消息及完整响应，CLI 直接使用它原子保存及继续下一轮。原有 `responseMessages` 仍仅表示本轮响应，其他结果字段保持可用。失败或取消不交付新的成功历史，CLI 内存和磁盘都保留上次成功状态；当前尚不生成对话摘要，也不新增历史副本或归档。
+
 Ctrl+C 会取消当前请求并退出，退出码为 130；等待输入时也可直接按 Ctrl+C 退出。失败或取消不会回滚此前已经完成的文件写入。
 
 不需要构建的开发入口：
