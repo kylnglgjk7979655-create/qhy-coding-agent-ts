@@ -298,6 +298,8 @@ export async function runAgent(
         '如公布了 mcp_ 前缀工具，可调用对应远程 MCP 服务；这些工具默认需要独立审批，调用可能产生远端副作用。',
     ].join('\n');
     const tools = registry.tools();
+    let preparedHistory: ModelMessage[] = [];
+    let preparedResponseCount = 0;
     const agent = new ToolLoopAgent({
       model,
       instructions,
@@ -312,13 +314,18 @@ export async function runAgent(
       },
       // Avoid automatic retries hiding auth failures or extending the deadline.
       maxRetries: 0,
-      ...(options.smokeTool ? {
-        prepareStep: ({ stepNumber }: { stepNumber: number }) => ({
-          toolChoice: stepNumber === 0
+      prepareStep: async ({ stepNumber, messages, responseMessages }) => {
+        signal.throwIfAborted();
+        preparedHistory = await prepareConversation(config, instructions, messages, tools, signal);
+        preparedResponseCount = responseMessages.length;
+        signal.throwIfAborted();
+        return {
+          messages: preparedHistory,
+          ...(options.smokeTool ? { toolChoice: stepNumber === 0
             ? { type: 'tool' as const, toolName: 'read_file' as const }
-            : 'none' as const,
-        }),
-      } : {}),
+            : 'none' as const } : {}),
+        };
+      },
     });
 
     signal.throwIfAborted();
@@ -331,10 +338,8 @@ export async function runAgent(
           : prompt,
       },
     ];
-    const messages = await prepareConversation(config, instructions, inputMessages, tools, signal);
-    signal.throwIfAborted();
     const result = await agent.stream({
-      messages,
+      messages: inputMessages,
       abortSignal: signal,
       experimental_transform: () => new TransformStream({
         transform(part, controller) {
@@ -403,7 +408,8 @@ export async function runAgent(
     return {
       text,
       responseMessages,
-      effectiveHistory: [...messages, ...responseMessages],
+      // 最后一次请求的历史已包含此前工具往返，只追加该请求之后的新响应。
+      effectiveHistory: [...preparedHistory, ...responseMessages.slice(preparedResponseCount)],
       steps: steps.length,
       toolCalls: steps.reduce((count, step) => count + step.toolCalls.length, 0),
       finishReason,

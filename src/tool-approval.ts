@@ -1,9 +1,10 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { generateText } from 'ai';
 import type { ResolvedConfig } from './config.js';
-import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS } from './config.js';
+import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS } from './config.js';
 import { AgentError } from './errors.js';
 import type { ToolApprovalRequest } from './tool-registry.js';
+import { assertInputBudget } from './context-summary.js';
 
 export type ApprovalControl = (call: ToolApprovalRequest, signal: AbortSignal) => Promise<'approve' | 'deny'>;
 
@@ -61,10 +62,14 @@ export async function approveToolCall(
         apiKey: config.approvalApiKey ?? config.apiKey,
         ...(baseURL === undefined ? {} : { baseURL }),
       });
+      const prompt = JSON.stringify({ toolName: call.toolName, input: call.input });
+      assertInputBudget(config, reviewInstructions, [{ role: 'user', content: prompt }]);
+      reviewSignal.throwIfAborted();
       const result = await generateText({
         model: provider.chat(review?.model ?? config.model),
         system: reviewInstructions,
-        prompt: JSON.stringify({ toolName: call.toolName, input: call.input }),
+        prompt,
+        maxOutputTokens: (config.context ?? DEFAULT_CONTEXT).answerReserveTokens,
         maxRetries: 0,
         abortSignal: reviewSignal,
       });
@@ -74,8 +79,9 @@ export async function approveToolCall(
     reviewSignal.throwIfAborted();
     if (decision !== 'approve' && decision !== 'deny') throw new Error('Invalid decision');
     return decision === 'approve';
-  } catch {
+  } catch (error) {
     signal.throwIfAborted();
+    if (error instanceof AgentError && error.code === 'CONTEXT_ERROR') throw error;
     throw new AgentError('APPROVAL_ERROR', timeout.aborted
       ? '工具审批超时，已停止本轮；此前已完成的操作不会回滚。'
       : '工具审批不可用或响应无效，已停止本轮；此前已完成的操作不会回滚。');
