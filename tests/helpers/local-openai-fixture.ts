@@ -22,20 +22,25 @@ export type FixtureResponse = { content: string }
 export async function startLocalOpenAIModel(
   respond: (request: FixtureRequest, index: number) => FixtureResponse | undefined | Promise<FixtureResponse | undefined>,
   review?: (request: FixtureRequest, index: number) => FixtureResponse | undefined | Promise<FixtureResponse | undefined>,
-): Promise<{ baseURL: string; requests: FixtureRequest[]; approvalRequests: FixtureRequest[]; close: () => Promise<void> }> {
+  summarize?: (request: FixtureRequest, index: number) => FixtureResponse | undefined | Promise<FixtureResponse | undefined>,
+): Promise<{ baseURL: string; requests: FixtureRequest[]; approvalRequests: FixtureRequest[]; summaryRequests: FixtureRequest[]; close: () => Promise<void> }> {
   const requests: FixtureRequest[] = [];
   const approvalRequests: FixtureRequest[] = [];
+  const summaryRequests: FixtureRequest[] = [];
   const server: Server = createServer((req, res) => {
     void (async () => {
       const requestChunks: Buffer[] = [];
       for await (const chunk of req) requestChunks.push(Buffer.from(chunk as Uint8Array));
       const request = JSON.parse(Buffer.concat(requestChunks).toString()) as FixtureRequest;
       const isReview = request.messages.some(({ role, content }) => role === 'system' && content.includes('[工具调用审批]'));
-      const recorded = isReview ? approvalRequests : requests;
+      const isSummary = request.messages.some(({ role, content }) => role === 'system' && content.includes('[对话摘要生成]'));
+      const recorded = isReview ? approvalRequests : isSummary ? summaryRequests : requests;
       recorded.push(request);
       const reply: FixtureResponse | undefined = isReview
         ? (review ? await review(request, recorded.length) : { content: 'approve' })
-        : await respond(request, recorded.length);
+        : isSummary
+          ? (summarize ? await summarize(request, recorded.length) : { content: '目标：继续任务；决策：沿用已确认方案；约束：保持工具策略；关键结果：此前操作已完成；未完成事项：继续处理。' })
+          : await respond(request, recorded.length);
       if (reply === undefined) return;
       if ('status' in reply && typeof reply.status === 'number' && 'content' in reply) {
         res.writeHead(reply.status, { 'Content-Type': 'application/json' });
@@ -77,6 +82,7 @@ export async function startLocalOpenAIModel(
     baseURL: `http://127.0.0.1:${address.port}/v1`,
     requests,
     approvalRequests,
+    summaryRequests,
     close: async () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

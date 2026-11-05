@@ -5,6 +5,23 @@ import { AgentError } from './errors.js';
 
 export const DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS = 300_000;
 
+const contextSchema = z.strictObject({
+  capacityTokens: z.number().int().min(1).max(10_000_000).default(128_000),
+  answerReserveTokens: z.number().int().min(1).max(10_000_000).default(8192),
+  triggerRatio: z.number().gt(0).lte(1).default(0.8),
+  targetRatio: z.number().gt(0).lt(1).default(0.5),
+  keepRecentTurns: z.number().int().min(0).max(100).default(2),
+}).superRefine((context, ctx) => {
+  if (context.answerReserveTokens >= context.capacityTokens) {
+    ctx.addIssue({ code: 'custom', path: ['answerReserveTokens'], message: '回答预留必须小于上下文容量' });
+  }
+  if (context.targetRatio >= context.triggerRatio) {
+    ctx.addIssue({ code: 'custom', path: ['targetRatio'], message: '压缩目标必须小于触发阈值' });
+  }
+});
+
+export const DEFAULT_CONTEXT = contextSchema.parse({});
+
 const baseURLSchema = z.url().refine((value) => {
   const url = new URL(value);
   return ['https:', 'http:'].includes(url.protocol)
@@ -39,6 +56,7 @@ export const configSchema = z.strictObject({
   workspace: z.string().trim().min(1).default('./demo'),
   timeoutMs: z.number().int().min(1).max(3_600_000).default(60_000),
   maxSteps: z.number().int().min(1).max(100).default(20),
+  context: contextSchema.optional(),
   mcp: z.strictObject({
     servers: z.array(mcpServerSchema).refine((servers) => new Set(servers.map(({ name }) => name)).size === servers.length, 'MCP 服务名称重复'),
     connectTimeoutMs: operationTimeoutSchema.default(10_000),

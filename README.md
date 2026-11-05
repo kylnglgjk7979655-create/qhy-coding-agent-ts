@@ -41,7 +41,7 @@ pnpm exec node dist/cli.js --workspace ./demo --conversation-id "$CONVERSATION_I
 
 将 `CONVERSATION_ID` 设置为日志中的实际 ID。每个成功轮次保存用户消息、工具往返和 Agent 回复；失败或未完成的轮次不保存。普通单轮错误会显示原因并返回输入循环，已有成功历史保留。历史文件按 conversation ID 区分并原子更新，目录权限设为仅当前用户可访问。会话历史不随 `--workspace` 切换位置。
 
-公共运行入口 `runAgent` 在成功时返回 `effectiveHistory`，包含输入历史、本轮用户消息及完整响应，CLI 直接使用它原子保存及继续下一轮。原有 `responseMessages` 仍仅表示本轮响应，其他结果字段保持可用。失败或取消不交付新的成功历史，CLI 内存和磁盘都保留上次成功状态；当前尚不生成对话摘要，也不新增历史副本或归档。
+公共运行入口 `runAgent` 在成功时返回 `effectiveHistory`，包含本轮实际使用的历史、本轮用户消息及完整响应，CLI 直接使用它原子保存及继续下一轮。较早历史可能已被对话摘要替换，保存时不会重新拼接原文。原有 `responseMessages` 仍仅表示本轮响应，其他结果字段保持可用。失败或取消不交付新的成功历史，CLI 内存和磁盘都保留上次成功状态。
 
 Ctrl+C 会取消当前请求并退出，退出码为 130；等待输入时也可直接按 Ctrl+C 退出。失败或取消不会回滚此前已经完成的文件写入。
 
@@ -85,6 +85,34 @@ pnpm dev --workspace ./demo
 自定义 `baseURL` 的服务必须兼容 OpenAI Chat Completions 及函数调用；仅能返回文本不足以认定工具兼容。项目配置文件不存在时，内置默认值使用 OpenAI 地址、`gpt-4.1-mini-2025-04-14` 和 `OPENAI_API_KEY`；正常启动请保留本项目的方舟配置文件。
 
 2026-11-03 的基础版本曾通过方舟真实模型和 `runtimeInfo` 工具验收，详见 [历史验收记录](docs/verification.md)。当前交互式对话与文件工具的验收项目见 [QA 清单](.scratch/interactive-cli-file-tools/qa-checklist.md)。
+
+## 长对话与历史替换
+
+每轮首次主模型请求前，程序估算内置系统提示、完整消息和本轮实际工具定义（包括 MCP 名称、描述及参数 schema）的输入占用。估算使用序列化载荷的 UTF-8 字节数除以三并增加消息封装开销，不等于模型服务的实际 token 用量。请按所选模型设置容量与回答预留；预留同时作为主模型及摘要请求的输出上限。
+
+可在运行配置中加入以下对象，省略时使用相同默认值：
+
+```json
+{
+  "context": {
+    "capacityTokens": 128000,
+    "answerReserveTokens": 8192,
+    "triggerRatio": 0.8,
+    "targetRatio": 0.5,
+    "keepRecentTurns": 2
+  }
+}
+```
+
+可用输入预算为 `capacityTokens - answerReserveTokens`。达到预算的 80% 时，将较早历史送入独立摘要请求；默认复用主模型、地址和凭据，不提供工具执行能力。摘要提示要求保留目标、已确认决策、约束、关键操作结果和未完成事项，并如实记录已有副作用。最近两轮完整对话与当前用户消息保留，工具调用与结果不拆开；`keepRecentTurns: 0` 表示只完整保留当前轮次。
+
+`capacityTokens` 和 `answerReserveTokens` 接受 1–10,000,000 的整数，预留必须小于容量；`triggerRatio` 大于零且不超过一，`targetRatio` 大于零且小于触发阈值；保留轮数接受 0–100 的整数。对象拒绝未知字段。触发后如有可替换历史，摘要加必要内容须低于目标预算；无法满足、摘要为空、摘要异常或生成失败时，以 `CONTEXT_ERROR` 通知并停止本轮，不循环摘要或删除保留消息。如果没有较早历史可替换，必要内容仍在可用输入预算内则直接使用，超限则停止。
+
+摘要作为 `assistant` 历史资料进入后续请求，不改变内置系统提示或工具策略。产品不会自动加载工作区的开发用 `AGENTS.md`，也不发现其他项目规则文件。旧格式历史无需迁移，未触发压缩时保留原有内容，达到阈值后按同样规则处理。
+
+摘要校验成功后替换本轮内存有效历史，仅在本轮成功后原子替换 `.agent/conversations/<conversation ID>.json`，文件权限仍为 `0600`。不新增原文归档、独立摘要文件或其他历史状态；重启后直接加载摘要及保留轮次。**成功保存压缩历史后，被替换原文无法从产品历史完整恢复。** 摘要失败或摘要后本轮失败、取消时，磁盘和可续聊内存都保留上次成功历史，已经发生的文件、宿主或远端副作用不会回滚。
+
+摘要生成占用整轮剩余 `timeoutMs`，接收同一取消信号，不自动重试。当前切片只在每轮首次主模型请求前检查；SDK 同轮后续步骤及审查、摘要请求自身的输入预算检查由后续子任务交付。运行 `pnpm build && pnpm exec vitest run tests/context-summary.test.ts` 可用本地模型夹具验证摘要、失败保护和跨进程续聊，无需真实服务或凭据；自动测试不能代替最终人工 QA。
 
 ## 文件工具与工作区边界
 
@@ -272,6 +300,7 @@ pnpm exec node dist/cli.js --workspace ./demo 2> run.jsonl
 | 5 | `PROVIDER_ERROR` | 网络、配额、HTTP 错误，或回答为空/被截断 |
 | 6 | `TOOL_COMPATIBILITY_ERROR` | 工具冒烟未通过 |
 | 7 | `STEP_LIMIT` | 步数用尽，尚未完成回答 |
+| 9 | `CONTEXT_ERROR` | 摘要失败、响应无效，或必要上下文无法满足预算与压缩目标 |
 | 130 | `CANCELLED` | 用户取消 |
 
 `pnpm test` 使用本地 HTTP fixture 运行真正的 SDK/provider 和编译后的 CLI，覆盖多轮对话、会话续接、成功保存、失败恢复、文件读写、越界拒绝、缺失父目录、冒烟成功、步数上限、超时和取消，并检查配置校验。这些测试使用假凭据，不需要真实 API key。

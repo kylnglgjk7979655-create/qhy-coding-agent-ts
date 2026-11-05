@@ -13,6 +13,8 @@ import type { ApprovalControl } from './tool-approval.js';
 import { ToolRegistry } from './tool-registry.js';
 import { prepareBashInput, runHostBash } from './host-bash.js';
 import { registerRemoteMCP } from './remote-mcp.js';
+import { DEFAULT_CONTEXT } from './config.js';
+import { prepareConversation } from './context-summary.js';
 import type { ToolExecutionEvent } from './tool-registry.js';
 
 export type { ApprovalControl } from './tool-approval.js';
@@ -287,17 +289,20 @@ export async function runAgent(
         },
       },
     });
-    const agent = new ToolLoopAgent({
-      model,
-      instructions: [
+    const instructions = [
         '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
         '可使用 read_file 读取工作区文件，使用 write_file 完整替换或创建工作区文件；文件访问仅限配置的工作区。',
         'write_file 和 Bash 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
         'Bash 可运行命令和项目测试，每次使用独立 shell，继承 CLI 环境并以宿主当前用户权限执行；cwd 只约束启动位置，不提供文件系统或网络隔离。',
         'runtimeInfo 可获取工作区路径和本次探针。',
         '如公布了 mcp_ 前缀工具，可调用对应远程 MCP 服务；这些工具默认需要独立审批，调用可能产生远端副作用。',
-      ].join('\n'),
-      tools: registry.tools(),
+    ].join('\n');
+    const tools = registry.tools();
+    const agent = new ToolLoopAgent({
+      model,
+      instructions,
+      maxOutputTokens: (config.context ?? DEFAULT_CONTEXT).answerReserveTokens,
+      tools,
       toolCallConcurrency: 1,
       stopWhen: isStepCount(config.maxSteps),
       onError: ({ error }) => {
@@ -317,7 +322,7 @@ export async function runAgent(
     });
 
     signal.throwIfAborted();
-    const messages: ModelMessage[] = [
+    const inputMessages: ModelMessage[] = [
       ...(options.smokeTool ? [] : options.history ?? []),
       {
         role: 'user',
@@ -326,6 +331,8 @@ export async function runAgent(
           : prompt,
       },
     ];
+    const messages = await prepareConversation(config, instructions, inputMessages, tools, signal);
+    signal.throwIfAborted();
     const result = await agent.stream({
       messages,
       abortSignal: signal,
