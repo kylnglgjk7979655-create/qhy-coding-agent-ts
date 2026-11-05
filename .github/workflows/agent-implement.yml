@@ -1,4 +1,4 @@
-name: Codex Implement Issue
+name: Codex Auth Diagnostic (temporary)
 on:
   issues:
     types: [labeled]
@@ -118,7 +118,8 @@ jobs:
           CODEX_MODEL: ${{ vars.CODEX_MODEL }}
           ISSUE_CONTEXT_PATH: ${{ runner.temp }}/codex-context/issue.json
           AGENT_OUTPUT_DIR: ${{ runner.temp }}/codex-result
-        run: pnpm agent:implement
+        run: |
+          pnpm exec codex exec --json --sandbox read-only -m "${CODEX_MODEL:-gpt-5.4}" 'Do not run tools. Reply only OK.' 
       - name: 用 GitHub 公钥加密刷新后的登录态
         id: seal
         if: always() && steps.restore.outcome == 'success'
@@ -136,29 +137,6 @@ jobs:
       - name: 清理临时登录文件
         if: always()
         run: rm -rf "$RUNNER_TEMP/codex-home"
-      - name: 独立验证修改
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm check
-          pnpm demo:test
-      - name: 导出补丁
-        env:
-          BASE_SHA: ${{ needs.prepare.outputs.sha }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/codex-result"
-          git add --all
-          git diff --cached --check
-          git diff --binary --full-index "$BASE_SHA" > "$RUNNER_TEMP/codex-result/changes.patch"
-          if [ ! -s "$RUNNER_TEMP/codex-result/changes.patch" ]; then
-            echo '::error::Codex 没有产生代码修改；请检查日志和需求。'
-            exit 1
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: codex-result
-          path: ${{ runner.temp }}/codex-result/
-          retention-days: 3
-          if-no-files-found: error
 
   persist-auth:
     needs: [prepare, generate]
@@ -183,6 +161,7 @@ jobs:
           script: await require('./.github/scripts/subscription.cjs').persist({ github, context })
 
   publish:
+    if: false
     needs: [prepare, generate, persist-auth]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -230,11 +209,11 @@ jobs:
           script: |
             const issue_number = Number(process.env.ISSUE_NUMBER);
             const args = { ...context.repo, issue_number };
-            const ok = process.env.PUBLISH_RESULT === 'success';
+            const ok = process.env.GENERATE_RESULT === 'success' && process.env.AUTH_RESULT === 'success';
             if (!ok) await github.rest.issues.addLabels({ ...args, labels: ['agent:blocked'] });
             const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = ok
-              ? `Codex 已创建草稿 PR：${process.env.PR_URL}\n\n运行记录：${run}。请人工审查并决定合并。`
+              ? `Codex 订阅认证诊断成功：仅回复 OK，未修改代码。\n\n运行记录：${run}。请人工审查并决定合并。`
               : `Codex 运行未完成。生成：${process.env.GENERATE_RESULT}；登录态保存：${process.env.AUTH_RESULT}；发布：${process.env.PUBLISH_RESULT}。\n\n日志：${run}\n\n处理原因后，重新添加 ready-for-agent 或 agent:implement 标签即可重试。`;
             try {
               await github.rest.issues.createComment({ ...args, body });
