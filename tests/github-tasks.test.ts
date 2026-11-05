@@ -121,7 +121,7 @@ describe('依赖队列与自动接续', () => {
 describe('PRD 拆分故障恢复', () => {
   it('审批后创建成功但挂接失败，重试复用原计划及原 Issue，并补齐依赖', async () => {
     const plan = validPlan();
-    const comments = [{ user: { login: 'github-actions[bot]' }, body: `<!-- codex-prd-plan -->${JSON.stringify(plan)}` }];
+    const comments = [{ id: 10, user: { login: 'github-actions[bot]' }, body: `<!-- codex-prd-plan -->${JSON.stringify(plan)}`, created_at: '2026-11-05T01:00:00Z', updated_at: '2026-11-05T01:00:00Z' }];
     const all: Array<{ id: number; number: number; body: string }> = [];
     const current: typeof all = [];
     const create = vi.fn(async (args) => { const issue = { id: 100 + all.length, number: 50 + all.length, body: args.body }; all.push(issue); return { data: issue }; });
@@ -130,8 +130,8 @@ describe('PRD 拆分故障恢复', () => {
     });
     const github = { rest: { issues: { listComments: 'comments', listForRepo: 'all', create, createComment: vi.fn() } }, request,
       paginate: vi.fn(async (route) => route === 'comments' ? [...comments] : route === 'all' ? [...all] : route.includes('dependencies') ? [] : [...current]) };
-    await expect(publishSlices(github, context, { number: 42 }, plan)).rejects.toThrow('network');
-    await publishSlices(github, context, { number: 42 }, { ...plan, summary: '重试产生的其他计划不会替换已批准计划' });
+    await expect(publishSlices(github, context, { number: 42 }, comments[0])).rejects.toThrow('network');
+    await publishSlices(github, context, { number: 42 }, comments[0]);
     expect(create).toHaveBeenCalledTimes(2); expect(current).toHaveLength(2);
     expect(create.mock.calls[0]?.[0].labels).toEqual(['ready-for-agent']);
     expect(create.mock.calls[1]?.[0].labels).toEqual(['ready-for-human']);
@@ -190,10 +190,13 @@ describe('Issue 与 PRD 自动路由', () => {
     const ordinary = await issueFixture([]); await prepare({ github: ordinary.github, context, core: ordinary.c });
     const single = JSON.parse(await readFile(join(ordinary.dir, 'codex-context/task.json'), 'utf8'));
     expect(single.mode).toBe('implement'); expect(single.branch).toMatch(/^codex\/issue-42-123-/);
-    const f = await issueFixture([{ number: 50, state: 'closed' }, { number: 51, state: 'open' }, { number: 52, state: 'open' }]);
+    const children = [{ number: 50, state: 'closed' }, { number: 51, state: 'open' }, { number: 52, state: 'open' }];
+    const f = await issueFixture(children);
+    f.github.paginate.mockImplementation(async (route, args) => route === 'comments' && args.issue_number === 51 ? [{ id: 100, user: { login: 'maintainer' }, body: '评论补充的验收条件' }] : route.includes('sub_issues') && args.issue_number === 42 ? children : []);
     await prepare({ github: f.github, context, core: f.c });
     const task = JSON.parse(await readFile(join(f.dir, 'codex-context/task.json'), 'utf8'));
     expect(task.mode).toBe('implement-prd'); expect(task.branch).toBe('codex/prd-42'); expect(task.child.number).toBe(51);
+    expect(task.child.comments[0].body).toBe('评论补充的验收条件');
   });
   it('拒绝直接启动子 Issue 或嵌套 PRD，不把它当普通任务', async () => {
     const child = await issueFixture([]); child.github.graphql.mockResolvedValue({ repository: { issue: { parent: { number: 1 } } } });
@@ -244,5 +247,17 @@ describe('人工 QA 的父规格上下文', () => {
     await prepare({ github, context, core: c });
     const task = JSON.parse(await readFile(join(dir, 'codex-context/task.json'), 'utf8'));
     expect(task.linkedIssues[0].number).toBe(42); expect(task.linkedIssues[0].children).toHaveLength(2);
+  });
+});
+
+
+describe('审批快照不可替换', () => {
+  it.each(['body', 'updated_at'])('两次读取间 %s 变化时，不发布新计划', async (field) => {
+    const original = { id: 10, user: { login: 'github-actions[bot]' }, body: `<!-- codex-prd-plan -->${JSON.stringify(validPlan())}`, created_at: '2026-11-05T01:00:00Z', updated_at: '2026-11-05T01:00:00Z' };
+    const latest = { ...original, [field]: field === 'body' ? `<!-- codex-prd-plan -->${JSON.stringify({ ...validPlan(), summary: '未审批的新计划' })}` : '2026-11-05T02:00:00Z' };
+    const create = vi.fn();
+    const github = { rest: { issues: { listComments: 'comments', create } }, paginate: vi.fn().mockImplementation(async (route) => route === 'comments' ? [latest] : []) };
+    await expect(publishSlices(github, context, { number: 42 }, original)).rejects.toThrow('快照已变化');
+    expect(create).not.toHaveBeenCalled();
   });
 });

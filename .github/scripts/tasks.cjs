@@ -1,6 +1,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const { issueNumber, relatedPr, setup } = require('./agent.cjs');
 const { MODES, MUTATING, validateResult, reviewPayload } = require('./task-protocol.cjs');
 const { labelNames, isHumanTask, isCompleted, isAgentOpen, selectReadyChild, parentReference } = require('./ticket-policy.cjs');
@@ -128,7 +129,9 @@ async function prepare({ github, context, core }) {
           if ((await subIssues(github, context.repo, child.number)).length) throw new Error('不支持嵌套子 Issue，请先展平 PRD。');
         }
         const dependencies = new Map(await Promise.all(task.children.filter(isAgentOpen).map(async (child) => [child.number, await blockers(github, context.repo, child.number)])));
-        task.child = selectReadyChild(task.children, dependencies);
+        const candidate = selectReadyChild(task.children, dependencies);
+        task.child = candidate ? await issueContext(github, context.repo, candidate.number) : undefined;
+        if (task.child && !isAgentOpen(task.child)) throw new Error('选中的子任务状态或执行角色已变化，请重试。');
         if (!task.child) {
           if (task.children.some(isAgentOpen)) throw new Error('开放实现任务仍有阻塞依赖，停止推进。');
           core.notice('实现子任务已完成；人工 QA 保持开放，等待人验收。'); return;
@@ -184,6 +187,28 @@ async function exportPatch() {
   await fs.writeFile(temp('codex-result/changes.patch'), patch);
   await fs.writeFile(temp('codex-result/result.json'), JSON.stringify(result));
 }
+async function prepareMerge() {
+  const task = await readTask();
+  if (task.mode !== 'update-branch') throw new Error('只有更新分支任务可以准备合并。');
+  const work = process.env.AGENT_WORKSPACE;
+  if (git(work, 'rev-parse', 'HEAD') !== task.sha) throw new Error('合并起点与固定 SHA 不一致。');
+  await fs.mkdir(temp('codex-result'), { recursive: true });
+  await fs.rm(temp('codex-result/result.json'), { force: true });
+  let upToDate = false;
+  try { git(work, 'merge-base', '--is-ancestor', task.baseSha, task.sha); upToDate = true; }
+  catch (error) { if (error.status !== 1) throw error; }
+  if (!upToDate) {
+    try { git(work, 'merge', '--no-commit', '--no-ff', task.baseSha); }
+    catch (error) {
+      if (!git(work, 'diff', '--name-only', '--diff-filter=U')) throw error;
+      return { requiresAgent: true };
+    }
+  }
+  const summary = upToDate ? 'PR 分支已包含基准提交，无需合并；本轮未恢复订阅登录或调用模型。'
+    : '已干净合并基准提交；本轮未恢复订阅登录或调用模型。验证通过后由发布端创建 merge commit。';
+  await fs.writeFile(temp('codex-result/result.json'), JSON.stringify({ summary }));
+  return { requiresAgent: false };
+}
 const PLAN_MARKER = '<!-- codex-prd-plan -->';
 function parsePlan(comment) {
   if (comment.user?.login !== 'github-actions[bot]' || !comment.body?.startsWith(PLAN_MARKER)) return undefined;
@@ -203,25 +228,32 @@ async function saveDraftPlan(github, context, task, result) {
   await github.rest.issues.createComment({ ...context.repo, issue_number: task.number,
     body: `${PLAN_MARKER}\n\x60\x60\x60json\n${JSON.stringify(result, null, 2)}\n\x60\x60\x60\n\n拆票计划待审批。请检查切片、依赖和最终人工 QA；确认后添加 agent:publish-tickets，再给父需求添加 agent:implement 才开始实现。` });
 }
-async function publishSlices(github, context, task, proposedResult) {
+async function publishSlices(github, context, task, approvedSnapshot) {
   const args = { ...context.repo, issue_number: task.number };
   const current = await subIssues(github, context.repo, task.number);
   if (current.some((child) => !(child.body ?? '').includes(`<!-- codex-prd:${task.number}:slice:`))) throw new Error('发布期间新增了其他子 Issue，停止拆分。');
   const comment = await savedPlan(github, context.repo, task.number);
-  const result = comment ? parsePlan(comment) : validateResult('to-issues', proposedResult);
   if (!comment) throw new Error('缺少已保存的计划，请先生成并审批。');
+  if (!approvedSnapshot || !Number.isSafeInteger(approvedSnapshot.id) || approvedSnapshot.id < 1
+    || comment.id !== approvedSnapshot.id || comment.body !== approvedSnapshot.body
+    || comment.updated_at !== approvedSnapshot.updated_at || comment.created_at !== approvedSnapshot.created_at) {
+    throw new Error('审批后计划快照已变化，请重新检查并确认。');
+  }
+  const result = parsePlan(approvedSnapshot);
+  const planStamp = `<!-- codex-plan:${createHash('sha256').update(JSON.stringify(result)).digest('hex')} -->`;
   const all = await github.paginate(github.rest.issues.listForRepo, { ...context.repo, state: 'all', per_page: 100 });
   const created = [];
   for (let i = 0; i < result.slices.length; i++) {
     const slice = result.slices[i];
     const marker = `<!-- codex-prd:${task.number}:slice:${i + 1} -->`;
     const human = slice.execution === 'human-qa';
-    const body = `${marker}\n\n**Execution:** ${human ? 'Human QA (HITL)' : 'Agent'}\n\n${slice.whatToBuild}\n\n## 验收条件\n\n${slice.acceptanceCriteria.map((c) => `- [ ] ${c}`).join('\n')}\n\nPart of #${task.number}`;
+    const body = `${marker}\n${planStamp}\n\n**Execution:** ${human ? 'Human QA (HITL)' : 'Agent'}\n\n${slice.whatToBuild}\n\n## 验收条件\n\n${slice.acceptanceCriteria.map((c) => `- [ ] ${c}`).join('\n')}\n\nPart of #${task.number}`;
     let issue = all.find((candidate) => !candidate.pull_request && candidate.body?.includes(marker));
     if (!issue) {
       ({ data: issue } = await github.rest.issues.create({ ...context.repo, title: slice.title, body, labels: [human ? 'ready-for-human' : 'ready-for-agent'] }));
       all.push(issue);
     }
+    if (!issue.body?.includes(planStamp)) throw new Error('已有工单属于另一版计划，请恢复原计划或人工整理后再发布。');
     if (!current.some((child) => child.id === issue.id)) await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', { ...args, sub_issue_id: issue.id });
     created.push(issue);
   }
@@ -247,7 +279,7 @@ async function publishApprovedSlices({ github, context, core }) {
   const approvalTime = Date.parse(run.created_at);
   if (!Number.isFinite(planTime) || !Number.isFinite(approvalTime) || planTime > approvalTime) throw new Error('计划生成于审批触发之后，请检查后重新确认。');
   await setup({ github, context });
-  await publishSlices(github, context, { number }, parsePlan(comment));
+  await publishSlices(github, context, { number }, comment);
   await removeLabel(github, { ...context.repo, issue_number: number }, 'agent:publish-tickets');
   core.notice('已按批准计划发布实现子任务和最终人工 QA。');
 }
@@ -347,9 +379,9 @@ async function publish({ github, context, core, cwd = process.cwd() }) {
     const children = await subIssues(github, context.repo, task.number);
     if (!children.some((child) => child.number === task.child.number && isAgentOpen(child))) throw new Error('子任务已从 PRD 移除，停止推进。');
     await github.rest.issues.createComment({ ...context.repo, issue_number: task.child.number, body: `已在 ${commit} 完成并通过验证；属于 PRD #${task.number}，等待 ${pr.html_url} 合并。\n\n${result.summary}` });
-    await github.rest.issues.update({ ...context.repo, issue_number: task.child.number, state: 'closed', state_reason: 'completed' });
     const remaining = children.filter((child) => isAgentOpen(child) && child.number !== task.child.number);
     await github.rest.pulls.update({ ...context.repo, pull_number: pr.number, body: prBody(task, result, children) });
+    await github.rest.issues.update({ ...context.repo, issue_number: task.child.number, state: 'closed', state_reason: 'completed' });
     core.setOutput('next', remaining.length ? 'implement-prd' : 'review');
   } else if (task.mode === 'implement') core.setOutput('next', 'review');
 }
@@ -400,8 +432,13 @@ async function promote({ github, context, core }) {
     break;
   }
 }
-module.exports = { authorize, prepare, publish, finish, promote, exportPatch, canPromote, assertPr, prFeedback, publishSlices, publishApprovedSlices, saveDraftPlan, parsePlan, prBody };
+module.exports = { authorize, prepare, publish, finish, promote, exportPatch, canPromote, assertPr, prFeedback, publishSlices, publishApprovedSlices, saveDraftPlan, parsePlan, prBody, prepareMerge };
 if (require.main === module) {
-  if (process.argv[2] !== 'export') throw new Error('只支持 export。');
-  exportPatch().catch((error) => { console.error(error); process.exitCode = 1; });
+  const command = process.argv[2];
+  const action = command === 'export' ? exportPatch : command === 'merge' ? async () => {
+    const result = await prepareMerge();
+    if (process.env.GITHUB_OUTPUT) await fs.appendFile(process.env.GITHUB_OUTPUT, `requires_agent=${result.requiresAgent}\n`);
+  } : undefined;
+  if (!action) throw new Error('只支持 export 或 merge。');
+  action().catch((error) => { console.error(error); process.exitCode = 1; });
 }
