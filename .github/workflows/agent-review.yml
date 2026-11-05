@@ -1,0 +1,24 @@
+name: Codex Review PR
+on:
+  # 仅从默认分支加载可信控制脚本；prepare 拒绝 fork，再按 SHA 创建工作区。
+  pull_request_target:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 本仓库的开放 PR 编号
+        required: true
+        type: string
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: write
+jobs:
+  run:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:review'
+    uses: ./.github/workflows/codex-task.yml
+    with:
+      mode: review
+      number: ${{ inputs.pr_number || format('{0}', github.event.pull_request.number) }}
+    secrets: inherit

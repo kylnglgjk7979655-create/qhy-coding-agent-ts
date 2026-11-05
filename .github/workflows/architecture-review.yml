@@ -1,0 +1,17 @@
+name: Codex Architecture Review
+on:
+  schedule:
+    - cron: '0 9 * * 1-5'
+  workflow_dispatch:
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: write
+jobs:
+  run:
+    uses: ./.github/workflows/codex-task.yml
+    with:
+      mode: architecture
+      number: '0'
+    secrets: inherit

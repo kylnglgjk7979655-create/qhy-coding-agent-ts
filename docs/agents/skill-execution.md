@@ -1,0 +1,23 @@
+# 仓库 skill 的项目适配
+
+`.agents/skills/UPSTREAM.json` 固定来源和版本；上游原文完整保存。本文件是执行适配，优先于上游对 tracker、工具名、交互和提交方式的环境假设。领域词汇仍来自 GLOSSARY.md 和相关 ADR。
+
+## 规划与执行
+
+- 本地使用 `.scratch/`，布局见 [issue-tracker.md](issue-tracker.md)。云端以父 Issue、子 Issue、评论和原生依赖为准。
+- `ready-for-agent` 表示需求已准备，不触发实现；`agent:implement` 或显式手动运行才授权执行。人工任务使用 `ready-for-human`，即使被误加执行或排队标签，也不交给模型。
+- to-spec 从已有讨论产生规格，保留准备状态，先确定公共测试入口。大型需求交给 to-tickets-with-qa 拆分，父规格在拆分及检查前不会自动执行。
+- to-tickets-with-qa 始终生成最后一个 Human QA 任务，依赖全部实现任务。云端 `agent:to-issues` 只输出计划评论；人检查具体计划后添加 `agent:publish-tickets`，才创建子 Issue 及原生阻塞关系。发布过程失败后重新确认可恢复，不重复创建。
+- 发布完成后，人给父规格添加 `agent:implement`。每轮从依赖已完成的 Agent 子任务中选择一张，列表顺序只作为同优先级排序。人工 QA 保持开放，由人执行并记录版本、环境、结果和缺陷；不能把代码检查或审查结果当作 QA 已通过。
+- 有人工 QA 的 PR 以 `Refs #父规格` 关联，父规格由人确认关闭，合并不会提前关闭它。没有人工 QA 的普通 Issue 保持 `Closes #编号`。
+
+## 云端执行
+
+- 入口显式加载控制脚本同版本的 skill 正文，提供其引用文件绝对路径。工作区即使来自旧 PR，也不会悄悄改用 PR 分支中未经审查的 skill。源码、规范和需求仍从本轮工作区与上下文读取。
+- 当前任务已有明确需求和测试入口时直接执行；需要人决定的歧义在本轮报告阻塞并结束。上游对 Skill/Agent 工具的称呼按实际能力适配，不能声称执行了不可用工具。
+- 实现使用 implement、tdd；真正的 bug 按 diagnosing-bugs 建反馈循环。参考文档按指针读取。单个测试应覆盖公共行为，完整验证由外层 job 执行。
+- code-review 的 Standards、Spec 两个视角由外层用新会话依次运行，保持只读和上下文独立；随后才运行修复阶段。串行调用共用认证，三阶段合计受45分钟上限控制。缺少 spec 时明确报告，不伪造审查结论。
+- Agent 保留工作区修改与结构化结果。提交、推送、创建/更新 PR、回复及关闭实现票由可信发布 job 负责。pr skill 决定正文质量；关闭引用由发布端追加。
+- 定时架构审查复用 codebase-design，从近期热点选一个候选，过滤历史重复；10个开放提案时暂停。输出一个结构化 PRD 或跳过，维护者后续评估。交互式架构访谈不在定时 Runner 中执行。
+
+配置及日常操作见 [github-actions.md](github-actions.md)。
