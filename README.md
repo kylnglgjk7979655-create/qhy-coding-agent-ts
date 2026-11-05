@@ -177,6 +177,55 @@ pnpm dev --workspace ./demo
 
 完整参数仅在人工审批界面展示，便于判断待执行操作；普通进度、执行事件和日志不输出完整参数、结果或原始异常。观察回调失败只输出诊断，不替代审批也不改变决定。常规验证使用本地模型夹具与假凭据；自动测试不能代替最终人工 QA。
 
+## 远程 MCP 工具
+
+可配置远程 Streamable HTTP MCP 服务；不支持旧式 SSE 端点、本地 stdio、OAuth 或浏览器登录。在运行配置中添加：
+
+```json
+{
+  "mcp": {
+    "servers": [
+      {
+        "name": "alpha",
+        "url": "http://127.0.0.1:端口/mcp",
+        "headers": { "Authorization": { "env": "QA_MCP_HEADER" } }
+      }
+    ],
+    "connectTimeoutMs": 10000,
+    "discoveryTimeoutMs": 10000,
+    "callTimeoutMs": 30000
+  }
+}
+```
+
+请将端口替换为实际数字。省略 `mcp` 时不连接远程服务，`servers: []` 也可禁用连接。服务名须以小写字母开头，仅含小写字母、数字和连字符，最多 16 字符，不能重复；URL 必须是 HTTP(S)，不能包含凭据、查询参数或片段。所有新增对象均拒绝未知字段。
+
+请求头统一使用 `{ "env": "环境变量名" }`，不接受明文头值。环境变量保存完整头值（Authorization 需要时包含 Bearer 前缀），必须非空且不含换行或非法字符；头名必须为合法 HTTP token，不得大小写重复或覆盖 Host、Content-Length、Content-Type、Accept、Connection、Mcp-Session-Id、Mcp-Protocol-Version。连接器在启动时解析引用并注入请求头，不将头值加入工具参数、模型请求、历史或普通日志。使用本地夹具时仅设置假凭据，不要使用真实令牌。
+
+每个对话轮次在请求主模型前重新连接并发现工具（包括分页），本轮固定名称、描述和参数 schema；服务端变化在下一轮发现后生效。工具名为 `mcp_<服务名>_<远端名称>`，例如 `mcp_alpha_echo`，远端非字母、数字、下划线、连字符名称转换为 UTF-8 十六进制后缀。工具名最多 64 字符；转换后冲突、远端重复名称或名称过长均明确报错，不静默覆盖。不会将服务端 instructions 加入系统提示。
+
+MCP 工具通过现有 registry 使用相同的参数校验、策略、逐次审批、串行执行、调用 ID、统一结果和执行事件。默认进入所选审批，远端只读提示不自动豁免；固定规则使用公布后的完整名称。等待或拒绝期间可发生连接与发现，但不会发送 `tools/call`。人工审批展示完整参数，普通进度不显示参数或结果。
+
+远端 JSON Schema 的同一份快照用于公布及本地校验，支持常见的 draft-07、2019-09、2020-12 约束（未指定方言时采用 2020-12；format 按注解处理）；不支持的 schema 明确报错。参数错误在审批和远端操作前拒绝。成功时 `output` 保留 MCP 业务结果，远端 `isError` 返回普通 `TOOL_EXECUTION_ERROR` 并保留业务输出，同批后续调用继续。连接或发现失败只使相应服务本轮不可用，并提供简短提示。
+
+连接、发现、调用的默认上限分别为 10 秒、10 秒、30 秒；以上三个配置项均接受 1–3,600,000 毫秒，独立上限不能延长整轮 `timeoutMs`。发现及调用接入同一整轮取消信号，停止后不启动后续操作；人工思考时间仍独立计时。客户端每轮结束关闭，不跨轮缓存定义，不自动重试工具调用；远程副作用不承诺撤销。MCP 独立断连、超时、取消及结果未知的专项边界按需求评论延期，本次基础接入不代表这些专项已验收。
+
+客户端固定使用与现有 AI SDK 配套的 `@ai-sdk/mcp`，工具转换沿用其 [MCP 工具适配能力](https://ai-sdk.dev/docs/ai-sdk-core/mcp-tools)。常规测试使用编译后 CLI、本地模型和真实 HTTP/JSON-RPC 夹具，无需在线服务。
+
+### 独立启动本地 MCP 夹具
+
+在仓库根目录运行：
+
+```bash
+pnpm exec tsx tests/helpers/local-mcp-fixture.ts
+# 或使用 Streamable HTTP 的 SSE 响应（仍不是旧式 SSE 传输）
+pnpm exec tsx tests/helpers/local-mcp-fixture.ts --sse
+```
+
+夹具只监听本机回环地址，打印实际 URL，将它填入上述 `mcp.servers[0].url`。工具为 `echo({"text":"任意文字"})`，传入 `{"text":"fail"}` 可选择普通工具错误场景，其他文字返回正常结果。请求头可省略；若保留 Authorization 配置，请在 CLI 环境中设置非空的 `QA_MCP_HEADER` 假值。夹具不会打印认证请求头；Ctrl+C 或 SIGTERM 关闭服务。CLI 的模型仍使用现有配置；自动测试通过共享本地模型夹具生成受控调用，不需要真实模型。
+
+运行 `pnpm build && pnpm exec vitest run tests/mcp.test.ts` 验证真实发现、命名空间、审批、固定策略、参数拒绝、普通失败、跨轮刷新及假认证标记的隔离。自动测试不能代替后续人工 QA；本文不声明延期专项边界通过。
+
 ## 真实模型与工具验收
 
 配置凭据后执行，都会调用真实服务并产生相应 API 用量：

@@ -12,6 +12,7 @@ import { approveToolCall } from './tool-approval.js';
 import type { ApprovalControl } from './tool-approval.js';
 import { ToolRegistry } from './tool-registry.js';
 import { prepareBashInput, runHostBash } from './host-bash.js';
+import { registerRemoteMCP } from './remote-mcp.js';
 import type { ToolExecutionEvent } from './tool-registry.js';
 
 export type { ApprovalControl } from './tool-approval.js';
@@ -189,6 +190,27 @@ export async function runAgent(
   const frameworkAbort = new AbortController();
   const bashOperations = new Set<Promise<unknown>>();
   let frameworkError: AgentError | undefined;
+  const deadline = new AbortController();
+  const pairingAbort = new AbortController();
+  let pairingError: AgentError | undefined;
+  let remainingMs = config.timeoutMs;
+  let activeSince = performance.now();
+  let timer = setTimeout(() => deadline.abort(), remainingMs);
+  const signal = options.signal === undefined
+    ? AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal])
+    : AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal, options.signal]);
+  function pauseDeadline(): void {
+    signal.throwIfAborted();
+    clearTimeout(timer);
+    remainingMs -= performance.now() - activeSince;
+    if (remainingMs <= 0) deadline.abort();
+    signal.throwIfAborted();
+  }
+  function resumeDeadline(): void {
+    if (signal.aborted) return;
+    activeSince = performance.now();
+    timer = setTimeout(() => deadline.abort(), remainingMs);
+  }
   const registry = new ToolRegistry({
     ...options,
     approve: async (call) => {
@@ -237,79 +259,62 @@ export async function runAgent(
       return operation;
     },
   });
-  const model = wrapLanguageModel({
-    model: provider.chat(config.model),
-    middleware: {
-      wrapStream: async ({ doStream }) => {
-        signal.throwIfAborted();
-        const result = await doStream();
-        return {
-          ...result,
-          stream: result.stream.pipeThrough(new TransformStream({
-            transform(part, controller) {
-              if (part.type === 'error') {
-                frameworkError = modelStreamError(part.error);
-                frameworkAbort.abort(frameworkError);
-                controller.error(frameworkError);
-                return;
-              }
-              controller.enqueue(part);
-            },
-          })),
-        };
-      },
-    },
-  });
-  const agent = new ToolLoopAgent({
-    model,
-    instructions: [
-      '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
-      '可使用 read_file 读取工作区文件，使用 write_file 完整替换或创建工作区文件；文件访问仅限配置的工作区。',
-      'write_file 和 Bash 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
-      'Bash 可运行命令和项目测试，每次使用独立 shell，继承 CLI 环境并以宿主当前用户权限执行；cwd 只约束启动位置，不提供文件系统或网络隔离。',
-      'runtimeInfo 可获取工作区路径和本次探针。',
-    ].join('\n'),
-    tools: registry.tools(),
-    toolCallConcurrency: 1,
-    stopWhen: isStepCount(config.maxSteps),
-    onError: ({ error }) => {
-      if (InvalidToolInputError.isInstance(error) || NoSuchToolError.isInstance(error)) return;
-      frameworkError ??= modelStreamError(error);
-      frameworkAbort.abort(frameworkError);
-    },
-    // Avoid automatic retries hiding auth failures or extending the deadline.
-    maxRetries: 0,
-    ...(options.smokeTool ? {
-      prepareStep: ({ stepNumber }: { stepNumber: number }) => ({
-        toolChoice: stepNumber === 0
-          ? { type: 'tool' as const, toolName: 'read_file' as const }
-          : 'none' as const,
-      }),
-    } : {}),
-  });
-
-  const deadline = new AbortController();
-  const pairingAbort = new AbortController();
-  let pairingError: AgentError | undefined;
-  let remainingMs = config.timeoutMs;
-  let activeSince = performance.now();
-  let timer = setTimeout(() => deadline.abort(), remainingMs);
-  const signal = options.signal === undefined
-    ? AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal])
-    : AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal, options.signal]);
-  function pauseDeadline(): void {
-    signal.throwIfAborted();
-    clearTimeout(timer);
-    remainingMs -= performance.now() - activeSince;
-    if (remainingMs <= 0) deadline.abort();
-    signal.throwIfAborted();
-  }
-  function resumeDeadline(): void {
-    if (signal.aborted) return;
-    activeSince = performance.now();
-    timer = setTimeout(() => deadline.abort(), remainingMs);
-  }
+  let closeMCP: (() => Promise<void>) | undefined;
   try {
+    closeMCP = await registerRemoteMCP(config, registry, signal);
+    const model = wrapLanguageModel({
+      model: provider.chat(config.model),
+      middleware: {
+        wrapStream: async ({ doStream }) => {
+          signal.throwIfAborted();
+          const result = await doStream();
+          return {
+            ...result,
+            stream: result.stream.pipeThrough(new TransformStream({
+              transform(part, controller) {
+                if (part.type === 'error') {
+                  frameworkError = modelStreamError(part.error);
+                  frameworkAbort.abort(frameworkError);
+                  controller.error(frameworkError);
+                  return;
+                }
+                controller.enqueue(part);
+              },
+            })),
+          };
+        },
+      },
+    });
+    const agent = new ToolLoopAgent({
+      model,
+      instructions: [
+        '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
+        '可使用 read_file 读取工作区文件，使用 write_file 完整替换或创建工作区文件；文件访问仅限配置的工作区。',
+        'write_file 和 Bash 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
+        'Bash 可运行命令和项目测试，每次使用独立 shell，继承 CLI 环境并以宿主当前用户权限执行；cwd 只约束启动位置，不提供文件系统或网络隔离。',
+        'runtimeInfo 可获取工作区路径和本次探针。',
+        '如公布了 mcp_ 前缀工具，可调用对应远程 MCP 服务；这些工具默认需要独立审批，调用可能产生远端副作用。',
+      ].join('\n'),
+      tools: registry.tools(),
+      toolCallConcurrency: 1,
+      stopWhen: isStepCount(config.maxSteps),
+      onError: ({ error }) => {
+        if (InvalidToolInputError.isInstance(error) || NoSuchToolError.isInstance(error)) return;
+        frameworkError ??= modelStreamError(error);
+        frameworkAbort.abort(frameworkError);
+      },
+      // Avoid automatic retries hiding auth failures or extending the deadline.
+      maxRetries: 0,
+      ...(options.smokeTool ? {
+        prepareStep: ({ stepNumber }: { stepNumber: number }) => ({
+          toolChoice: stepNumber === 0
+            ? { type: 'tool' as const, toolName: 'read_file' as const }
+            : 'none' as const,
+        }),
+      } : {}),
+    });
+
+    signal.throwIfAborted();
     const result = await agent.stream({
       messages: [
         ...(options.smokeTool ? [] : options.history ?? []),
@@ -407,6 +412,7 @@ export async function runAgent(
     throw error;
   } finally {
     clearTimeout(timer);
+    await closeMCP?.();
     await Promise.allSettled(bashOperations);
     if (options.smokeTool) await unlink(join(config.workspace, smokeProbePath)).catch(() => undefined);
   }

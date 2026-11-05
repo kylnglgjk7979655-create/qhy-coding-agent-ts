@@ -12,6 +12,18 @@ const baseURLSchema = z.url().refine((value) => {
 }, 'baseURL 必须为 HTTP(S) 地址，且不能包含凭据、查询参数或片段');
 
 const apiKeyEnvSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+const operationTimeoutSchema = z.number().int().min(1).max(3_600_000);
+const mcpServerSchema = z.strictObject({
+  name: z.string().regex(/^[a-z][a-z0-9-]{0,15}$/),
+  url: baseURLSchema,
+  headers: z.record(z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/), z.strictObject({ env: apiKeyEnvSchema })).default({}),
+}).superRefine((server, ctx) => {
+  const names = Object.keys(server.headers).map((name) => name.toLowerCase());
+  if (new Set(names).size !== names.length || names.some((name) =>
+    ['host', 'content-length', 'content-type', 'accept', 'connection', 'mcp-session-id', 'mcp-protocol-version'].includes(name))) {
+    ctx.addIssue({ code: 'custom', path: ['headers'], message: '请求头重复或覆盖协议保留字段' });
+  }
+});
 const reviewModelSchema = z.strictObject({
   provider: z.literal('openai').default('openai'),
   model: z.string().trim().min(1),
@@ -27,6 +39,12 @@ export const configSchema = z.strictObject({
   workspace: z.string().trim().min(1).default('./demo'),
   timeoutMs: z.number().int().min(1).max(3_600_000).default(60_000),
   maxSteps: z.number().int().min(1).max(100).default(20),
+  mcp: z.strictObject({
+    servers: z.array(mcpServerSchema).refine((servers) => new Set(servers.map(({ name }) => name)).size === servers.length, 'MCP 服务名称重复'),
+    connectTimeoutMs: operationTimeoutSchema.default(10_000),
+    discoveryTimeoutMs: operationTimeoutSchema.default(10_000),
+    callTimeoutMs: operationTimeoutSchema.default(30_000),
+  }).optional(),
   bash: z.strictObject({
     timeoutMs: z.number().int().min(1).max(3_600_000).default(30_000),
   }).optional(),
@@ -43,7 +61,7 @@ export const configSchema = z.strictObject({
 });
 
 export type ModelConfig = z.infer<typeof configSchema>;
-export type ResolvedConfig = ModelConfig & { apiKey: string; approvalApiKey?: string };
+export type ResolvedConfig = ModelConfig & { apiKey: string; approvalApiKey?: string; mcpHeaders?: Record<string, Record<string, string>> };
 
 interface ConfigOptions {
   cwd: string;
@@ -95,7 +113,19 @@ export async function loadConfig(options: ConfigOptions): Promise<ResolvedConfig
   if (reviewKeyEnv !== undefined && !approvalApiKey) {
     throw new AgentError('CONFIG_ERROR', `缺少审批凭据：请设置环境变量 ${reviewKeyEnv}。`);
   }
-  return { ...config, workspace, apiKey, ...(approvalApiKey === undefined ? {} : { approvalApiKey }) };
+  const mcpHeaders: Record<string, Record<string, string>> = Object.create(null);
+  for (const server of config.mcp?.servers ?? []) {
+    const headers: Record<string, string> = Object.create(null);
+    for (const [name, reference] of Object.entries(server.headers)) {
+      const value = options.env[reference.env];
+      if (!value?.trim() || /[^\t\x20-\x7e\x80-\xff]/.test(value)) {
+        throw new AgentError('CONFIG_ERROR', `MCP 请求头环境变量缺失或无效：${reference.env}。`);
+      }
+      headers[name] = value;
+    }
+    mcpHeaders[server.name] = headers;
+  }
+  return { ...config, workspace, apiKey, mcpHeaders, ...(approvalApiKey === undefined ? {} : { approvalApiKey }) };
 }
 
 export function isMissing(error: unknown): boolean {

@@ -11,7 +11,7 @@ export interface FixtureRequest {
   model?: string;
   stream?: boolean;
   messages: Array<{ role: string; content: string }>;
-  tools: Array<{ function: { name: string } }>;
+  tools: Array<{ function: { name: string; description?: string; parameters?: Record<string, unknown> } }>;
 }
 
 export type FixtureResponse = { content: string }
