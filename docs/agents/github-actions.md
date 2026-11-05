@@ -48,9 +48,9 @@ gh secret set CODEX_AUTH_JSON \
 
 ## 日常使用
 
-创建 GitHub Issue，写清复现步骤或需求、期望结果、验收条件。添加 **`agent:implement`** 或 **`ready-for-agent`** 标签。
+创建 GitHub Issue，写清复现步骤或需求、期望结果、验收条件。添加 **`agent:implement`** 标签启动。`ready-for-agent` 仅表示准备完成，不触发执行。
 
-然后在 Actions → Codex Implement Issue 查看进度。也可在该 workflow 的 Run workflow 中填写 Issue 编号手动启动。成功后 Issue 会出现草稿 PR 链接，并自动接续 Codex 审查。审查完成后将草稿标记为 Ready，发布 COMMENT 审查结果，由人决定合并；PR 的 `Closes #编号` 在合并时关闭 Issue。
+然后在 Actions → Codex Implement Issue 查看进度。也可在该 workflow 的 Run workflow 中填写 Issue 编号手动启动。成功后 Issue 会出现草稿 PR 链接，并自动接续 Codex 审查。审查使用两个独立新会话分别检查规范与需求，再修复并发布 COMMENT；完成后将草稿标记为 Ready，由人决定合并。普通 Issue 的 `Closes #编号` 在合并时关闭；含人工 QA 的父规格只关联，由人确认关闭。
 
 | Secret / Variable | 是否必需 | 用途 |
 | --- | --- | --- |
@@ -65,24 +65,25 @@ gh secret set CODEX_AUTH_JSON \
 
 | 操作 | 入口 | 行为 |
 | --- | --- | --- |
-| 实现普通需求 | Issue 添加 `agent:implement` / `ready-for-agent` | 从默认分支实现，验证后创建草稿 PR，自动接续审查 |
+| 实现普通需求 | Issue 添加 `agent:implement` | 从默认分支实现，验证后创建草稿 PR，自动接续审查 |
 | 审查 PR | PR 添加 `agent:review` | 按仓库规范、关联 Issue 与已关闭子任务审查；可修复明确问题，发布行内评论及摘要 |
 | 根据反馈修改 | PR 留下反馈后添加 `agent:implement` | 读取顶层评论、review 摘要和未解决 threads，修改并回复有关 thread |
 | 更新 PR 分支 | PR 添加 `agent:update-branch` | 合并 PR 基准分支，必要时让 Codex 解决冲突；创建保留两个父提交的 merge commit |
-| 拆分 PRD | 父 Issue 添加 `agent:to-issues` | 只读分析，按依赖顺序创建原生 GitHub 子 Issue，不自动开始实现 |
-| 逐轮实现 PRD | 含子 Issue 的父 Issue 添加 `agent:implement` | 自动选择 PRD 模式，每轮实现一个子任务，共用 `codex/prd-编号` 分支及一个草稿 PR |
+| 生成拆票计划 | 父 Issue 添加 `agent:to-issues` | 加载 to-tickets-with-qa，只读生成实现切片、依赖和最终人工 QA，写入待审批评论 |
+| 确认发布工单 | 父 Issue 添加 `agent:publish-tickets` | 按已保存计划创建原生子 Issue、执行角色及依赖；不调用模型或启动实现 |
+| 逐轮实现 PRD | 含子 Issue 的父 Issue 添加 `agent:implement` | 自动选择 PRD 模式，每轮实现一个依赖已完成的 Agent 子任务，共用 `codex/prd-编号` 分支及一个草稿 PR |
 | 等待依赖 | 根 Issue 配置原生 GitHub `blocked by` 关系并添加 `agent:queued` | 依赖完成后每次只派发一个符合条件的任务 |
-| 架构审查 | Actions → Codex Architecture Review，或工作日 UTC 09:00（北京时间 17:00） | 只读代码及历史提案，最多提出一个新 PRD，标记 `source:architecture-review` |
+| 架构审查 | Actions → Codex Architecture Review，或工作日 UTC 09:00（北京时间 17:00） | 只读代码及历史提案，最多提出一个新 PRD，标记 `source:architecture-review`；10个开放提案时暂停 |
 
 各模型任务都有手动入口：在 Actions 选对应工作流，填写 `issue_number` 或 `pr_number`。`Codex Implement PRD` 是逐轮实现的接续与恢复入口；Issue 标签仍由 `Codex Implement Issue` 自动识别。`Codex Subscription Task` 是内部复用流程，不直接手动运行。
 
-PRD 建议顺序：写父 Issue → `agent:to-issues` → 检查子任务顺序与验收条件 → 给父 Issue 添加 `agent:implement` → 自动逐轮实现 → 自动审查同一个 PR → 人工合并。子 Issue 在代码推送、检查和 PR 发布成功后关闭；父 PRD 到 PR 合并才关闭。关闭子 Issue 表示实现在该 PR 分支上完成，尚未合入默认分支。只支持扁平子任务，不直接给子 Issue 添加实现标签。
+PRD 建议顺序：写父 Issue → `agent:to-issues` → 检查评论中的完整计划 → `agent:publish-tickets` → 检查生成的实现与 QA 子任务 → 给父 Issue 添加 `agent:implement` → 按真实依赖串行实现 → 自动审查同一个 PR → 人工合并与 QA。实现子 Issue 在代码推送、检查和 PR 发布成功后关闭；Human QA 保持开放，由人执行并记录测试版本和结果。有 QA 的 PR 使用 `Refs #父规格`，父规格由人确认关闭。只支持扁平子任务，不直接给子 Issue 添加实现标签。
 
-PRD 拆分会先在父 Issue 保存固定的结构化计划，再按稳定标记创建并挂接子 Issue。若中途失败，重新添加 `agent:to-issues` 会复用原计划和已创建 Issue。已有人工子任务时拒绝重新拆分，以免混入另一份计划。
+手动生成或发布计划使用 Actions → Codex Plan and Publish Tickets：填写父 Issue 编号，生成计划时保持 `publish_approved=false`；检查计划后再勾选该选项启动新的运行。发布阶段不需要恢复订阅登录；失败时重新添加 `agent:publish-tickets` 可复用原计划和已创建的 Issue、挂接及依赖。不要通过重跑旧规划来覆盖发布中的计划。
 
 反馈不会因为新评论自动运行；由维护者通过标签决定何时启动。审查可不修改代码，反馈修改可只回复；普通 Issue 实现没有代码变更则失败。PRD 子任务已经满足验收条件时允许无新增修改，但必须明确确认完成，外层仍会验证。
 
-依赖队列使用 GitHub 原生关系，不解析正文的“依赖 #N”。所有阻塞项都必须以完成状态关闭；`not_planned` 不视为完成。只调度根 Issue，跳过进行中及失败阻塞项；一次只派发一个，结束后继续检查队列。添加排队标签后，可手动运行 `Codex Promote Queued` 启动调度；Issue 完成关闭也会触发。自动链路失败会停止推进，修复后重新触发对应任务。
+依赖队列使用 GitHub 原生关系，不解析正文的“依赖 #N”。所有阻塞项都必须以完成状态关闭；`not_planned` 不视为完成。只调度根 Issue，跳过人工任务、进行中及失败阻塞项；一次只派发一个，结束后继续检查队列。添加排队标签后，可手动运行 `Codex Promote Queued` 启动调度；Issue 完成关闭也会触发。自动链路失败会停止推进，修复后重新触发对应任务。
 
 ## 登录态怎样维护
 
@@ -110,7 +111,9 @@ GitHub 临时 Runner 每轮结束都会销毁，因此每轮需要恢复、运�
 
 Agent 最长运行 45 分钟，连续无输出 5 分钟失败；生成 job 超时 60 分钟。没有自动批准、自动合并。架构审查每个工作日运行一次，会消耗 Actions 时间与 Codex 订阅用量；不需要时可在 Actions 中禁用该 workflow。
 
-迁移复用了 video 项目的任务语义和执行顺序，提示词已改为本仓库规范与 Codex；没有安装仅适用于 Claude 的全局 review skill，也不依赖 Claude 会话恢复。结构化结果不合法时本轮失败，不自动重复有副作用的任务。
+任务显式读取仓库 `.agents/skills/` 的固定版本：implement、tdd、diagnosing-bugs、codebase-design、code-review、pr，以及项目 to-tickets-with-qa。to-spec 供本地规格编写使用。原文及引用文件完整提交，来源 SHA 与文件校验值见 `.agents/skills/UPSTREAM.json`；本地和云端不自动下载或更新。架构方法统一使用最新版 codebase-design，没有重复的项目架构 skill；没有安装独立 to-tickets 或 implement-spec。
+
+具体适配见 [skill-execution.md](skill-execution.md)。结构化结果不合法时本轮失败，不自动重复有副作用的任务。
 
 ## 本地运行
 

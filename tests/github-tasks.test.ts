@@ -5,9 +5,10 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 const require = createRequire(import.meta.url);
 const { validateResult, reviewPayload } = require('../.github/scripts/task-protocol.cjs');
-const { authorize, assertPr, canPromote, prepare, finish, publishSlices, prFeedback } = require('../.github/scripts/tasks.cjs');
+const { authorize, assertPr, canPromote, prepare, finish, publishSlices, prFeedback, saveDraftPlan, publishApprovedSlices, parsePlan } = require('../.github/scripts/tasks.cjs');
 const repo = { owner: 'owner', repo: 'repo' };
 const context = { repo, actor: 'maintainer', eventName: 'workflow_dispatch', runId: 123, serverUrl: 'https://github.com', payload: { repository: { private: true, default_branch: 'main' } } };
+const validPlan = () => ({ summary: '计划', slices: [{ title: '实现', execution: 'agent', blockedBy: [], whatToBuild: '端到端实现', acceptanceCriteria: ['通过测试'] }, { title: 'QA: 人工验收', execution: 'human-qa', blockedBy: [1], whatToBuild: '运行 CLI 验收', acceptanceCriteria: ['前置：测试数据；操作：运行 CLI；预期：成功输出'] }] });
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
 async function temporary() { const dir = await mkdtemp(join(tmpdir(), 'codex-task-test-')); dirs.push(dir); vi.stubEnv('RUNNER_TEMP', dir); return dir; }
@@ -61,11 +62,11 @@ describe('结构化结果与审查评论', () => {
     expect(() => validateResult('architecture', { summary: 'ok', status: 'proposed', title: '', body: 'abc' })).toThrow();
   });
   it('拒绝空计划、无验收标准、自动关闭指令和过多子任务', () => {
-    const slice = { title: '切片', whatToBuild: '行为', acceptanceCriteria: ['测试覆盖'] };
-    for (const slices of [[], [{ ...slice, acceptanceCriteria: [] }], [{ ...slice, whatToBuild: 'Closes #42' }], Array(31).fill(slice)]) {
+    const plan = validPlan(); const slice = plan.slices[0]!;
+    for (const slices of [[], [{ ...slice, acceptanceCriteria: [] }, plan.slices[1]], [{ ...slice, whatToBuild: 'Closes #42' }, plan.slices[1]], Array(31).fill(slice)]) {
       expect(() => validateResult('to-issues', { summary: '计划', slices })).toThrow();
     }
-    expect(validateResult('to-issues', { summary: '计划', slices: [slice] }).slices).toHaveLength(1);
+    expect(validateResult('to-issues', plan).slices).toHaveLength(2);
   });
   it('拒绝伪造行号和回复 ID，去掉未知输出字段', () => {
     expect(() => validateResult('review', { summary: 'ok', inlineComments: [{ path: 'x', line: -1, body: 'abc' }] })).toThrow();
@@ -118,27 +119,41 @@ describe('依赖队列与自动接续', () => {
 });
 
 describe('PRD 拆分故障恢复', () => {
-  it('先保存固定计划；创建后挂接失败，重试复用原 Issue 并按原计划继续', async () => {
-    await temporary();
-    const comments: Array<{ user: { login: string }; body: string }> = [];
+  it('审批后创建成功但挂接失败，重试复用原计划及原 Issue，并补齐依赖', async () => {
+    const plan = validPlan();
+    const comments = [{ user: { login: 'github-actions[bot]' }, body: `<!-- codex-prd-plan -->${JSON.stringify(plan)}` }];
     const all: Array<{ id: number; number: number; body: string }> = [];
-    const current: Array<{ id: number; number: number; body: string }> = [];
-    const create = vi.fn(async (args) => { const issue = { id: 100, number: 50, body: args.body }; return { data: issue }; });
-    const request = vi.fn().mockRejectedValueOnce(new Error('network')).mockImplementation(async () => { current.push(all[0]!); });
-    const github = { rest: { issues: {
-      listComments: 'comments', listForRepo: 'all', create,
-      createComment: vi.fn(async (args) => { comments.push({ user: { login: 'github-actions[bot]' }, body: args.body }); }),
-    } }, request, paginate: vi.fn(async (route) => route === 'comments' ? comments : route === 'all' ? all : current) };
-    const task = { number: 42 };
-    const result = { summary: '计划一', slices: [{ title: '原始标题', whatToBuild: '实现行为', acceptanceCriteria: ['通过测试'] }] };
-    await expect(publishSlices(github, context, task, result)).rejects.toThrow('network');
-    expect(comments[0]?.body).toContain('codex-prd-plan');
-    // 模拟重新获取 API 返回的新数组，避免测试本身改变远端状态。
-    github.paginate.mockImplementation(async (route) => route === 'comments' ? [...comments] : route === 'all' ? [...all] : [...current]);
-    await publishSlices(github, context, task, { ...result, slices: [{ ...result.slices[0], title: '重试时不同的标题' }] });
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(request).toHaveBeenCalledTimes(2);
-    expect(current).toHaveLength(1);
+    const current: typeof all = [];
+    const create = vi.fn(async (args) => { const issue = { id: 100 + all.length, number: 50 + all.length, body: args.body }; all.push(issue); return { data: issue }; });
+    const request = vi.fn().mockRejectedValueOnce(new Error('network')).mockImplementation(async (route, args) => {
+      if (route.includes('sub_issues')) current.push(all.find((issue) => issue.id === args.sub_issue_id)!);
+    });
+    const github = { rest: { issues: { listComments: 'comments', listForRepo: 'all', create, createComment: vi.fn() } }, request,
+      paginate: vi.fn(async (route) => route === 'comments' ? [...comments] : route === 'all' ? [...all] : route.includes('dependencies') ? [] : [...current]) };
+    await expect(publishSlices(github, context, { number: 42 }, plan)).rejects.toThrow('network');
+    await publishSlices(github, context, { number: 42 }, { ...plan, summary: '重试产生的其他计划不会替换已批准计划' });
+    expect(create).toHaveBeenCalledTimes(2); expect(current).toHaveLength(2);
+    expect(create.mock.calls[0]?.[0].labels).toEqual(['ready-for-agent']);
+    expect(create.mock.calls[1]?.[0].labels).toEqual(['ready-for-human']);
+    expect(create.mock.calls[1]?.[0].body).toContain('Execution:** Human QA (HITL)');
+    expect(request).toHaveBeenCalledWith('POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by', { ...repo, issue_number: 51, issue_id: 100 });
+  });
+  it('规划阶段只保存完整计划，不创建 Issue；缺少保存的计划不能发布', async () => {
+    const createComment = vi.fn(); const create = vi.fn();
+    const github = { rest: { issues: { listComments: 'comments', listForRepo: 'all', createComment, create } }, paginate: vi.fn().mockResolvedValue([]) };
+    await saveDraftPlan(github, context, { number: 42 }, validPlan());
+    expect(createComment.mock.calls[0]?.[0].body).toContain('agent:publish-tickets');
+    expect(parsePlan({ user: { login: 'github-actions[bot]' }, body: createComment.mock.calls[0]?.[0].body })).toEqual(validPlan());
+    expect(create).not.toHaveBeenCalled();
+    await expect(publishSlices(github, context, { number: 42 }, validPlan())).rejects.toThrow('缺少已保存');
+  });
+  it('审批之后生成或修改的计划不能据此发布', async () => {
+    vi.stubEnv('TASK_NUMBER', '42');
+    const comment = { user: { login: 'github-actions[bot]' }, body: `<!-- codex-prd-plan -->${JSON.stringify(validPlan())}`, created_at: '2026-11-05T01:00:00Z', updated_at: '2026-11-05T02:00:00Z' };
+    const create = vi.fn();
+    const github = { rest: { repos: permission(), issues: { get: vi.fn().mockResolvedValue({ data: { state: 'open' } }), listComments: 'comments', create }, actions: { getWorkflowRun: vi.fn().mockResolvedValue({ data: { created_at: '2026-11-05T01:30:00Z' } }) } }, graphql: vi.fn().mockResolvedValue({ repository: { issue: { parent: null } } }), paginate: vi.fn().mockResolvedValue([comment]) };
+    await expect(publishApprovedSlices({ github, context, core: core() })).rejects.toThrow('审批触发之后');
+    expect(create).not.toHaveBeenCalled();
   });
   it('PR thread 评论超过读取上限时停止，不静默遗漏反馈', async () => {
     const github = { rest: { issues: { listComments: 'comments' }, pulls: { listReviews: 'reviews' } }, paginate: vi.fn().mockResolvedValue([]), graphql: vi.fn().mockResolvedValue({ repository: { pullRequest: { reviewThreads: { nodes: [{ isResolved: false, comments: { pageInfo: { hasNextPage: true } } }], pageInfo: { hasNextPage: false } } } } }) };
@@ -201,5 +216,33 @@ describe('显式触发代码检查', () => {
     const dispatch = vi.fn(); const issues = { removeLabel: vi.fn(), createComment: vi.fn() };
     await finish({ github: { rest: { actions: { createWorkflowDispatch: dispatch }, issues } }, context, core: core() });
     expect(dispatch.mock.calls.map(([args]) => [args.workflow_id, args.ref])).toEqual([['check.yml', 'codex/issue-42-123-1'], ['agent-review.yml', 'main']]);
+  });
+});
+
+
+describe('架构积压门禁', () => {
+  it('已有10个开放提案时在读取认证或调用模型前跳过', async () => {
+    vi.stubEnv('TASK_MODE', 'architecture'); vi.stubEnv('TASK_NUMBER', '0');
+    const c = core(); const github = { rest: { repos: permission(), git: { getRef: vi.fn().mockResolvedValue({ data: { object: { sha: 'base' } } }) }, issues: { listForRepo: 'issues' } }, paginate: vi.fn().mockResolvedValue(Array.from({ length: 10 }, () => ({ state: 'open' }))) };
+    await prepare({ github, context, core: c });
+    expect(c.setOutput).not.toHaveBeenCalledWith('proceed', 'true'); expect(c.notice).toHaveBeenCalledWith(expect.stringContaining('10个'));
+  });
+});
+
+
+describe('人工 QA 的父规格上下文', () => {
+  it('PR 仅用 Refs 关联父规格时，需求审查仍读取规格和子任务', async () => {
+    const dir = await temporary(); vi.stubEnv('TASK_MODE', 'review'); vi.stubEnv('TASK_NUMBER', '43');
+    const c = core();
+    const github = { rest: {
+      repos: permission(), git: { getRef: vi.fn().mockResolvedValue({ data: { object: { sha: 'base' } } }) },
+      pulls: { get: vi.fn().mockResolvedValue({ data: { ...pr(), number: 43, body: 'Refs #42' } }), listReviews: 'reviews' },
+      issues: { get: vi.fn().mockResolvedValue({ data: { title: '父规格', state: 'open', body: '完整验收要求' } }), listComments: 'comments', getLabel: vi.fn(), removeLabel: vi.fn(), addLabels: vi.fn() },
+    }, paginate: vi.fn().mockImplementation(async (route) => route.includes('sub_issues') ? [{ number: 51, state: 'closed' }, { number: 52, state: 'open', title: 'QA: 验收' }] : []),
+    graphql: vi.fn().mockResolvedValue({ repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } }),
+    };
+    await prepare({ github, context, core: c });
+    const task = JSON.parse(await readFile(join(dir, 'codex-context/task.json'), 'utf8'));
+    expect(task.linkedIssues[0].number).toBe(42); expect(task.linkedIssues[0].children).toHaveLength(2);
   });
 });

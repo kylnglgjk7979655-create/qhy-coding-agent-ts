@@ -33,7 +33,7 @@ async function fixture(mode: string) {
     pulls: { get: vi.fn().mockImplementation(async () => ({ data: pr })), createReview: vi.fn(), update: vi.fn(), createReplyForReviewComment: vi.fn() },
     issues: { createComment: vi.fn(), get: vi.fn().mockResolvedValue({ data: { state: 'open' } }), update: vi.fn() },
     git: { getRef: vi.fn().mockResolvedValue({ data: { object: { sha: base } } }) },
-  }, paginate: vi.fn().mockResolvedValue([]) };
+  }, paginate: vi.fn().mockResolvedValue([]), graphql: vi.fn().mockResolvedValue({ repository: { issue: { blockedBy: { nodes: [], pageInfo: { hasNextPage: false } } } } }) };
   const core = { setOutput: vi.fn() };
   return { root, work, remote, task, pr, base, head, github, core };
 }
@@ -109,12 +109,38 @@ describe('PRD 逐轮发布', () => {
     const f = await fixture('implement-prd');
     const child = { number: 51, state: 'open' };
     await writeFile(join(f.root, 'codex-context/task.json'), JSON.stringify({ ...f.task, child, children: [child], issue: { title: 'PRD' } }));
-    f.github.paginate.mockResolvedValue([]);
+    f.github.paginate.mockImplementation(async (route) => typeof route === 'string' ? [child] : []);
     // 没有开放 PR 时创建失败；即使分支已推送也不能提前关闭子任务。
     Object.assign(f.github.rest.pulls, { create: vi.fn().mockRejectedValue(new Error('PR creation denied')) });
     await writeFile(join(f.work, 'a.txt'), 'slice implemented\n'); await exportPatch(); git(f.work, 'reset', '--hard', f.head);
     await expect(publish({ github: f.github, context, core: f.core, cwd: f.work })).rejects.toThrow('PR creation denied');
     expect(f.github.rest.issues.update).not.toHaveBeenCalled();
     expect(f.core.setOutput).not.toHaveBeenCalledWith('next', expect.anything());
+  });
+});
+
+describe('人工 QA 发布边界', () => {
+  it('最后一个实现完成后进入审查，QA 保持开放，父单只关联', async () => {
+    const f = await fixture('implement-prd'); f.pr.number = 43;
+    const child = { number: 51, state: 'open' };
+    const qa = { number: 52, state: 'open', title: 'QA: 验收', labels: ['ready-for-human'] };
+    const children = [child, qa];
+    await writeFile(join(f.root, 'codex-context/task.json'), JSON.stringify({ ...f.task, existingPr: 43, child, children, issue: { title: 'PRD' } }));
+    f.github.paginate.mockImplementation(async (route) => typeof route === 'string' ? children : [f.pr]);
+    await writeFile(join(f.work, 'a.txt'), 'implemented\n'); await exportPatch(); git(f.work, 'reset', '--hard', f.head);
+    await publish({ github: f.github, context, core: f.core, cwd: f.work });
+    expect(f.github.rest.issues.update).toHaveBeenCalledExactlyOnceWith({ ...context.repo, issue_number: 51, state: 'closed', state_reason: 'completed' });
+    expect(f.core.setOutput).toHaveBeenCalledWith('next', 'review');
+    const body = f.github.rest.pulls.update.mock.calls[0]?.[0].body;
+    expect(body).toContain('Refs #42'); expect(body).not.toContain('Closes #42'); expect(body).toContain('- [ ] #52（人工 QA）');
+  });
+  it('任务执行期间被改成人工 QA，在推送之前停止', async () => {
+    const f = await fixture('implement-prd');
+    const child = { number: 51, state: 'open', labels: ['ready-for-human'] };
+    await writeFile(join(f.root, 'codex-context/task.json'), JSON.stringify({ ...f.task, child, children: [child], issue: { title: 'PRD' } }));
+    f.github.paginate.mockImplementation(async (route) => typeof route === 'string' ? [child] : []);
+    await writeFile(join(f.work, 'a.txt'), 'should not publish\n'); await exportPatch(); git(f.work, 'reset', '--hard', f.head);
+    await expect(publish({ github: f.github, context, core: f.core, cwd: f.work })).rejects.toThrow('人工任务');
+    expect(git(f.remote, 'rev-parse', 'feature')).toBe(f.head); expect(f.github.rest.issues.update).not.toHaveBeenCalled();
   });
 });

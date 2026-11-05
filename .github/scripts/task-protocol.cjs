@@ -10,13 +10,19 @@ function validateResult(mode, value) {
   if (JSON.stringify(value).length > 60000) throw new Error('结果超过 GitHub 评论长度限制。');
   const summary = text(value.summary, 'summary');
   if (mode === 'to-issues') {
-    if (!Array.isArray(value.slices) || !value.slices.length || value.slices.length > 30) throw new Error('需要 1 至 30 个子任务。');
-    return { summary, slices: value.slices.map((slice) => {
+    if (!Array.isArray(value.slices) || value.slices.length < 2 || value.slices.length > 30) throw new Error('需要实现任务及最终人工 QA，共2至30项。');
+    const slices = value.slices.map((slice, index) => {
       if (!Array.isArray(slice.acceptanceCriteria) || !slice.acceptanceCriteria.length || slice.acceptanceCriteria.length > 30) throw new Error('缺少验收条件。');
-      const result = { title: text(slice.title, 'title', 200), whatToBuild: text(slice.whatToBuild, 'whatToBuild', 15000), acceptanceCriteria: slice.acceptanceCriteria.map((x) => text(x, '验收条件', 2000)) };
+      const execution = index === value.slices.length - 1 ? 'human-qa' : 'agent';
+      if (slice.execution !== execution) throw new Error('最后一项必须是人工 QA，其他项必须为实现任务。');
+      if (!Array.isArray(slice.blockedBy) || new Set(slice.blockedBy).size !== slice.blockedBy.length
+        || slice.blockedBy.some((n) => !Number.isSafeInteger(n) || n < 1 || n > index)) throw new Error('依赖必须指向前面的任务且不能重复。');
+      if (execution === 'human-qa' && (slice.blockedBy.length !== index || !/^QA\s*:/i.test(slice.title ?? ''))) throw new Error('最终 QA 必须依赖所有实现任务，标题以 QA: 开头。');
+      const result = { title: text(slice.title, 'title', 200), execution, blockedBy: slice.blockedBy, whatToBuild: text(slice.whatToBuild, 'whatToBuild', 15000), acceptanceCriteria: slice.acceptanceCriteria.map((x) => text(x, '验收条件', 2000)) };
       if (/\b(?:closes?|fix(?:es)?|resolves?)\s+#\d+/i.test(JSON.stringify(result))) throw new Error('子任务不能包含自动关闭 Issue 的指令。');
       return result;
-    }) };
+    });
+    return { summary, slices };
   }
   if (mode === 'architecture') {
     if (value.status === 'skipped') return { summary, status: 'skipped' };
@@ -27,7 +33,13 @@ function validateResult(mode, value) {
   const comments = value.inlineComments ?? [];
   const replies = value.replies ?? [];
   if (!Array.isArray(comments) || comments.length > 50 || !Array.isArray(replies) || replies.length > 100) throw new Error('评论数量错误。');
-  return { summary, completed: value.completed === true,
+  const metadata = {};
+  if (value.prTitle !== undefined) metadata.prTitle = text(value.prTitle, 'prTitle', 200);
+  if (value.prBody !== undefined) {
+    metadata.prBody = text(value.prBody, 'prBody');
+    if (/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:#|https?:)/i.test(metadata.prBody)) throw new Error('PR 关闭引用由发布端管理。');
+  }
+  return { summary, ...metadata, completed: value.completed === true,
     inlineComments: comments.map((c) => {
       if (!Number.isSafeInteger(c.line) || c.line < 1) throw new Error('行号格式错误。');
       return { path: text(c.path, 'path', 500), line: c.line, body: text(c.body, 'body', 10000) };

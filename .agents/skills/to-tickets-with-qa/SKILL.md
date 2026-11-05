@@ -14,7 +14,9 @@ disable-model-invocation: true
 
 读取项目的 `AGENTS.md` 及其中指向的工单系统、状态和领域文档约定。缺少工单系统配置时，提示用户先运行 `/setup-matt-pocock-skills`。
 
-本项目使用本地 Markdown 工单，具体布局见 `docs/agents/issue-tracker.md`，状态名称见 `docs/agents/triage-labels.md`。新建工单正文使用中文，保留模板中的机器可读字段名和状态值。
+本地会话使用本地 Markdown 工单，具体布局见 `docs/agents/issue-tracker.md`，状态名称见 `docs/agents/triage-labels.md`。新建工单正文使用中文，保留模板中的机器可读字段名和状态值。
+
+GitHub Actions 传入父 Issue 时，按 [项目执行适配](../../../docs/agents/skill-execution.md) 使用原生子 Issue 和依赖关系。无人值守的规划轮只输出待审批计划；用户检查该计划并添加 `agent:publish-tickets` 后，由发布脚本创建工单。本 skill 的计划确认、人工 QA 和父规格状态规则在两种入口均生效。
 
 ## 2. 按需探索代码
 

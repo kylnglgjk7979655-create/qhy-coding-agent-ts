@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { codex, run } from '@ai-hero/sandcastle';
 import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
+import { loadTaskSkills } from './skills.js';
 import { createIssuePrompt } from './issue-context.js';
 import { withCodexDiagnostics } from './codex-diagnostics.js';
 import { codexAuthEnvironment, resolveCodexModel } from './codex-auth.js';
@@ -11,7 +12,7 @@ import { codexAuthEnvironment, resolveCodexModel } from './codex-auth.js';
 const contextPath = process.env.ISSUE_CONTEXT_PATH;
 if (!contextPath) throw new Error('缺少 ISSUE_CONTEXT_PATH；请指定 Issue JSON 文件。');
 const instructions = await readFile(new URL('./implement.prompt.md', import.meta.url), 'utf8');
-const prompt = createIssuePrompt(JSON.parse(await readFile(contextPath, 'utf8')), instructions);
+const prompt = createIssuePrompt(JSON.parse(await readFile(contextPath, 'utf8')), `${await loadTaskSkills('implement')}\n\n${instructions}`);
 if (process.argv.includes('--dry-run')) {
   console.log(prompt);
   process.exit(0);

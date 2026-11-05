@@ -3,13 +3,13 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { issueNumber, relatedPr, setup } = require('./agent.cjs');
 const { MODES, MUTATING, validateResult, reviewPayload } = require('./task-protocol.cjs');
+const { labelNames, isHumanTask, isCompleted, isAgentOpen, selectReadyChild, parentReference } = require('./ticket-policy.cjs');
 const PR_MODES = ['review', 'implement-pr', 'update-branch'];
-const TRIGGERS = { implement: ['agent:implement', 'ready-for-agent'], 'implement-prd': ['agent:implement', 'ready-for-agent'], review: ['agent:review'], 'implement-pr': ['agent:implement'], 'update-branch': ['agent:update-branch'], 'to-issues': ['agent:to-issues'], architecture: [] };
+const TRIGGERS = { implement: ['agent:implement'], 'implement-prd': ['agent:implement'], review: ['agent:review'], 'implement-pr': ['agent:implement'], 'update-branch': ['agent:update-branch'], 'to-issues': ['agent:to-issues'], architecture: [] };
 const temp = (...parts) => path.join(process.env.RUNNER_TEMP, ...parts);
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
   cwd, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 'codex[bot]', GIT_AUTHOR_EMAIL: 'codex[bot]@users.noreply.github.com', GIT_COMMITTER_NAME: 'codex[bot]', GIT_COMMITTER_EMAIL: 'codex[bot]@users.noreply.github.com' },
 }).trim();
-const labelNames = (issue) => issue.labels.map((label) => typeof label === 'string' ? label : label.name);
 async function removeLabel(github, args, name) {
   try { await github.rest.issues.removeLabel({ ...args, name }); }
   catch (error) { if (error.status !== 404) throw error; }
@@ -41,14 +41,14 @@ async function blockers(github, repo, number) {
 }
 function canPromote(issue, parent, dependencies) {
   const labels = labelNames(issue);
-  return issue.state === 'open' && !parent && labels.includes('agent:queued')
+  return issue.state === 'open' && !isHumanTask(issue) && !parent && labels.includes('agent:queued')
     && !labels.includes('agent:in-progress') && !labels.includes('agent:blocked')
-    && dependencies.every((dep) => dep.state === 'CLOSED' && dep.stateReason !== 'NOT_PLANNED');
+    && dependencies.every(isCompleted);
 }
 async function issueContext(github, repo, number) {
   const { data: issue } = await github.rest.issues.get({ ...repo, issue_number: number });
   const comments = await github.paginate(github.rest.issues.listComments, { ...repo, issue_number: number, per_page: 100 });
-  return { number, title: issue.title, body: issue.body ?? '', url: issue.html_url, state: issue.state,
+  return { number, title: issue.title, body: issue.body ?? '', url: issue.html_url, state: issue.state, labels: issue.labels ?? [],
     comments: comments.map((c) => ({ id: c.id, author: c.user?.login, body: c.body })) };
 }
 async function prFeedback(github, repo, number) {
@@ -96,7 +96,7 @@ async function prepare({ github, context, core }) {
     if (mode === 'implement-pr' && !task.feedback.comments.length && !task.feedback.threads.length && !task.feedback.reviews.some((r) => r.body?.trim())) {
       throw new Error('PR 没有可处理的反馈。');
     }
-    const linked = new Set([...String(pr.body ?? '').matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#([1-9]\d*)\b/gi)].map((match) => Number(match[1])));
+    const linked = new Set([...String(pr.body ?? '').matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|part of)\s+#([1-9]\d*)\b/gi)].map((match) => Number(match[1])));
     task.linkedIssues = [];
     for (const n of linked) {
       const issue = await issueContext(github, context.repo, n);
@@ -105,15 +105,17 @@ async function prepare({ github, context, core }) {
     }
   } else if (mode === 'architecture') {
     task.proposals = await github.paginate(github.rest.issues.listForRepo, { ...context.repo, labels: 'source:architecture-review', state: 'all', per_page: 100 });
+    if (task.proposals.filter((issue) => issue.state === 'open').length >= 10) { core.notice('已有10个开放架构提案，跳过本轮。'); return; }
   } else {
     task.issue = await issueContext(github, context.repo, number);
+    if (isHumanTask(task.issue)) throw new Error('人工 QA 任务不能交给自动实现。');
     if (task.issue.state !== 'open') { core.notice('Issue 已关闭，跳过。'); return; }
     const { data: issue } = await github.rest.issues.get({ ...context.repo, issue_number: number });
     if (issue.pull_request) throw new Error('Issue 入口不接受 PR。');
     const shape = await issueShape(github, context.repo, number);
     if (shape.parent) throw new Error('请给父 PRD 添加标签，不要直接运行子 Issue。');
     const dependencies = await blockers(github, context.repo, number);
-    if (dependencies.some((dep) => dep.state !== 'CLOSED' || dep.stateReason === 'NOT_PLANNED')) throw new Error('依赖尚未完成，请先处理依赖并使用 agent:queued 排队。');
+    if (!dependencies.every(isCompleted)) throw new Error('依赖尚未完成，请先处理依赖并使用 agent:queued 排队。');
     task.children = await subIssues(github, context.repo, number);
     if (mode === 'to-issues') {
       // 部分发布失败后的重试由发布端的稳定 marker 恢复，不重复创建。
@@ -125,8 +127,12 @@ async function prepare({ github, context, core }) {
         for (const child of task.children) {
           if ((await subIssues(github, context.repo, child.number)).length) throw new Error('不支持嵌套子 Issue，请先展平 PRD。');
         }
-        task.child = task.children.find((child) => child.state === 'open');
-        if (!task.child) { core.notice('全部子 Issue 已关闭，没有待实现任务。'); return; }
+        const dependencies = new Map(await Promise.all(task.children.filter(isAgentOpen).map(async (child) => [child.number, await blockers(github, context.repo, child.number)])));
+        task.child = selectReadyChild(task.children, dependencies);
+        if (!task.child) {
+          if (task.children.some(isAgentOpen)) throw new Error('开放实现任务仍有阻塞依赖，停止推进。');
+          core.notice('实现子任务已完成；人工 QA 保持开放，等待人验收。'); return;
+        }
         task.branch = `codex/prd-${number}`;
         try { task.sha = await refSha(github, context.repo, task.branch); }
         catch (error) { if (error.status !== 404) throw error; }
@@ -178,30 +184,77 @@ async function exportPatch() {
   await fs.writeFile(temp('codex-result/changes.patch'), patch);
   await fs.writeFile(temp('codex-result/result.json'), JSON.stringify(result));
 }
-async function publishSlices(github, context, task, result) {
+const PLAN_MARKER = '<!-- codex-prd-plan -->';
+function parsePlan(comment) {
+  if (comment.user?.login !== 'github-actions[bot]' || !comment.body?.startsWith(PLAN_MARKER)) return undefined;
+  const raw = comment.body.slice(PLAN_MARKER.length).trim();
+  const json = raw.startsWith('```json') ? raw.match(/^```json\n([\s\S]*?)\n```/)?.[1] : raw;
+  return validateResult('to-issues', JSON.parse(json));
+}
+async function savedPlan(github, repo, number) {
+  const comments = await github.paginate(github.rest.issues.listComments, { ...repo, issue_number: number, per_page: 100 });
+  return [...comments].reverse().find((comment) => comment.user?.login === 'github-actions[bot]' && comment.body?.startsWith(PLAN_MARKER));
+}
+async function saveDraftPlan(github, context, task, result) {
+  const current = await subIssues(github, context.repo, task.number);
+  if (current.length) throw new Error('已有子任务，请使用已保存的计划恢复发布，不要重新规划。');
+  const all = await github.paginate(github.rest.issues.listForRepo, { ...context.repo, state: 'all', per_page: 100 });
+  if (all.some((issue) => issue.body?.includes(`<!-- codex-prd:${task.number}:slice:`))) throw new Error('已有发布中的计划，请继续 agent:publish-tickets，不要重新规划。');
+  await github.rest.issues.createComment({ ...context.repo, issue_number: task.number,
+    body: `${PLAN_MARKER}\n\x60\x60\x60json\n${JSON.stringify(result, null, 2)}\n\x60\x60\x60\n\n拆票计划待审批。请检查切片、依赖和最终人工 QA；确认后添加 agent:publish-tickets，再给父需求添加 agent:implement 才开始实现。` });
+}
+async function publishSlices(github, context, task, proposedResult) {
   const args = { ...context.repo, issue_number: task.number };
   const current = await subIssues(github, context.repo, task.number);
   if (current.some((child) => !(child.body ?? '').includes(`<!-- codex-prd:${task.number}:slice:`))) throw new Error('发布期间新增了其他子 Issue，停止拆分。');
-  const comments = await github.paginate(github.rest.issues.listComments, { ...args, per_page: 100 });
-  const planMarker = '<!-- codex-prd-plan -->';
-  const saved = comments.find((comment) => comment.user?.login === 'github-actions[bot]' && comment.body?.startsWith(planMarker));
-  if (saved) result = validateResult('to-issues', JSON.parse(saved.body.slice(planMarker.length)));
-  else await github.rest.issues.createComment({ ...args, body: `${planMarker}${JSON.stringify(result)}` });
+  const comment = await savedPlan(github, context.repo, task.number);
+  const result = comment ? parsePlan(comment) : validateResult('to-issues', proposedResult);
+  if (!comment) throw new Error('缺少已保存的计划，请先生成并审批。');
   const all = await github.paginate(github.rest.issues.listForRepo, { ...context.repo, state: 'all', per_page: 100 });
+  const created = [];
   for (let i = 0; i < result.slices.length; i++) {
     const slice = result.slices[i];
     const marker = `<!-- codex-prd:${task.number}:slice:${i + 1} -->`;
-    const body = `${marker}\n\n${slice.whatToBuild}\n\n## 验收条件\n\n${slice.acceptanceCriteria.map((c) => `- [ ] ${c}`).join('\n')}\n\nPart of #${task.number}`;
+    const human = slice.execution === 'human-qa';
+    const body = `${marker}\n\n**Execution:** ${human ? 'Human QA (HITL)' : 'Agent'}\n\n${slice.whatToBuild}\n\n## 验收条件\n\n${slice.acceptanceCriteria.map((c) => `- [ ] ${c}`).join('\n')}\n\nPart of #${task.number}`;
     let issue = all.find((candidate) => !candidate.pull_request && candidate.body?.includes(marker));
     if (!issue) {
-      ({ data: issue } = await github.rest.issues.create({ ...context.repo, title: slice.title, body }));
+      ({ data: issue } = await github.rest.issues.create({ ...context.repo, title: slice.title, body, labels: [human ? 'ready-for-human' : 'ready-for-agent'] }));
       all.push(issue);
     }
-    if (!current.some((child) => child.id === issue.id)) {
-      await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', { ...args, sub_issue_id: issue.id });
+    if (!current.some((child) => child.id === issue.id)) await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', { ...args, sub_issue_id: issue.id });
+    created.push(issue);
+  }
+  for (let i = 0; i < created.length; i++) {
+    const issue = created[i];
+    const existing = await github.paginate('GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by', { ...context.repo, issue_number: issue.number, per_page: 100 });
+    for (const position of result.slices[i].blockedBy) {
+      const blocker = created[position - 1];
+      if (!existing.some((dep) => dep.id === blocker.id)) await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by', { ...context.repo, issue_number: issue.number, issue_id: blocker.id });
     }
   }
-  await github.rest.issues.createComment({ ...args, body: `PRD 已拆分为 ${result.slices.length} 个原生子 Issue，按列表顺序实现。请检查后给父 PRD 添加 agent:implement。\n\n${result.summary}` });
+  await github.rest.issues.createComment({ ...args, body: `已发布 ${result.slices.length} 个原生子 Issue 和阻塞关系，最后一项是人工 QA。请给父需求添加 agent:implement 开始；人工 QA 不会由 Agent 执行或关闭。\n\n${result.summary}` });
+}
+async function publishApprovedSlices({ github, context, core }) {
+  await authorize(github, context);
+  const number = issueNumber(process.env.TASK_NUMBER);
+  const { data: issue } = await github.rest.issues.get({ ...context.repo, issue_number: number });
+  if (issue.state !== 'open' || issue.pull_request || isHumanTask(issue) || (await issueShape(github, context.repo, number)).parent) throw new Error('只允许为开放的父规格发布子任务。');
+  const comment = await savedPlan(github, context.repo, number);
+  if (!comment) throw new Error('请先添加 agent:to-issues 生成计划。');
+  const { data: run } = await github.rest.actions.getWorkflowRun({ ...context.repo, run_id: context.runId });
+  const planTime = Date.parse(comment.updated_at ?? comment.created_at);
+  const approvalTime = Date.parse(run.created_at);
+  if (!Number.isFinite(planTime) || !Number.isFinite(approvalTime) || planTime > approvalTime) throw new Error('计划生成于审批触发之后，请检查后重新确认。');
+  await setup({ github, context });
+  await publishSlices(github, context, { number }, parsePlan(comment));
+  await removeLabel(github, { ...context.repo, issue_number: number }, 'agent:publish-tickets');
+  core.notice('已按批准计划发布实现子任务和最终人工 QA。');
+}
+function prBody(task, result, children = []) {
+  const content = result.prBody ?? `## Summary\n\n${result.summary}\n\n## Evidence\n\n- pnpm check\n- pnpm demo:test\n\n## Merge Danger\n\n**Door:** two-way\n\n**Blast Radius:** 本 Issue 涉及的模块；请人工检查差异和验收结果。`;
+  const safeContent = content.replace(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?=(?:[\w.-]+\/[\w.-]+)?#\d+|https?:\/\/github\.com\/)/gi, 'Refs ');
+  return `${parentReference(task.number, children)}\n\n${safeContent}\n\n${children.map((child) => `- [${child.state === 'closed' || child.number === task.child?.number ? 'x' : ' '}] #${child.number}${isHumanTask(child) ? '（人工 QA）' : ''}`).join('\n')}`;
 }
 async function publish({ github, context, core, cwd = process.cwd() }) {
   const task = await readTask();
@@ -209,7 +262,7 @@ async function publish({ github, context, core, cwd = process.cwd() }) {
   if (task.mode === 'to-issues') {
     const { data: current } = await github.rest.issues.get({ ...context.repo, issue_number: task.number });
     if (current.state !== 'open') throw new Error('PRD 在运行期间已关闭。');
-    await publishSlices(github, context, task, result);
+    await saveDraftPlan(github, context, task, result);
     return;
   }
   if (task.mode === 'architecture') {
@@ -237,6 +290,12 @@ async function publish({ github, context, core, cwd = process.cwd() }) {
     if (task.existingPr && (!pr || pr.number !== task.existingPr)) throw new Error('PRD 的 PR 已关闭或变化。');
     if (pr) assertPr(pr, context.repo);
     if (pr && pr.head.sha !== task.sha) throw new Error('PRD 分支已有新提交，请重试。');
+  }
+  if (task.mode === 'implement-prd') {
+    const children = await subIssues(github, context.repo, task.number);
+    const current = children.find((child) => child.number === task.child.number);
+    if (!current || !isAgentOpen(current)) throw new Error('本轮子任务已移除、关闭或改为人工任务，停止发布。');
+    if (!(await blockers(github, context.repo, current.number)).every(isCompleted)) throw new Error('子任务依赖发生变化，停止发布。');
   }
   const patchFile = temp('codex-result/changes.patch');
   const patch = await fs.readFile(patchFile, 'utf8');
@@ -266,8 +325,8 @@ async function publish({ github, context, core, cwd = process.cwd() }) {
   if (!pr) {
     const children = task.children ?? [];
     ({ data: pr } = await github.rest.pulls.create({ ...context.repo, base: task.base, head: task.branch, draft: true,
-      title: `[Codex] ${task.issue.title}`.slice(0, 200),
-      body: `Closes #${task.number}\n\n由 Codex + Sandcastle 实现，需人工审查。\n\n${children.map((child) => `- [${child.state === 'closed' || child.number === task.child?.number ? 'x' : ' '}] #${child.number}`).join('\n')}\n\n${result.summary}\n\n验证：pnpm check、pnpm demo:test。` }));
+      title: result.prTitle ?? `[Codex] ${task.issue.title}`.slice(0, 200),
+      body: prBody(task, result, children) }));
   }
   core.setOutput('url', pr.html_url);
   core.setOutput('pr_number', String(pr.number));
@@ -286,11 +345,11 @@ async function publish({ github, context, core, cwd = process.cwd() }) {
   }
   if (task.mode === 'implement-prd') {
     const children = await subIssues(github, context.repo, task.number);
-    if (!children.some((child) => child.number === task.child.number)) throw new Error('子任务已从 PRD 移除，停止推进。');
+    if (!children.some((child) => child.number === task.child.number && isAgentOpen(child))) throw new Error('子任务已从 PRD 移除，停止推进。');
     await github.rest.issues.createComment({ ...context.repo, issue_number: task.child.number, body: `已在 ${commit} 完成并通过验证；属于 PRD #${task.number}，等待 ${pr.html_url} 合并。\n\n${result.summary}` });
     await github.rest.issues.update({ ...context.repo, issue_number: task.child.number, state: 'closed', state_reason: 'completed' });
-    const remaining = children.filter((child) => child.state === 'open' && child.number !== task.child.number);
-    await github.rest.pulls.update({ ...context.repo, pull_number: pr.number, body: `Closes #${task.number}\n\nPRD 逐轮实现进度：\n\n${children.map((child) => `- [${child.state === 'closed' || child.number === task.child.number ? 'x' : ' '}] #${child.number}`).join('\n')}\n\n${result.summary}` });
+    const remaining = children.filter((child) => isAgentOpen(child) && child.number !== task.child.number);
+    await github.rest.pulls.update({ ...context.repo, pull_number: pr.number, body: prBody(task, result, children) });
     core.setOutput('next', remaining.length ? 'implement-prd' : 'review');
   } else if (task.mode === 'implement') core.setOutput('next', 'review');
 }
@@ -341,7 +400,7 @@ async function promote({ github, context, core }) {
     break;
   }
 }
-module.exports = { authorize, prepare, publish, finish, promote, exportPatch, canPromote, assertPr, prFeedback, publishSlices };
+module.exports = { authorize, prepare, publish, finish, promote, exportPatch, canPromote, assertPr, prFeedback, publishSlices, publishApprovedSlices, saveDraftPlan, parsePlan, prBody };
 if (require.main === module) {
   if (process.argv[2] !== 'export') throw new Error('只支持 export。');
   exportPatch().catch((error) => { console.error(error); process.exitCode = 1; });

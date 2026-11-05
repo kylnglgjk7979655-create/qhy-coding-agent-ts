@@ -1,23 +1,48 @@
-name: Codex Split PRD
+name: Codex Plan and Publish Tickets
 on:
   issues:
     types: [labeled]
   workflow_dispatch:
     inputs:
       issue_number:
-        description: 要拆分的父 PRD 编号
+        description: 父规格 Issue 编号
         required: true
         type: string
+      publish_approved:
+        description: 已人工检查计划，确认发布子任务及人工 QA
+        default: false
+        type: boolean
 permissions:
   contents: write
   issues: write
   pull-requests: write
   actions: write
 jobs:
-  run:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:to-issues'
+  plan:
+    if: (github.event_name == 'workflow_dispatch' && !inputs.publish_approved) || github.event.label.name == 'agent:to-issues'
     uses: ./.github/workflows/codex-task.yml
     with:
       mode: to-issues
       number: ${{ inputs.issue_number || format('{0}', github.event.issue.number) }}
     secrets: inherit
+  publish-approved:
+    if: (github.event_name == 'workflow_dispatch' && inputs.publish_approved) || github.event.label.name == 'agent:publish-tickets'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: codex-subscription-${{ github.repository }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/github-script@v7
+        env:
+          TASK_NUMBER: ${{ inputs.issue_number || format('{0}', github.event.issue.number) }}
+        with:
+          script: await require('./.github/scripts/tasks.cjs').publishApprovedSlices({ github, context, core })

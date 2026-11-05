@@ -17,3 +17,7 @@ Use the default labels `needs-triage`, `needs-info`, `ready-for-agent`, `ready-f
 This is a single-context repo. See `docs/agents/domain.md`.
 
 
+
+### 仓库内 skills
+
+使用 `.agents/skills/` 的已固定版本，不在 CI 临时下载。执行仓库 skill 前读取 [项目执行适配](docs/agents/skill-execution.md)：其中规定规划与执行标签、人工 QA、CI 的输出及发布职责。上游原文及引用文件保留原语言，项目适配使用中文。
