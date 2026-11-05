@@ -1,0 +1,166 @@
+name: Codex Implement Issue
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 要实现的 GitHub Issue 编号
+        required: true
+        type: string
+permissions: {}
+concurrency:
+  group: codex-issue-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.label.name == 'ready-for-agent' ||
+      github.event.label.name == 'agent:implement'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    outputs:
+      proceed: ${{ steps.prepare.outputs.proceed }}
+      issue: ${{ steps.prepare.outputs.issue }}
+      base: ${{ steps.prepare.outputs.base }}
+      sha: ${{ steps.prepare.outputs.sha }}
+      branch: ${{ steps.prepare.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/github-script@v7
+        id: prepare
+        env:
+          INPUT_ISSUE: ${{ inputs.issue_number }}
+        with:
+          script: await require('./.github/scripts/agent.cjs').prepare({ github, context, core })
+      - uses: actions/upload-artifact@v4
+        if: steps.prepare.outputs.proceed == 'true'
+        with:
+          name: issue-context
+          path: ${{ runner.temp }}/codex-context/issue.json
+          retention-days: 1
+
+  generate:
+    needs: prepare
+    if: needs.prepare.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: issue-context
+          path: ${{ runner.temp }}/codex-context
+      - name: 创建工作分支
+        env:
+          BRANCH: ${{ needs.prepare.outputs.branch }}
+        run: |
+          git config user.name 'codex[bot]'
+          git config user.email 'codex[bot]@users.noreply.github.com'
+          git checkout -b "$BRANCH"
+      - name: 使用 Sandcastle 启动 Codex
+        env:
+          # 此临时 Runner 模板仍为 API 模式；订阅模式在本地使用已登录 CLI。
+          CODEX_AUTH_MODE: api-key
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+          ISSUE_CONTEXT_PATH: ${{ runner.temp }}/codex-context/issue.json
+          AGENT_OUTPUT_DIR: ${{ runner.temp }}/codex-result
+        run: pnpm agent:implement
+      - name: 独立验证修改
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm check
+          pnpm demo:test
+      - name: 导出补丁
+        env:
+          BASE_SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/codex-result"
+          git add --all
+          git diff --cached --check
+          git diff --binary --full-index "$BASE_SHA" > "$RUNNER_TEMP/codex-result/changes.patch"
+          if [ ! -s "$RUNNER_TEMP/codex-result/changes.patch" ]; then
+            echo '::error::Codex 没有产生代码修改；请检查日志和需求。'
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-result
+          path: ${{ runner.temp }}/codex-result/
+          retention-days: 3
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, generate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: read
+      pull-requests: write
+    outputs:
+      pr_url: ${{ steps.publish.outputs.pr_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          token: ${{ secrets.AGENT_PAT || github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: codex-result
+          path: ${{ runner.temp }}/codex-result
+      - uses: actions/github-script@v7
+        id: publish
+        env:
+          ISSUE_NUMBER: ${{ needs.prepare.outputs.issue }}
+          BASE_BRANCH: ${{ needs.prepare.outputs.base }}
+          AGENT_BRANCH: ${{ needs.prepare.outputs.branch }}
+        with:
+          github-token: ${{ secrets.AGENT_PAT || github.token }}
+          script: await require('./.github/scripts/agent.cjs').publish({ github, context, core })
+
+  finish:
+    needs: [prepare, generate, publish]
+    if: always() && needs.prepare.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          ISSUE_NUMBER: ${{ needs.prepare.outputs.issue }}
+          GENERATE_RESULT: ${{ needs.generate.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          PR_URL: ${{ needs.publish.outputs.pr_url }}
+        with:
+          script: |
+            const issue_number = Number(process.env.ISSUE_NUMBER);
+            const args = { ...context.repo, issue_number };
+            const ok = process.env.PUBLISH_RESULT === 'success';
+            if (!ok) await github.rest.issues.addLabels({ ...args, labels: ['agent:blocked'] });
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = ok
+              ? `Codex 已创建草稿 PR：${process.env.PR_URL}\n\n运行记录：${run}。请人工审查并决定合并。`
+              : `Codex 运行未完成。生成：${process.env.GENERATE_RESULT}；发布：${process.env.PUBLISH_RESULT}。\n\n日志：${run}\n\n处理原因后，重新添加 ready-for-agent 或 agent:implement 标签即可重试。`;
+            try {
+              await github.rest.issues.createComment({ ...args, body });
+            } finally {
+              try { await github.rest.issues.removeLabel({ ...args, name: 'agent:in-progress' }); }
+              catch (error) { if (error.status !== 404) throw error; }
+            }

@@ -1,5 +1,9 @@
 # Issue tracker: Local Markdown
 
+## GitHub Actions 入口
+
+通过 GitHub Actions 启动的 Codex 任务，以 workflow 下载的 GitHub Issue JSON 为需求来源，其中包含编号、标题、正文和评论；`.scratch/` 只提供补充背景。本文件其余约定适用于本地 Markdown 需求。配置、标签和重试方式见 [GitHub Actions 与 Codex](./github-actions.md)。
+
 Issues and specs for this repo live as markdown files in `.scratch/`.
 
 ## Conventions

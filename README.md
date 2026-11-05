@@ -174,6 +174,12 @@ pnpm exec node dist/cli.js --workspace ./demo 2> run.jsonl
 
 `ai` 与 provider 均依赖 `@ai-sdk/provider@4.0.35`、`@ai-sdk/provider-utils@5.0.74`。上述版本已通过 pnpm 严格 peer 安装；直接依赖均无 `^`/`~`，传递依赖由 `pnpm-lock.yaml` 固定。AI SDK API 依据已安装包附带的 `src/agent/tool-loop-agent.ts` 和 `docs/03-agents/02-building-agents.mdx` 核对。
 
+## GitHub Actions 与 Codex
+
+仓库包含 `Check`、`Setup Agent Labels` 和 `Codex Implement Issue` 三个 workflow。维护者在 GitHub Issue 上添加 `ready-for-agent` 或 `agent:implement` 后，由临时 Ubuntu Runner 通过 Sandcastle 的 `codex()` 实现需求；检查通过后创建草稿 PR，交给人审查和合并。
+
+订阅用户可在本机执行 `codex login`，让 Sandcastle 默认复用 ChatGPT 登录，无需 API Key。现有 GitHub 临时 Runner 模板仍为 API 模式，需 `OPENAI_API_KEY`；订阅云端方案另需受信任的私有运行环境及登录态持久化。GitHub 标签触发前需把配置合入默认分支。完整配置、可选 `AGENT_PAT`、模型选择及失败重试见 [GitHub Actions 与 Codex](docs/agents/github-actions.md)。本流程中的 Codex 使用独立认证，不读取 CLI 演示项目的 `agent.config.json` 或 `.env`。
+
 ## TS 演示仓库
 
 `demo/` 是可独立安装的 TypeScript 模板，自带精确依赖和 lockfile。`checkoutTotal` 的规则是“满 100 打九折”，已知 bug 是恰好 100 时返回 100。三个基础测试通过，单独回归测试预期 `100 → 90`，起始时失败。
