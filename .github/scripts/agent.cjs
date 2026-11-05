@@ -43,6 +43,9 @@ async function removeLabel(github, args, name) {
 
 async function prepare({ github, context, core }) {
   core.setOutput('proceed', 'false');
+  if (context.payload.repository?.private !== true) {
+    throw new Error('Codex 订阅自动实现只允许在私有仓库运行。');
+  }
   const number = issueNumber(context.payload.issue?.number ?? process.env.INPUT_ISSUE);
   const args = { ...context.repo, issue_number: number };
   const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({

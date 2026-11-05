@@ -10,7 +10,8 @@ on:
         type: string
 permissions: {}
 concurrency:
-  group: codex-issue-${{ github.event.issue.number || inputs.issue_number }}
+  # 同一份订阅登录态需要串行刷新，不能按 Issue 分别并发。
+  group: codex-subscription-${{ github.repository }}
   cancel-in-progress: false
 jobs:
   prepare:
@@ -22,6 +23,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
       issues: write
       pull-requests: read
     outputs:
@@ -41,6 +43,29 @@ jobs:
           INPUT_ISSUE: ${{ inputs.issue_number }}
         with:
           script: await require('./.github/scripts/agent.cjs').prepare({ github, context, core })
+      - uses: actions/github-script@v7
+        id: queued
+        if: steps.prepare.outputs.proceed == 'true'
+        with:
+          script: |
+            const { data } = await github.rest.actions.getWorkflowRun({ ...context.repo, run_id: context.runId });
+            core.setOutput('created_at', data.created_at);
+      - name: 获取认证加密公钥并检查登录态版本
+        if: steps.prepare.outputs.proceed == 'true'
+        uses: actions/github-script@v7
+        env:
+          AUTH_STORE_CONFIGURED: ${{ secrets.CODEX_AUTH_STORE_PAT != '' }}
+          AUTH_JSON_CONFIGURED: ${{ secrets.CODEX_AUTH_JSON != '' }}
+          RUN_CREATED_AT: ${{ steps.queued.outputs.created_at }}
+        with:
+          github-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
+          script: await require('./.github/scripts/subscription.cjs').publicKey({ github, context })
+      - uses: actions/upload-artifact@v4
+        if: steps.prepare.outputs.proceed == 'true'
+        with:
+          name: codex-public-key
+          path: ${{ runner.temp }}/codex-public-key/key.json
+          retention-days: 1
       - uses: actions/upload-artifact@v4
         if: steps.prepare.outputs.proceed == 'true'
         with:
@@ -55,6 +80,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    outputs:
+      auth_artifact: ${{ steps.upload-auth.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,6 +92,10 @@ jobs:
         with:
           name: issue-context
           path: ${{ runner.temp }}/codex-context
+      - uses: actions/download-artifact@v4
+        with:
+          name: codex-public-key
+          path: ${{ runner.temp }}/codex-public-key
       - name: 创建工作分支
         env:
           BRANCH: ${{ needs.prepare.outputs.branch }}
@@ -72,15 +103,39 @@ jobs:
           git config user.name 'codex[bot]'
           git config user.email 'codex[bot]@users.noreply.github.com'
           git checkout -b "$BRANCH"
-      - name: 使用 Sandcastle 启动 Codex
+      - name: 恢复订阅登录
+        id: restore
+        uses: actions/github-script@v7
         env:
-          # 此临时 Runner 模板仍为 API 模式；订阅模式在本地使用已登录 CLI。
-          CODEX_AUTH_MODE: api-key
-          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        with:
+          script: await require('./.github/scripts/subscription.cjs').restore(core.setSecret)
+      - name: 使用 Sandcastle 启动订阅 Codex
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          CODEX_AUTH_MODE: chatgpt
           CODEX_MODEL: ${{ vars.CODEX_MODEL }}
           ISSUE_CONTEXT_PATH: ${{ runner.temp }}/codex-context/issue.json
           AGENT_OUTPUT_DIR: ${{ runner.temp }}/codex-result
         run: pnpm agent:implement
+      - name: 用 GitHub 公钥加密刷新后的登录态
+        id: seal
+        if: always() && steps.restore.outcome == 'success'
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+        run: node .github/scripts/subscription.cjs seal
+      - uses: actions/upload-artifact@v4
+        id: upload-auth
+        if: always() && steps.seal.outcome == 'success'
+        with:
+          name: codex-auth-update
+          path: ${{ runner.temp }}/codex-auth-update/encrypted.json
+          retention-days: 1
+          if-no-files-found: error
+      - name: 清理临时登录文件
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/codex-home"
       - name: 独立验证修改
         run: |
           pnpm install --frozen-lockfile
@@ -105,8 +160,30 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
-  publish:
+  persist-auth:
     needs: [prepare, generate]
+    if: always() && needs.prepare.result == 'success' && needs.generate.outputs.auth_artifact != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: codex-auth-update
+          path: ${{ runner.temp }}/codex-auth-update
+      - name: 将加密登录态写回仓库 Secret
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
+          script: await require('./.github/scripts/subscription.cjs').persist({ github, context })
+
+  publish:
+    needs: [prepare, generate, persist-auth]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -135,7 +212,7 @@ jobs:
           script: await require('./.github/scripts/agent.cjs').publish({ github, context, core })
 
   finish:
-    needs: [prepare, generate, publish]
+    needs: [prepare, generate, persist-auth, publish]
     if: always() && needs.prepare.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -146,6 +223,7 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ needs.prepare.outputs.issue }}
           GENERATE_RESULT: ${{ needs.generate.result }}
+          AUTH_RESULT: ${{ needs.persist-auth.result }}
           PUBLISH_RESULT: ${{ needs.publish.result }}
           PR_URL: ${{ needs.publish.outputs.pr_url }}
         with:
@@ -157,7 +235,7 @@ jobs:
             const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = ok
               ? `Codex 已创建草稿 PR：${process.env.PR_URL}\n\n运行记录：${run}。请人工审查并决定合并。`
-              : `Codex 运行未完成。生成：${process.env.GENERATE_RESULT}；发布：${process.env.PUBLISH_RESULT}。\n\n日志：${run}\n\n处理原因后，重新添加 ready-for-agent 或 agent:implement 标签即可重试。`;
+              : `Codex 运行未完成。生成：${process.env.GENERATE_RESULT}；登录态保存：${process.env.AUTH_RESULT}；发布：${process.env.PUBLISH_RESULT}。\n\n日志：${run}\n\n处理原因后，重新添加 ready-for-agent 或 agent:implement 标签即可重试。`;
             try {
               await github.rest.issues.createComment({ ...args, body });
             } finally {

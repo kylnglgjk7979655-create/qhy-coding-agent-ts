@@ -178,7 +178,7 @@ pnpm exec node dist/cli.js --workspace ./demo 2> run.jsonl
 
 仓库包含 `Check`、`Setup Agent Labels` 和 `Codex Implement Issue` 三个 workflow。维护者在 GitHub Issue 上添加 `ready-for-agent` 或 `agent:implement` 后，由临时 Ubuntu Runner 通过 Sandcastle 的 `codex()` 实现需求；检查通过后创建草稿 PR，交给人审查和合并。
 
-订阅用户可在本机执行 `codex login`，让 Sandcastle 默认复用 ChatGPT 登录，无需 API Key。现有 GitHub 临时 Runner 模板仍为 API 模式，需 `OPENAI_API_KEY`；订阅云端方案另需受信任的私有运行环境及登录态持久化。GitHub 标签触发前需把配置合入默认分支。完整配置、可选 `AGENT_PAT`、模型选择及失败重试见 [GitHub Actions 与 Codex](docs/agents/github-actions.md)。本流程中的 Codex 使用独立认证，不读取 CLI 演示项目的 `agent.config.json` 或 `.env`。
+首次使用需把配置合入 GitHub 默认分支，并设置 `CODEX_AUTH_JSON`（CI 专用订阅登录）和 `CODEX_AUTH_STORE_PAT`（保存刷新结果）。工作流只在私有仓库运行，不需要 OpenAI API Key。完整配置与使用命令见 [GitHub Actions 与 Codex 订阅](docs/agents/github-actions.md)。
 
 ## TS 演示仓库
 
