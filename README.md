@@ -1,6 +1,6 @@
 # qhy-coding-agent-ts
 
-基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `read_file`、`write_file` 和 `runtimeInfo`，可直接读取或修改配置工作区内的文件。会话历史保存在启动目录的 `.agent/conversations/`，支持用 conversation ID 跨进程继续对话。
+基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `read_file`、`write_file` 和 `runtimeInfo`，可读取配置工作区内的文件，并在工具策略允许或独立模型审批通过后修改文件。会话历史保存在启动目录的 `.agent/conversations/`，支持用 conversation ID 跨进程继续对话。
 
 通过 `ToolLoopAgent.stream()` 运行工具循环，每个对话轮次使用独立的 `maxSteps` 限制，默认 20 步。当前没有执行 shell 或运行项目测试的工具。
 
@@ -91,9 +91,51 @@ pnpm dev --workspace ./demo
 | `write_file` | 接收 `path` 和 `content`，完整替换目标文件；文件不存在时创建，不自动创建父目录 |
 | `runtimeInfo` | 返回工作区绝对路径和本轮运行探针 |
 
-相对路径从配置的工作区解析；绝对路径仅在解析后的目标仍位于工作区内时允许。指向工作区外的符号链接会被拒绝。工作区内的文件操作直接执行，无逐次确认提示；文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
+相对路径从配置的工作区解析；绝对路径仅在解析后的目标仍位于工作区内时允许。指向工作区外的符号链接会被拒绝。read_file 和 runtimeInfo 默认直接执行；write_file 默认在独立模型审批通过后执行。固定允许或审批通过均不能放宽文件路径与符号链接边界。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
 
 终端实时显示 `[工具] read_file：开始`、`[工具] read_file：成功`、`[工具] read_file：失败` 或 `[工具] read_file：拒绝` 等执行状态，不直接打印工具参数、文件内容或原始异常。一次调用只显示一个终结状态；普通调用失败后，同批后续调用仍会执行，Agent 会收到各次工具结果并决定如何继续。Agent 的最终回答可以按用户要求引用文件内容。
+
+## 工具策略与模型审批
+
+可在配置中添加 `approval`，省略时采用模型审批：
+
+```json
+{
+  "approval": {
+    "mode": "model",
+    "timeoutMs": 30000,
+    "rules": [
+      { "toolName": "read_file", "action": "allow" },
+      { "toolName": "write_file", "action": "ask" }
+    ]
+  }
+}
+```
+
+`rules` 只精确匹配工具名称，不支持通配符、路径或命令前缀。`allow` 直接执行，`deny` 直接拒绝，`ask` 进入审批。同名规则冲突时 `deny` 优先，其次 `allow`，然后 `ask`；无匹配规则时 read_file、runtimeInfo 默认允许，其他工具默认审批。未知工具或无效参数在审批前拒绝。修改参数或再次调用都需要重新判断，不复用上次批准。
+
+每次模型审批使用独立请求，仅发送专用审查提示词和本次工具名称、完整参数，不发送用户目标、对话历史或文件执行结果，也不给审查模型提供工具。审查只接受 `approve` 或 `deny`，不能核验完整用户意图，不提供操作系统隔离。当前 CLI 只交付 `model` 模式，人工终端模式在后续工单交付。公共 `runAgent` 另提供可等待的 `approvalControl(call, signal)`，返回 `approve` 或 `deny`；固定策略优先，控制接口与仅用于观察的 `onToolEvent` 分离，答复不改变已批准的参数。
+
+默认复用主模型名称、地址和凭据；也可设置独立审查模型（凭据仅引用环境变量）：
+
+```json
+{
+  "approval": {
+    "model": {
+      "provider": "openai",
+      "model": "your-review-model",
+      "baseURL": "https://example.com/v1",
+      "apiKeyEnv": "REVIEW_API_KEY"
+    }
+  }
+}
+```
+
+设置 `approval.model` 时须提供非空 `model`；省略其中的地址或凭据引用则分别复用主模型设置。审批配置及模型配置都拒绝未知字段；URL 不得含凭据、查询参数或片段，`apiKeyEnv` 必须是合法环境变量名且变量非空。不接受明文 `apiKey`。
+
+审批独立上限 `approval.timeoutMs` 默认 30 秒，范围为 1–3,600,000 毫秒，同时受整轮 `timeoutMs` 剩余时限与取消约束，不自动重试。等待期间不会启动操作或显示工具开始；明确拒绝显示“拒绝”，以 `PERMISSION_DENIED` 工具结果回传，其他普通调用继续。审查超时、不可用或响应无效产生用户可见的 `APPROVAL_ERROR` 并停止本轮，不再执行后续工具或请求主模型。此前副作用保留，失败轮不保存，CLI 仍可接收新消息；Ctrl+C 或 SIGTERM 取消并退出。
+
+普通进度和日志不输出审批参数、结果或原始异常。观察回调失败只输出诊断，不替代审批也不改变决定。常规验证使用本地模型夹具与假凭据；自动测试不能代替最终人工 QA。
 
 ## 真实模型与工具验收
 

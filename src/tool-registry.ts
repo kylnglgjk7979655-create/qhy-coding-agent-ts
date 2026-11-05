@@ -6,7 +6,13 @@ export interface ToolExecutionEvent {
   callId: string;
   toolName: string;
   status: 'started' | 'succeeded' | 'failed' | 'rejected';
-  errorCode?: 'INVALID_TOOL_ARGUMENTS' | 'UNKNOWN_TOOL' | 'TOOL_EXECUTION_ERROR';
+  errorCode?: 'INVALID_TOOL_ARGUMENTS' | 'UNKNOWN_TOOL' | 'TOOL_EXECUTION_ERROR' | 'PERMISSION_DENIED';
+}
+
+export interface ToolApprovalRequest {
+  callId: string;
+  toolName: string;
+  input: unknown;
 }
 
 type ToolErrorCode = NonNullable<ToolExecutionEvent['errorCode']>;
@@ -16,7 +22,10 @@ type ToolFailure = { is_error: true; error: { code: ToolErrorCode; message: stri
 export class ToolRegistry {
   private readonly registered = new Map<string, ToolSet[string]>();
 
-  constructor(private readonly options: { onToolEvent?: (event: ToolExecutionEvent) => unknown }) {}
+  constructor(private readonly options: {
+    onToolEvent?: (event: ToolExecutionEvent) => unknown;
+    approve?: (call: ToolApprovalRequest, signal?: AbortSignal) => Promise<boolean>;
+  }) {}
 
   register<Input, Output>(definition: {
     name: string;
@@ -33,12 +42,18 @@ export class ToolRegistry {
       inputSchema,
       execute: async (input, execution) => {
         execution.abortSignal?.throwIfAborted();
+        if (this.options.approve && !await this.options.approve({ callId: execution.toolCallId, toolName: name, input }, execution.abortSignal)) {
+          this.report({ callId: execution.toolCallId, toolName: name, status: 'rejected', errorCode: 'PERMISSION_DENIED' });
+          return { is_error: true as const, error: { code: 'PERMISSION_DENIED' as const, message: '本次工具调用未获权限批准。' } };
+        }
+        execution.abortSignal?.throwIfAborted();
         this.report({ callId: execution.toolCallId, toolName: name, status: 'started' });
         try {
           const output = await execute(input, execution);
           this.report({ callId: execution.toolCallId, toolName: name, status: 'succeeded' });
           return { is_error: false as const, output };
         } catch (error) {
+          execution.abortSignal?.throwIfAborted();
           const message = error instanceof Error ? error.message : '工具执行失败。';
           this.report({ callId: execution.toolCallId, toolName: name, status: 'failed', errorCode: 'TOOL_EXECUTION_ERROR' });
           return { is_error: true as const, error: { code: 'TOOL_EXECUTION_ERROR' as const, message } };

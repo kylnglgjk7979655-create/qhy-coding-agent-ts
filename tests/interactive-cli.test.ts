@@ -77,6 +77,7 @@ describe('interactive compiled CLI', () => {
     await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
       model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${address.port}/v1`,
       workspace: '.', timeoutMs: 3000, maxSteps: 20,
+      approval: { rules: [{ toolName: 'write_file', action: 'allow' }] },
     }));
   });
 
@@ -314,6 +315,7 @@ describe('interactive compiled CLI', () => {
     await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
       model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${address.port}/v1`,
       workspace: 'workspace', timeoutMs: 3000, maxSteps: 20,
+      approval: { rules: [{ toolName: 'write_file', action: 'allow' }] },
     }));
     reply = (_request, index) => {
       if (index === 1) return { body: response(null, { name: 'read_file', arguments: { path: '../outside.txt' } }) };

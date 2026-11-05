@@ -9,6 +9,14 @@ const baseURLSchema = z.url().refine((value) => {
     && !url.username && !url.password && !url.search && !url.hash;
 }, 'baseURL 必须为 HTTP(S) 地址，且不能包含凭据、查询参数或片段');
 
+const apiKeyEnvSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+const reviewModelSchema = z.strictObject({
+  provider: z.literal('openai').default('openai'),
+  model: z.string().trim().min(1),
+  apiKeyEnv: apiKeyEnvSchema.optional(),
+  baseURL: baseURLSchema.optional(),
+});
+
 export const configSchema = z.strictObject({
   provider: z.literal('openai').default('openai'),
   model: z.string().trim().min(1).default('gpt-4.1-mini-2025-04-14'),
@@ -17,10 +25,19 @@ export const configSchema = z.strictObject({
   workspace: z.string().trim().min(1).default('./demo'),
   timeoutMs: z.number().int().min(1).max(3_600_000).default(60_000),
   maxSteps: z.number().int().min(1).max(100).default(20),
+  approval: z.strictObject({
+    mode: z.literal('model').default('model'),
+    rules: z.array(z.strictObject({
+      toolName: z.string().trim().min(1),
+      action: z.enum(['allow', 'deny', 'ask']),
+    })).default([]),
+    timeoutMs: z.number().int().min(1).max(3_600_000).default(30_000),
+    model: reviewModelSchema.optional(),
+  }).default({ mode: 'model', rules: [], timeoutMs: 30_000 }),
 });
 
 export type ModelConfig = z.infer<typeof configSchema>;
-export type ResolvedConfig = ModelConfig & { apiKey: string };
+export type ResolvedConfig = ModelConfig & { apiKey: string; approvalApiKey?: string };
 
 interface ConfigOptions {
   cwd: string;
@@ -67,14 +84,19 @@ export async function loadConfig(options: ConfigOptions): Promise<ResolvedConfig
   if (!apiKey) {
     throw new AgentError('CONFIG_ERROR', `缺少凭据：请在环境变量或 .env 中设置 ${config.apiKeyEnv}。`);
   }
-  return { ...config, workspace, apiKey };
+  const reviewKeyEnv = config.approval.model?.apiKeyEnv;
+  const approvalApiKey = reviewKeyEnv === undefined ? undefined : options.env[reviewKeyEnv]?.trim();
+  if (reviewKeyEnv !== undefined && !approvalApiKey) {
+    throw new AgentError('CONFIG_ERROR', `缺少审批凭据：请设置环境变量 ${reviewKeyEnv}。`);
+  }
+  return { ...config, workspace, apiKey, ...(approvalApiKey === undefined ? {} : { approvalApiKey }) };
 }
 
 export function isMissing(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }
 
-export function loggableConfig(config: ResolvedConfig): ModelConfig {
+export function loggableConfig(config: ResolvedConfig): Omit<ModelConfig, 'approval'> {
   // Allow-list rather than removing a secret from an arbitrary object.
   return {
     provider: config.provider,

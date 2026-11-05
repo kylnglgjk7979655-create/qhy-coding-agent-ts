@@ -8,9 +8,13 @@ import { z } from 'zod';
 import type { ResolvedConfig } from './config.js';
 import { AgentError, publicError } from './errors.js';
 import { readWorkspaceFile, writeWorkspaceFile } from './workspace-files.js';
+import { approveToolCall } from './tool-approval.js';
+import type { ApprovalControl } from './tool-approval.js';
 import { ToolRegistry } from './tool-registry.js';
 import type { ToolExecutionEvent } from './tool-registry.js';
 
+export type { ApprovalControl } from './tool-approval.js';
+export type { ToolApprovalRequest } from './tool-registry.js';
 export type { ToolExecutionEvent } from './tool-registry.js';
 
 export interface RunResult {
@@ -166,6 +170,7 @@ export async function runAgent(
     onToolCall?: (name: string) => void;
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
+    approvalControl?: ApprovalControl;
   },
 ): Promise<RunResult> {
   if (options.smokeTool && config.maxSteps < 2) {
@@ -180,7 +185,23 @@ export async function runAgent(
   const probe = randomUUID();
   const smokeProbePath = `.agent-smoke-${probe}.txt`;
   if (options.smokeTool) await writeFile(join(config.workspace, smokeProbePath), probe, { encoding: 'utf8', flag: 'wx' });
-  const registry = new ToolRegistry(options);
+  const frameworkAbort = new AbortController();
+  let frameworkError: AgentError | undefined;
+  const registry = new ToolRegistry({
+    ...options,
+    approve: async (call) => {
+      signal.throwIfAborted();
+      try {
+        return await approveToolCall(config, call, signal, options.approvalControl);
+      } catch (error) {
+        if (!signal.aborted) {
+          frameworkError = error instanceof AgentError ? error : new AgentError('APPROVAL_ERROR', '工具审批故障，已停止本轮。');
+          frameworkAbort.abort(frameworkError);
+        }
+        throw error;
+      }
+    },
+  });
   registry.register({
     name: 'runtimeInfo',
     description: '返回已配置的工作区绝对路径和本次运行探针。',
@@ -202,12 +223,11 @@ export async function runAgent(
       return { success: true as const };
     },
   });
-  const frameworkAbort = new AbortController();
-  let frameworkError: AgentError | undefined;
   const model = wrapLanguageModel({
     model: provider.chat(config.model),
     middleware: {
       wrapStream: async ({ doStream }) => {
+        signal.throwIfAborted();
         const result = await doStream();
         return {
           ...result,
@@ -231,6 +251,7 @@ export async function runAgent(
     instructions: [
       '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
       '可使用 read_file 读取工作区文件，使用 write_file 完整替换或创建工作区文件；文件访问仅限配置的工作区。',
+      'write_file 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
       'runtimeInfo 可获取工作区路径和本次探针。没有执行命令的能力。',
     ].join('\n'),
     tools: registry.tools(),
@@ -238,7 +259,7 @@ export async function runAgent(
     stopWhen: isStepCount(config.maxSteps),
     onError: ({ error }) => {
       if (InvalidToolInputError.isInstance(error) || NoSuchToolError.isInstance(error)) return;
-      frameworkError = modelStreamError(error);
+      frameworkError ??= modelStreamError(error);
       frameworkAbort.abort(frameworkError);
     },
     // Avoid automatic retries hiding auth failures or extending the deadline.
@@ -279,7 +300,7 @@ export async function runAgent(
           }
           const rejection = registry.reject(part.toolCallId, part.toolName, part.error);
           if (!rejection) {
-            frameworkError = new AgentError('PROVIDER_ERROR', '工具执行发生不可恢复错误，已终止当前对话轮次。');
+            frameworkError ??= new AgentError('PROVIDER_ERROR', '工具执行发生不可恢复错误，已终止当前对话轮次。');
             frameworkAbort.abort(frameworkError);
             controller.error(frameworkError);
             return;
@@ -294,6 +315,7 @@ export async function runAgent(
         },
       }),
       onStepFinish: ({ toolCalls, toolResults }) => {
+        if (signal.aborted) return;
         for (const call of toolCalls) options.onToolCall?.(call.toolName);
         // This callback is awaited by the SDK before it starts the next model request.
         const callIds = toolCalls.map(({ toolCallId }) => toolCallId);
@@ -314,6 +336,7 @@ export async function runAgent(
       result.finishReason,
       result.totalUsage,
     ]);
+    signal.throwIfAborted();
     const toolResults = steps.flatMap((step) => step.toolResults);
     const toolSmokePassed = toolResults.some((item) => {
       if (item.toolName !== 'read_file') return false;
