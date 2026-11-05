@@ -1,0 +1,23 @@
+name: Codex Split PRD
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 要拆分的父 PRD 编号
+        required: true
+        type: string
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: write
+jobs:
+  run:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:to-issues'
+    uses: ./.github/workflows/codex-task.yml
+    with:
+      mode: to-issues
+      number: ${{ inputs.issue_number || format('{0}', github.event.issue.number) }}
+    secrets: inherit

@@ -19,6 +19,7 @@
     "demo:test": "tsx --test demo/src/*.test.ts",
     "demo:bug": "tsx --test demo/regression/*.test.ts",
     "demo:init": "node scripts/init-demo.mjs",
+    "agent:task": "tsx .sandcastle/task.ts",
     "agent:implement": "tsx .sandcastle/implement.ts"
   },
   "dependencies": {

@@ -1,0 +1,21 @@
+name: Codex Implement PRD
+on:
+  # 父 PRD 的标签由 agent-implement.yml 自动识别；该入口用于接续或手动恢复。
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 含有原生子 Issue 的父 PRD 编号
+        required: true
+        type: string
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: write
+jobs:
+  run:
+    uses: ./.github/workflows/codex-task.yml
+    with:
+      mode: implement-prd
+      number: ${{ inputs.issue_number }}
+    secrets: inherit

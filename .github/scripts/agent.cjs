@@ -9,6 +9,11 @@ const labels = [
   ['ready-for-human', 'FBCA04', '需要人工实现'],
   ['wontfix', 'FFFFFF', '不予实施'],
   ['agent:implement', '0E8A16', '启动 Codex 实现，与 ready-for-agent 等价'],
+  ['agent:review', '5319E7', '启动 Codex 审查 PR'],
+  ['agent:update-branch', '1D76DB', '合并基准分支并解决冲突'],
+  ['agent:to-issues', '5319E7', '将 PRD 拆成原生子 Issue'],
+  ['agent:queued', 'FBCA04', '依赖完成后串行启动'],
+  ['source:architecture-review', '5319E7', '自动架构审查提出的 PRD'],
   ['agent:in-progress', '1D76DB', 'Codex 正在执行'],
   ['agent:blocked', 'B60205', 'Codex 执行失败，需要处理后重试'],
 ];

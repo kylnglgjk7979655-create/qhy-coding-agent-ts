@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { codex, run } from '@ai-hero/sandcastle';
 import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
 import { createIssuePrompt } from './issue-context.js';
+import { withCodexDiagnostics } from './codex-diagnostics.js';
 import { codexAuthEnvironment, resolveCodexModel } from './codex-auth.js';
 
 const contextPath = process.env.ISSUE_CONTEXT_PATH;
@@ -38,11 +39,11 @@ await mkdir(outputDir, { recursive: true });
 
 const result = await run({
   name: 'codex-implement-issue',
-  agent: codex(model, {
+  agent: withCodexDiagnostics(codex(model, {
     effort: 'high',
     captureSessions: false,
     env: authEnv,
-  }),
+  })),
   sandbox: noSandbox(),
   branchStrategy: { type: 'head' },
   cwd: resolve(dirname(fileURLToPath(import.meta.url)), '..'),
