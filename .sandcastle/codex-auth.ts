@@ -22,3 +22,23 @@ export function codexAuthEnvironment(
   }
   return credentials;
 }
+
+const DEFAULT_CODEX_MODEL = 'gpt-6-luna';
+
+export function resolveCodexModel(
+  env: NodeJS.ProcessEnv,
+  listModels: (childEnv: NodeJS.ProcessEnv) => string,
+): string {
+  const configuredModel = env.CODEX_MODEL?.trim();
+  if (configuredModel) return configuredModel;
+
+  try {
+    const output = listModels(env);
+    const parsed = JSON.parse(output) as { models?: Array<{ slug?: unknown }> };
+    const slug = parsed.models?.find((model) => typeof model.slug === 'string' && model.slug.trim())?.slug;
+    if (typeof slug === 'string' && slug.trim()) return slug;
+  } catch {
+    // 忽略探测错误，回退到稳定默认模型。
+  }
+  return DEFAULT_CODEX_MODEL;
+}

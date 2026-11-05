@@ -58,7 +58,7 @@ gh secret set CODEX_AUTH_JSON \
 | Secret `CODEX_AUTH_JSON` | 是 | CI 专用的 Codex 订阅登录文件 |
 | Secret `CODEX_AUTH_STORE_PAT` | 是 | 自动回存刷新后的登录态，Secrets 读写权限 |
 | Secret `AGENT_PAT` | 可选 | 发布 PR 并触发后续 CI |
-| Variable `CODEX_MODEL` | 可选 | 覆盖默认 `gpt-5.4`，需是该订阅可使用的模型 |
+| Variable `CODEX_MODEL` | 可选 | 显式指定模型；未设置时会自动选择 `codex debug models` 返回的首个可用模型（探测失败回退 `gpt-6-luna`） |
 
 云端工作流不读取 `OPENAI_API_KEY`。演示 CLI 的 `agent.config.json`、第三方 baseURL 和 `.env` 与此订阅认证分开。
 
