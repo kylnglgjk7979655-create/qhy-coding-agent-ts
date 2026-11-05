@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { codex, run } from '@ai-hero/sandcastle';
 import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
 import { createIssuePrompt } from './issue-context.js';
-import { codexAuthEnvironment } from './codex-auth.js';
+import { codexAuthEnvironment, resolveCodexModel } from './codex-auth.js';
 
 const contextPath = process.env.ISSUE_CONTEXT_PATH;
 if (!contextPath) throw new Error('缺少 ISSUE_CONTEXT_PATH；请指定 Issue JSON 文件。');
@@ -26,12 +26,19 @@ const authEnv = codexAuthEnvironment(process.env, (env) => {
   if (result.error || result.status !== 0) throw new Error('Codex login status failed');
   return result.stdout + result.stderr;
 });
+const model = resolveCodexModel({ ...process.env, ...authEnv }, (env) => {
+  const result = spawnSync('codex', ['debug', 'models'], {
+    env, encoding: 'utf8', timeout: 15_000,
+  });
+  if (result.error || result.status !== 0) throw new Error('Codex debug models failed');
+  return result.stdout;
+});
 const outputDir = resolve(process.env.AGENT_OUTPUT_DIR ?? '.sandcastle/output');
 await mkdir(outputDir, { recursive: true });
 
 const result = await run({
   name: 'codex-implement-issue',
-  agent: codex(process.env.CODEX_MODEL || 'gpt-5.4', {
+  agent: codex(model, {
     effort: 'high',
     captureSessions: false,
     env: authEnv,

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { codexAuthEnvironment } from '../.sandcastle/codex-auth.js';
+import { codexAuthEnvironment, resolveCodexModel } from '../.sandcastle/codex-auth.js';
 
 describe('Codex 订阅认证', () => {
   it('默认复用订阅登录，并在检查和启动时清除继承的 API Key', () => {
@@ -28,5 +28,24 @@ describe('Codex 订阅认证', () => {
   it('错误认证模式不会自动回退到付费 API', () => {
     expect(() => codexAuthEnvironment({ CODEX_AUTH_MODE: 'typo', CODEX_API_KEY: 'api-secret' }, vi.fn())).toThrow('只支持');
     expect(() => codexAuthEnvironment({ CODEX_AUTH_MODE: 'api-key' }, vi.fn())).toThrow('需要 CODEX_API_KEY');
+  });
+
+  it('优先使用显式配置的模型名', () => {
+    const listModels = vi.fn();
+    expect(resolveCodexModel({ CODEX_MODEL: '  custom-model  ' }, listModels)).toBe('custom-model');
+    expect(listModels).not.toHaveBeenCalled();
+  });
+
+  it('未配置模型时使用 codex debug models 的首个可用 slug', () => {
+    const output = JSON.stringify({
+      models: [{ slug: '' }, { slug: 'gpt-6-astra' }, { slug: 'gpt-5.5' }],
+    });
+    expect(resolveCodexModel({}, () => output)).toBe('gpt-6-astra');
+  });
+
+  it('模型探测失败时回退到稳定默认模型', () => {
+    expect(resolveCodexModel({}, () => { throw new Error('boom'); })).toBe('gpt-5.5');
+    expect(resolveCodexModel({}, () => 'not-json')).toBe('gpt-5.5');
+    expect(resolveCodexModel({}, () => JSON.stringify({ models: [{ slug: '' }] }))).toBe('gpt-5.5');
   });
 });
