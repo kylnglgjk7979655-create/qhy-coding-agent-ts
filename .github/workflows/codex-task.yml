@@ -28,7 +28,7 @@ jobs:
       contents: read
       actions: read
       issues: write
-      pull-requests: read
+      pull-requests: write
     outputs:
       proceed: ${{ steps.prepare.outputs.proceed }}
       subject: ${{ steps.prepare.outputs.subject }}
@@ -234,6 +234,7 @@ jobs:
       contents: read
       issues: write
       actions: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
