@@ -40,13 +40,19 @@ describe('GitHub Issue 自动实现的输入边界', () => {
     expect(() => createIssuePrompt({ number: 42 }, '实现需求')).toThrow();
   });
 
+  it('仓库转为公开后拒绝订阅任务，且不访问任何凭据', async () => {
+    await expect(prepare({
+      github: {}, context: { payload: { repository: { private: false } } }, core: { setOutput: vi.fn() },
+    })).rejects.toThrow('只允许在私有仓库');
+  });
+
   it('拒绝无写权限的触发者，在读取需求或修改标签前停止', async () => {
     const getIssue = vi.fn();
     const github = { rest: {
       repos: { getCollaboratorPermissionLevel: vi.fn().mockResolvedValue({ data: { permission: 'read' } }) },
       issues: { get: getIssue },
     } };
-    const context = { repo: { owner: 'owner', repo: 'repo' }, actor: 'visitor', payload: { issue: { number: 42 } } };
+    const context = { repo: { owner: 'owner', repo: 'repo' }, actor: 'visitor', payload: { repository: { private: true }, issue: { number: 42 } } };
     await expect(prepare({ github, context, core: { setOutput: vi.fn() } })).rejects.toThrow('写权限');
     expect(getIssue).not.toHaveBeenCalled();
   });
@@ -63,7 +69,7 @@ describe('GitHub Issue 自动实现的输入边界', () => {
       },
       paginate: vi.fn().mockResolvedValue([{ head: { ref: 'codex/issue-42-123-1' }, html_url: 'https://github.com/owner/repo/pull/43' }]),
     };
-    const context = { repo: { owner: 'owner', repo: 'repo' }, actor: 'maintainer', payload: { issue: { number: 42 } } };
+    const context = { repo: { owner: 'owner', repo: 'repo' }, actor: 'maintainer', payload: { repository: { private: true }, issue: { number: 42 } } };
     await prepare({ github, context, core: { setOutput, notice: vi.fn() } });
     expect(removeLabel.mock.calls.map(([args]) => args.name)).toEqual(['ready-for-agent', 'agent:implement']);
     expect(createComment.mock.calls[0]?.[0].body).toContain('/pull/43');
