@@ -287,7 +287,7 @@ async function publish({ github, context, core, cwd = process.cwd() }) {
     const matches = prs.filter((p) => relatedPr(p, task.number) || p.head.ref === task.branch);
     pr = matches.find((p) => p.head.ref === task.branch);
     if (matches.some((p) => p.head.ref !== task.branch)) throw new Error('运行期间出现其他关联 PR，停止重复发布。');
-    if (task.existingPr && (!pr || pr.number !== task.existingPr)) throw new Error('PRD 的 PR 已关闭或变化。');
+    if (task.existingPr && !pr && task.mode !== 'implement-prd') throw new Error('PRD 的 PR 已关闭或变化。');
     if (pr) assertPr(pr, context.repo);
     if (pr && pr.head.sha !== task.sha) throw new Error('PRD 分支已有新提交，请重试。');
   }

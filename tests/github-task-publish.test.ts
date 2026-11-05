@@ -117,6 +117,18 @@ describe('PRD 逐轮发布', () => {
     expect(f.github.rest.issues.update).not.toHaveBeenCalled();
     expect(f.core.setOutput).not.toHaveBeenCalledWith('next', expect.anything());
   });
+  it('已有 PR 在发布期间关闭时，复用同分支重新建 PR 并继续', async () => {
+    const f = await fixture('implement-prd');
+    const child = { id: 51, number: 51, state: 'open', title: '第一片' };
+    await writeFile(join(f.root, 'codex-context/task.json'), JSON.stringify({ ...f.task, existingPr: 18, child, children: [child], issue: { title: 'PRD' } }));
+    f.github.paginate.mockImplementation(async (route) => typeof route === 'string' ? [child] : []);
+    Object.assign(f.github.rest.pulls, { create: vi.fn().mockResolvedValue({ data: { ...f.pr, number: 99, html_url: 'https://github.com/owner/repo/pull/99' } }) });
+    await writeFile(join(f.work, 'a.txt'), 'slice implemented\n'); await exportPatch(); git(f.work, 'reset', '--hard', f.head);
+    await publish({ github: f.github, context, core: f.core, cwd: f.work });
+    expect(f.github.rest.pulls.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ head: 'feature', base: 'main', draft: true }));
+    expect(f.github.rest.issues.update).toHaveBeenCalledExactlyOnceWith({ ...context.repo, issue_number: 51, state: 'closed', state_reason: 'completed' });
+    expect(f.core.setOutput).toHaveBeenCalledWith('url', 'https://github.com/owner/repo/pull/99');
+  });
 });
 
 describe('人工 QA 发布边界', () => {
