@@ -81,6 +81,41 @@ describe('工具批次顺序与新增往返配对', () => {
     expect(JSON.parse(tools[1]!.content)).toEqual({ is_error: false, output: { content: '旧内容' } });
   });
 
+  it('同批拒绝无效参数和未知工具后，仍依次写入、读取并获取运行信息', async () => {
+    await setup((_request, index) => index === 1
+      ? { calls: [
+        { id: 'invalid-write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'blocked.txt', content: '不可写入', extra: true }) } },
+        { id: 'unknown-call', type: 'function', function: { name: 'missing_tool', arguments: '{}' } },
+        { id: 'valid-write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: '后续新内容' }) } },
+        { id: 'valid-read', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'note.txt' }) } },
+        { id: 'valid-runtime', type: 'function', function: { name: 'runtimeInfo', arguments: '{"ignored":true}' } },
+      ] }
+      : { content: '拒绝后其余操作完成。' });
+    const result = await run();
+    expect(result.code).toBe(0);
+    expect(requests).toHaveLength(2);
+    const tools = toolMessages();
+    expect(tools.map(({ tool_call_id }) => tool_call_id)).toEqual([
+      'invalid-write', 'unknown-call', 'valid-write', 'valid-read', 'valid-runtime',
+    ]);
+    expect(tools.map(({ content }) => JSON.parse(content))).toEqual([
+      { is_error: true, error: { code: 'INVALID_TOOL_ARGUMENTS', message: '工具参数无效，请根据工具参数定义修正后重试。' } },
+      { is_error: true, error: { code: 'UNKNOWN_TOOL', message: '不存在名为 missing_tool 的工具。' } },
+      { is_error: false, output: { success: true } },
+      { is_error: false, output: { content: '后续新内容' } },
+      { is_error: false, output: { workspace: expect.any(String), probe: expect.any(String) } },
+    ]);
+    await expect(readFile(join(workspace, 'blocked.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(join(workspace, 'note.txt'), 'utf8')).toBe('后续新内容');
+    const events = result.stdout.split('\n').filter((line) => line.startsWith('[工具]'));
+    expect(events).toEqual([
+      '[工具] write_file：拒绝', '[工具] missing_tool：拒绝',
+      '[工具] write_file：开始', '[工具] write_file：成功',
+      '[工具] read_file：开始', '[工具] read_file：成功',
+      '[工具] runtimeInfo：开始', '[工具] runtimeInfo：成功',
+    ]);
+  });
+
   it('失败写入后读取同一缺失路径也失败，并返回两项结果', async () => {
     await setup((_request, index) => index === 1
       ? { calls: [
