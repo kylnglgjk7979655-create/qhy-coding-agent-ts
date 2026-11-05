@@ -23,7 +23,7 @@ export function codexAuthEnvironment(
   return credentials;
 }
 
-const DEFAULT_CODEX_MODEL = 'gpt-5.5';
+const DEFAULT_CODEX_MODEL = 'gpt-6-luna';
 
 export function resolveCodexModel(
   env: NodeJS.ProcessEnv,

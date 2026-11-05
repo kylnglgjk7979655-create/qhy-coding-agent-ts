@@ -44,8 +44,8 @@ describe('Codex 订阅认证', () => {
   });
 
   it('模型探测失败时回退到稳定默认模型', () => {
-    expect(resolveCodexModel({}, () => { throw new Error('boom'); })).toBe('gpt-5.5');
-    expect(resolveCodexModel({}, () => 'not-json')).toBe('gpt-5.5');
-    expect(resolveCodexModel({}, () => JSON.stringify({ models: [{ slug: '' }] }))).toBe('gpt-5.5');
+    expect(resolveCodexModel({}, () => { throw new Error('boom'); })).toBe('gpt-6-luna');
+    expect(resolveCodexModel({}, () => 'not-json')).toBe('gpt-6-luna');
+    expect(resolveCodexModel({}, () => JSON.stringify({ models: [{ slug: '' }] }))).toBe('gpt-6-luna');
   });
 });
