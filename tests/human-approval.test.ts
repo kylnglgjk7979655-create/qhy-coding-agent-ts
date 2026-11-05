@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -310,3 +310,57 @@ it.each([0, -1, '100', 1.5, 3_600_001, null])('非法人工等待上限 %j 在�
   expect(fixture.requests).toHaveLength(0);
   expect(fixture.approvalRequests).toHaveLength(0);
 });
+
+
+it.skipIf(process.platform === 'win32').each(['整轮超时', 'SIGTERM'] as const)(
+  '人工等待跨过原截止时间后启动 Bash，%s 仍终止进程树且不执行后续调用', async (stop) => {
+    await setup((_request, index) => index === 1 ? { calls: [
+      write('kept', 'kept.txt'),
+      { id: 'running', type: 'function', function: { name: 'Bash', arguments: JSON.stringify({ command: `echo $$ > shell.pid; ${process.execPath} worker.cjs & wait` }) } },
+      write('later', 'later.txt'),
+    ] } : { content: '不应再次请求主模型' }, {
+      timeoutMs: 1000, bash: { timeoutMs: 5000 },
+      approval: { mode: 'human', humanTimeoutMs: 3000, rules: [{ toolName: 'write_file', action: 'allow' }] },
+    });
+    await writeFile(join(cwd, 'worker.cjs'), "const fs = require('node:fs'); fs.writeFileSync('child.pid', String(process.pid)); setTimeout(() => fs.writeFileSync('late.txt', 'leaked'), 1800); setInterval(() => {}, 1000);");
+    const running = run();
+    let shellPid = 0, workerPid = 0;
+    try {
+      await running.waitFor('> ');
+      running.child.stdin.write('人工等待后运行命令\n');
+      await running.waitFor('approve 1');
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      expect(running.output()).not.toContain('TIMEOUT');
+      expect(running.output()).not.toContain('Bash：开始');
+      expect(await readFile(join(cwd, 'kept.txt'), 'utf8')).toBe('内容-kept');
+      await expect(readFile(join(cwd, 'shell.pid'))).rejects.toMatchObject({ code: 'ENOENT' });
+      running.child.stdin.write('approve 1\n');
+      await expect.poll(async () => Number(await readFile(join(cwd, 'child.pid'), 'utf8').catch(() => '0')), { timeout: 2000 }).toBeGreaterThan(0);
+      shellPid = Number(await readFile(join(cwd, 'shell.pid'), 'utf8'));
+      workerPid = Number(await readFile(join(cwd, 'child.pid'), 'utf8'));
+      if (stop === 'SIGTERM') {
+        process.kill(Number(await readFile(join(cwd, 'cli.pid'), 'utf8')), 'SIGTERM');
+        running.child.stdin.end();
+      } else {
+        await running.waitFor('TIMEOUT');
+        running.child.stdin.end('/exit\n');
+      }
+      const result = await running.done;
+      expect(result.code, result.stdout + result.stderr).toBe(stop === 'SIGTERM' ? 130 : 0);
+      expect(result.stdout + result.stderr).toContain(stop === 'SIGTERM' ? 'CANCELLED' : 'TIMEOUT');
+      for (const pid of [shellPid, workerPid]) {
+        const status = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
+        expect(status === '' || status.startsWith('Z')).toBe(true);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1900));
+      for (const path of ['late.txt', 'later.txt', '.agent/conversations/human.json']) {
+        await expect(readFile(join(cwd, path))).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+      expect(fixture.requests).toHaveLength(1);
+      expect(fixture.approvalRequests).toHaveLength(0);
+    } finally {
+      if (!shellPid) shellPid = Number(await readFile(join(cwd, 'shell.pid'), 'utf8').catch(() => '0'));
+      if (shellPid) { try { process.kill(-shellPid, 'SIGKILL'); } catch { /* 进程组已退出。 */ } }
+    }
+  },
+);

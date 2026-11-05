@@ -43,7 +43,7 @@ pnpm exec node dist/cli.js --workspace ./demo --conversation-id "$CONVERSATION_I
 
 公共运行入口 `runAgent` 在成功时返回 `effectiveHistory`，包含本轮实际使用的历史、本轮用户消息及完整响应，CLI 直接使用它原子保存及继续下一轮。较早历史可能已被对话摘要替换，保存时不会重新拼接原文。原有 `responseMessages` 仍仅表示本轮响应，其他结果字段保持可用。失败或取消不交付新的成功历史，CLI 内存和磁盘都保留上次成功状态。
 
-Ctrl+C 会取消当前请求并退出，退出码为 130；等待输入时也可直接按 Ctrl+C 退出。失败或取消不会回滚此前已经完成的文件写入。
+Ctrl+C 会取消当前请求并退出，退出码为 130；等待输入时也可直接按 Ctrl+C 退出。失败或取消不会回滚此前已经发生的文件、宿主或远端副作用。
 
 不需要构建的开发入口：
 
@@ -84,7 +84,7 @@ pnpm dev --workspace ./demo
 
 自定义 `baseURL` 的服务必须兼容 OpenAI Chat Completions 及函数调用；仅能返回文本不足以认定工具兼容。项目配置文件不存在时，内置默认值使用 OpenAI 地址、`gpt-4.1-mini-2025-04-14` 和 `OPENAI_API_KEY`；正常启动请保留本项目的方舟配置文件。
 
-2026-11-03 的基础版本曾通过方舟真实模型和 `runtimeInfo` 工具验收，详见 [历史验收记录](docs/verification.md)。当前交互式对话与文件工具的验收项目见 [QA 清单](.scratch/interactive-cli-file-tools/qa-checklist.md)。
+2026-11-03 的基础版本曾通过方舟真实模型和 `runtimeInfo` 工具验收，详见 [历史验收记录](docs/verification.md)。当前工具权限、Bash、基础 MCP 与摘要的离线验收入口见 [本地 QA 指南](docs/qa-tool-capabilities.md)；早期交互式文件工具的验收项目保留在 [QA 清单](.scratch/interactive-cli-file-tools/qa-checklist.md)。
 
 ## 长对话与历史替换
 
@@ -254,7 +254,7 @@ pnpm exec tsx tests/helpers/local-mcp-fixture.ts
 pnpm exec tsx tests/helpers/local-mcp-fixture.ts --sse
 ```
 
-夹具只监听本机回环地址，打印实际 URL，将它填入上述 `mcp.servers[0].url`。工具为 `echo({"text":"任意文字"})`，传入 `{"text":"fail"}` 可选择普通工具错误场景，其他文字返回正常结果。请求头可省略；若保留 Authorization 配置，请在 CLI 环境中设置非空的 `QA_MCP_HEADER` 假值。夹具不会打印认证请求头；Ctrl+C 或 SIGTERM 关闭服务。CLI 的模型仍使用现有配置；自动测试通过共享本地模型夹具生成受控调用，不需要真实模型。
+夹具只监听本机回环地址，打印实际 URL，将它填入上述 `mcp.servers[0].url`。工具为 `echo({"text":"任意文字"})`，传入 `{"text":"fail"}` 可选择普通工具错误场景，其他文字返回正常结果。请求头可省略；若保留 Authorization 配置，请在 CLI 环境中设置非空的 `QA_MCP_HEADER` 假值。夹具不会打印认证请求头；Ctrl+C 或 SIGTERM 关闭服务。此命令只启动 MCP，模型仍使用 CLI 的配置。若要同时启动本地模型与两个 MCP 服务，使用 [本地 QA 指南](docs/qa-tool-capabilities.md)中的组合夹具；无需真实模型或凭据。
 
 运行 `pnpm build && pnpm exec vitest run tests/mcp.test.ts` 验证真实发现、命名空间、审批、固定策略、参数拒绝、普通失败、跨轮刷新及假认证标记的隔离。自动测试不能代替后续人工 QA；本文不声明延期专项边界通过。
 
@@ -302,12 +302,13 @@ pnpm exec node dist/cli.js --workspace ./demo 2> run.jsonl
 | 5 | `PROVIDER_ERROR` | 网络、配额、HTTP 错误，或回答为空/被截断 |
 | 6 | `TOOL_COMPATIBILITY_ERROR` | 工具冒烟未通过 |
 | 7 | `STEP_LIMIT` | 步数用尽，尚未完成回答 |
+| 8 | `APPROVAL_ERROR` | 审批超时、不可用或响应无效，本轮停止 |
 | 9 | `CONTEXT_ERROR` | 摘要失败、响应无效，或必要上下文无法满足预算与压缩目标 |
 | 130 | `CANCELLED` | 用户取消 |
 
 `pnpm test` 使用本地 HTTP fixture 运行真正的 SDK/provider 和编译后的 CLI，覆盖多轮对话、会话续接、成功保存、失败恢复、文件读写、越界拒绝、缺失父目录、冒烟成功、步数上限、超时和取消，并检查配置校验。这些测试使用假凭据，不需要真实 API key。
 
-本地 fixture 需要监听 `127.0.0.1` 端口；真实终端取消测试在 macOS/Linux 上使用系统 `script` 和 `/bin/sh`，Windows 跳过该组测试。受限沙箱需允许本地端口与伪终端访问。完整人工验收步骤见 [QA 清单](.scratch/interactive-cli-file-tools/qa-checklist.md)，真实服务验收需单独执行上述命令。
+本地 fixture 需要监听 `127.0.0.1` 端口；真实终端取消测试在 macOS/Linux 上使用系统 `script` 和 `/bin/sh`，Windows 跳过该组测试。受限沙箱需允许本地端口与伪终端访问。工具权限、Bash、基础 MCP 和摘要的夹具启动、故障场景及配置修改见 [本地 QA 指南](docs/qa-tool-capabilities.md)。自动测试和代码审查不能代替最终人工 QA；人工 QA 保持待执行，真实服务验收需另行安排。
 
 ## 开发命令与版本
 
