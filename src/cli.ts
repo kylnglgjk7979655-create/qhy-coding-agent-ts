@@ -31,7 +31,7 @@ function log(event: Record<string, unknown>): void {
 
 async function main(): Promise<void> {
   const cancellation = new AbortController();
-  const cancel = (): void => cancellation.abort();
+  const cancel = (): void => cancellation.abort(new AgentError('CANCELLED', '请求已取消。'));
   process.once('SIGINT', cancel);
   process.once('SIGTERM', cancel);
   let input: ReturnType<typeof createInterface> | undefined;
@@ -75,7 +75,11 @@ async function main(): Promise<void> {
       return;
     }
 
-    input = createInterface({ input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY });
+    input = createInterface({
+      input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY,
+      signal: cancellation.signal,
+    });
+    input.on('SIGINT', cancel);
     if (process.stdin.isTTY) input.prompt();
     for await (const line of input) {
       const prompt = line.trim();
@@ -93,6 +97,7 @@ async function main(): Promise<void> {
       }
       if (process.stdin.isTTY) input.prompt();
     }
+    cancellation.signal.throwIfAborted();
   } catch (error) {
     const failure = publicError(error);
     log({
@@ -131,9 +136,18 @@ async function runTurn(
       smokeTool,
       history,
       onText: (chunk) => process.stdout.write(chunk),
-      onToolCall: (name) => process.stdout.write(`\n[工具] ${name}\n`),
+      onToolEvent: ({ toolName, status }) => {
+        const label = {
+          started: '开始',
+          succeeded: '成功',
+          failed: '失败',
+          rejected: '拒绝',
+        }[status];
+        process.stdout.write(`\n[工具] ${toolName}：${label}\n`);
+      },
       signal,
     });
+    signal.throwIfAborted();
     const nextHistory = smokeTool ? history : [
       ...history,
       { role: 'user' as const, content: prompt },

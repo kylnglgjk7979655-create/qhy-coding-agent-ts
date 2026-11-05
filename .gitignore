@@ -7,3 +7,8 @@ coverage/
 .DS_Store
 .demo-workspace/
 .agent/conversations/
+
+.sandcastle/output/
+.sandcastle/logs/
+.sandcastle/worktrees/
+.sandcastle/patches/

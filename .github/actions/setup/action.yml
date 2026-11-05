@@ -1,0 +1,14 @@
+name: Setup
+description: 使用仓库锁定的 Node.js 与 pnpm 安装依赖
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v4
+      with:
+        run_install: false
+    - uses: actions/setup-node@v4
+      with:
+        node-version-file: .node-version
+        cache: pnpm
+    - shell: bash
+      run: pnpm install --frozen-lockfile

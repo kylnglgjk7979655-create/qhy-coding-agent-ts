@@ -6,7 +6,7 @@
 
 ### Issue tracker
 
-Issues and specs live as Markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
+本地需求与规格存放在 `.scratch/`；GitHub Actions 传入的 Issue 是该轮任务的需求来源。根据任务入口读取 `docs/agents/issue-tracker.md`；配置或排查云端 Codex 自动实现时读取 `docs/agents/github-actions.md`。
 
 ### Triage labels
 
