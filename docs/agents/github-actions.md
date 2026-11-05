@@ -68,7 +68,7 @@ gh secret set CODEX_AUTH_JSON \
 | 实现普通需求 | Issue 添加 `agent:implement` | 从默认分支实现，验证后创建草稿 PR，自动接续审查 |
 | 审查 PR | PR 添加 `agent:review` | 按仓库规范、关联 Issue 与已关闭子任务审查；可修复明确问题，发布行内评论及摘要 |
 | 根据反馈修改 | PR 留下反馈后添加 `agent:implement` | 读取顶层评论、review 摘要和未解决 threads，修改并回复有关 thread |
-| 更新 PR 分支 | PR 添加 `agent:update-branch` | 合并 PR 基准分支，必要时让 Codex 解决冲突；创建保留两个父提交的 merge commit |
+| 更新 PR 分支 | PR 添加 `agent:update-branch` | 已最新时直接结束，无冲突时直接合并，只有冲突才恢复订阅并调用 Codex；需要合并时保留两个父提交 |
 | 生成拆票计划 | 父 Issue 添加 `agent:to-issues` | 加载 to-tickets-with-qa，只读生成实现切片、依赖和最终人工 QA，写入待审批评论 |
 | 确认发布工单 | 父 Issue 添加 `agent:publish-tickets` | 按已保存计划创建原生子 Issue、执行角色及依赖；不调用模型或启动实现 |
 | 逐轮实现 PRD | 含子 Issue 的父 Issue 添加 `agent:implement` | 自动选择 PRD 模式，每轮实现一个依赖已完成的 Agent 子任务，共用 `codex/prd-编号` 分支及一个草稿 PR |
@@ -79,7 +79,7 @@ gh secret set CODEX_AUTH_JSON \
 
 PRD 建议顺序：写父 Issue → `agent:to-issues` → 检查评论中的完整计划 → `agent:publish-tickets` → 检查生成的实现与 QA 子任务 → 给父 Issue 添加 `agent:implement` → 按真实依赖串行实现 → 自动审查同一个 PR → 人工合并与 QA。实现子 Issue 在代码推送、检查和 PR 发布成功后关闭；Human QA 保持开放，由人执行并记录测试版本和结果。有 QA 的 PR 使用 `Refs #父规格`，父规格由人确认关闭。只支持扁平子任务，不直接给子 Issue 添加实现标签。
 
-手动生成或发布计划使用 Actions → Codex Plan and Publish Tickets：填写父 Issue 编号，生成计划时保持 `publish_approved=false`；检查计划后再勾选该选项启动新的运行。发布阶段不需要恢复订阅登录；失败时重新添加 `agent:publish-tickets` 可复用原计划和已创建的 Issue、挂接及依赖。不要通过重跑旧规划来覆盖发布中的计划。
+手动生成或发布计划使用 Actions → Codex Plan and Publish Tickets：填写父 Issue 编号，生成计划时保持 `publish_approved=false`；检查计划后再勾选该选项启动新的运行。发布阶段不需要恢复订阅登录，并固定审批时读取的评论 ID、正文和时间；写入前发现变化则要求重新确认。已创建的子任务带计划校验标记，不复用另一版计划的工单。失败时重新添加 `agent:publish-tickets` 可复用原计划和已创建的 Issue、挂接及依赖。不要通过重跑旧规划来覆盖发布中的计划。
 
 反馈不会因为新评论自动运行；由维护者通过标签决定何时启动。审查可不修改代码，反馈修改可只回复；普通 Issue 实现没有代码变更则失败。PRD 子任务已经满足验收条件时允许无新增修改，但必须明确确认完成，外层仍会验证。
 
@@ -91,9 +91,11 @@ GitHub 临时 Runner 每轮结束都会销毁，因此每轮需要恢复、运�
 
 所有模型入口调用 `codex-task.yml`，共用五阶段流程：
 
-1. `prepare` 验证私有仓库及触发者写权限，读取需求、PR 反馈及关系，锁定工作 SHA 和控制脚本 SHA，获取 Secret 公钥和版本。PR 任务拒绝 fork、关闭及已合并的 PR。
+1. `prepare` 验证私有仓库及触发者写权限，读取需求、子任务完整正文与评论、PR 反馈及关系，锁定工作 SHA 和该次 workflow 文件对应的控制脚本 SHA，获取 Secret 公钥和版本。PR 任务拒绝 fork、关闭及已合并的 PR。
 2. `generate` 从可信控制脚本创建独立 worktree，在其中运行 Sandcastle/Codex。随后加密刷新后的登录态并删除明文，再独立运行 `pnpm check` 与 `pnpm demo:test`、校验结构化结果并导出补丁。拆分与架构任务只校验未改代码。
-3. `persist-auth` 在独立 Runner 上把加密登录态写回 `CODEX_AUTH_JSON`，不执行 Agent 生成的代码、不解密认证包。生成失败后若已有认证包，仍尝试保存刷新结果。
+更新分支的“已最新 / 干净合并”路径直接生成确定性结果，不恢复订阅或调用模型；完成同样的代码检查后直接发布。
+
+3. `persist-auth` 仅在实际恢复订阅后运行，在独立 Runner 上把加密登录态写回 `CODEX_AUTH_JSON`，不执行 Agent 生成的代码、不解密认证包。生成失败后若已有认证包，仍尝试保存刷新结果。
 4. `publish` 只有在生成验证及认证回存成功后执行，重新检查 PR/Issue 状态、按原 SHA 应用补丁，提交并普通推送。分支前进则拒绝覆盖。再发布 PR、评论、子 Issue 或架构提案。
 5. `finish` 清理进行中标签，发布结果；失败标记 `agent:blocked`。成功后通过 `workflow_dispatch` 接续下个子任务或审查，链路结束后检查依赖队列。
 

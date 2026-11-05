@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 const require = createRequire(import.meta.url);
-const { publish, exportPatch } = require('../.github/scripts/tasks.cjs');
+const { publish, exportPatch, prepareMerge } = require('../.github/scripts/tasks.cjs');
 const dirs: string[] = [];
 const context = { repo: { owner: 'owner', repo: 'repo' }, payload: { repository: { default_branch: 'main' } } };
 function git(cwd: string, ...args: string[]) {
@@ -41,7 +41,8 @@ afterEach(async () => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) aw
 describe('真实 git 发布与导出', () => {
   it('更新分支创建双父 merge commit，保留两侧文件', async () => {
     const f = await fixture('update-branch');
-    git(f.work, 'merge', '--no-commit', '--no-ff', f.base);
+    expect(await prepareMerge()).toEqual({ requiresAgent: false });
+    expect(JSON.parse(await readFile(join(f.root, 'codex-result/result.json'), 'utf8')).summary).toContain('未恢复订阅登录或调用模型');
     await exportPatch(); git(f.work, 'reset', '--hard', f.head);
     await publish({ github: f.github, context, core: f.core, cwd: f.work });
     const commit = git(f.remote, 'rev-parse', 'feature');
@@ -142,5 +143,44 @@ describe('人工 QA 发布边界', () => {
     await writeFile(join(f.work, 'a.txt'), 'should not publish\n'); await exportPatch(); git(f.work, 'reset', '--hard', f.head);
     await expect(publish({ github: f.github, context, core: f.core, cwd: f.work })).rejects.toThrow('人工任务');
     expect(git(f.remote, 'rev-parse', 'feature')).toBe(f.head); expect(f.github.rest.issues.update).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('更新分支的确定性快速路径', () => {
+  it('已包含基准时直接产出结果，不准备 merge 或调用模型', async () => {
+    const f = await fixture('update-branch');
+    await writeFile(join(f.root, 'codex-context/task.json'), JSON.stringify({ ...f.task, baseSha: f.head }));
+    expect(await prepareMerge()).toEqual({ requiresAgent: false });
+    expect(JSON.parse(await readFile(join(f.root, 'codex-result/result.json'), 'utf8')).summary).toContain('无需合并');
+    expect(git(f.work, 'status', '--porcelain')).toBe('');
+  });
+  it('真正有冲突时保留现场，仅此情形交给模型', async () => {
+    const f = await fixture('update-branch');
+    git(f.work, 'checkout', 'main'); await writeFile(join(f.work, 'a.txt'), 'base version\n'); git(f.work, 'add', '.'); git(f.work, 'commit', '-m', 'base edit'); const base = git(f.work, 'rev-parse', 'HEAD');
+    git(f.work, 'checkout', 'feature'); await writeFile(join(f.work, 'a.txt'), 'feature version\n'); git(f.work, 'add', '.'); git(f.work, 'commit', '-m', 'feature edit'); const head = git(f.work, 'rev-parse', 'HEAD');
+    await writeFile(join(f.root, 'codex-context/task.json'), JSON.stringify({ ...f.task, sha: head, baseSha: base }));
+    expect(await prepareMerge()).toEqual({ requiresAgent: true });
+    expect(git(f.work, 'diff', '--name-only', '--diff-filter=U')).toBe('a.txt');
+    await expect(readFile(join(f.root, 'codex-result/result.json'), 'utf8')).rejects.toThrow();
+  });
+  it('无效基准不是冲突，直接失败，不能跳过认证后发布', async () => {
+    const f = await fixture('update-branch');
+    await writeFile(join(f.root, 'codex-context/task.json'), JSON.stringify({ ...f.task, baseSha: 'missing-ref' }));
+    await expect(prepareMerge()).rejects.toThrow();
+  });
+});
+
+describe('PRD 关票前的发布顺序', () => {
+  it('最后一张实现票的 PR 正文更新失败时仍保持开放，供下轮恢复', async () => {
+    const f = await fixture('implement-prd'); f.pr.number = 43;
+    const child = { number: 51, state: 'open' };
+    await writeFile(join(f.root, 'codex-context/task.json'), JSON.stringify({ ...f.task, existingPr: 43, child, children: [child], issue: { title: 'PRD' } }));
+    f.github.paginate.mockImplementation(async (route) => typeof route === 'string' ? [child] : [f.pr]);
+    f.github.rest.pulls.update.mockRejectedValue(new Error('PR update failed'));
+    await exportPatch();
+    await expect(publish({ github: f.github, context, core: f.core, cwd: f.work })).rejects.toThrow('PR update failed');
+    expect(f.github.rest.issues.update).not.toHaveBeenCalled();
+    expect(f.core.setOutput).not.toHaveBeenCalledWith('next', 'review');
   });
 });
