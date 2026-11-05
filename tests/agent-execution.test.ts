@@ -143,4 +143,37 @@ describe('公共工具执行边界', () => {
     await expect(readFile(join(workspace, 'must-not-exist.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it.each(['sync', 'async'] as const)('人工审批的拒绝与批准不受 %s 观察回调故障影响', async (notification) => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-human-notify-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1 ? { calls: [
+      { id: 'deny', type: 'function', function: { name: 'write_file', arguments: '{"path":"denied.txt","content":"拒绝内容"}' } },
+      { id: 'allow', type: 'function', function: { name: 'write_file', arguments: '{"path":"allowed.txt","content":"批准内容"}' } },
+    ] } : { content: '人工决定已处理' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'human', rules: [], timeoutMs: 30_000, humanTimeoutMs: 500 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+    const diagnostic = vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as never);
+    try {
+      const result = await runAgent(config, '人工决定', {
+        smokeTool: false,
+        approvalControl: async (call) => call.callId === 'deny' ? 'deny' : 'approve',
+        onToolEvent: notification === 'sync'
+          ? () => { throw new Error('通知中的私有异常'); }
+          : async () => { throw new Error('通知中的私有异常'); },
+      });
+      expect(result.text).toBe('人工决定已处理');
+      expect(await readFile(join(workspace, 'allowed.txt'), 'utf8')).toBe('批准内容');
+      await expect(readFile(join(workspace, 'denied.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      const messages = fixture.requests[1]!.messages.filter(({ role }) => role === 'tool');
+      expect(messages.map(({ content }) => JSON.parse(content).is_error)).toEqual([true, false]);
+      expect(fixture.approvalRequests).toHaveLength(0);
+      const output = diagnostic.mock.calls.map(([chunk]) => String(chunk)).join('');
+      expect(output).toContain('执行事件通知失败');
+      expect(output).not.toContain('通知中的私有异常');
+    } finally { diagnostic.mockRestore(); }
+  });
+
 });

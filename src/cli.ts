@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
 import { loadEnvFile } from 'node:process';
-import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { runAgent } from './agent.js';
-import { isMissing, loadConfig, loggableConfig } from './config.js';
+import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig } from './config.js';
 import { loadConversation, newConversationId, saveConversation } from './conversations.js';
 import { AgentError, publicError } from './errors.js';
+import { CliInput } from './cli-input.js';
+import type { ApprovalControl } from './tool-approval.js';
 
 const help = `用法：node dist/cli.js [选项]
 
@@ -34,7 +35,7 @@ async function main(): Promise<void> {
   const cancel = (): void => cancellation.abort(new AgentError('CANCELLED', '请求已取消。'));
   process.once('SIGINT', cancel);
   process.once('SIGTERM', cancel);
-  let input: ReturnType<typeof createInterface> | undefined;
+  let input: CliInput | undefined;
   try {
     if (process.versions.node.split('.')[0] !== '24') {
       throw new AgentError('CONFIG_ERROR', '请使用项目锁定的 Node.js 24.22.2（见 .nvmrc）。');
@@ -75,11 +76,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    input = createInterface({
-      input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY,
-      signal: cancellation.signal,
-    });
-    input.on('SIGINT', cancel);
+    input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
     if (process.stdin.isTTY) input.prompt();
     for await (const line of input) {
       const prompt = line.trim();
@@ -89,7 +86,7 @@ async function main(): Promise<void> {
         continue;
       }
       try {
-        history = await runTurn(prompt, config, history, conversationDirectory, conversationId, cancellation.signal, false);
+        history = await runTurn(prompt, config, history, conversationDirectory, conversationId, cancellation.signal, false, input.approve);
       } catch (error) {
         if (cancellation.signal.aborted) throw error;
         const failure = publicError(error);
@@ -124,6 +121,7 @@ async function runTurn(
   conversationId: string,
   signal: AbortSignal,
   smokeTool: boolean,
+  approvalControl?: ApprovalControl,
 ): Promise<ModelMessage[]> {
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
@@ -146,6 +144,7 @@ async function runTurn(
         process.stdout.write(`\n[工具] ${toolName}：${label}\n`);
       },
       signal,
+      ...(config.approval.mode === 'human' && approvalControl ? { approvalControl } : {}),
     });
     signal.throwIfAborted();
     const nextHistory = smokeTool ? history : [

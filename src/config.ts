@@ -3,6 +3,8 @@ import { resolve } from 'node:path';
 import { z } from 'zod';
 import { AgentError } from './errors.js';
 
+export const DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS = 300_000;
+
 const baseURLSchema = z.url().refine((value) => {
   const url = new URL(value);
   return ['https:', 'http:'].includes(url.protocol)
@@ -26,12 +28,13 @@ export const configSchema = z.strictObject({
   timeoutMs: z.number().int().min(1).max(3_600_000).default(60_000),
   maxSteps: z.number().int().min(1).max(100).default(20),
   approval: z.strictObject({
-    mode: z.literal('model').default('model'),
+    mode: z.enum(['model', 'human']).default('model'),
     rules: z.array(z.strictObject({
       toolName: z.string().trim().min(1),
       action: z.enum(['allow', 'deny', 'ask']),
     })).default([]),
     timeoutMs: z.number().int().min(1).max(3_600_000).default(30_000),
+    humanTimeoutMs: z.number().int().min(1).max(3_600_000).optional(),
     model: reviewModelSchema.optional(),
   }).default({ mode: 'model', rules: [], timeoutMs: 30_000 }),
 });

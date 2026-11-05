@@ -192,7 +192,7 @@ export async function runAgent(
     approve: async (call) => {
       signal.throwIfAborted();
       try {
-        return await approveToolCall(config, call, signal, options.approvalControl);
+        return await approveToolCall(config, call, signal, options.approvalControl, { pause: pauseDeadline, resume: resumeDeadline });
       } catch (error) {
         if (!signal.aborted) {
           frameworkError = error instanceof AgentError ? error : new AgentError('APPROVAL_ERROR', '工具审批故障，已停止本轮。');
@@ -276,10 +276,24 @@ export async function runAgent(
   const deadline = new AbortController();
   const pairingAbort = new AbortController();
   let pairingError: AgentError | undefined;
-  const timer = setTimeout(() => deadline.abort(), config.timeoutMs);
+  let remainingMs = config.timeoutMs;
+  let activeSince = performance.now();
+  let timer = setTimeout(() => deadline.abort(), remainingMs);
   const signal = options.signal === undefined
     ? AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal])
     : AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal, options.signal]);
+  function pauseDeadline(): void {
+    signal.throwIfAborted();
+    clearTimeout(timer);
+    remainingMs -= performance.now() - activeSince;
+    if (remainingMs <= 0) deadline.abort();
+    signal.throwIfAborted();
+  }
+  function resumeDeadline(): void {
+    if (signal.aborted) return;
+    activeSince = performance.now();
+    timer = setTimeout(() => deadline.abort(), remainingMs);
+  }
   try {
     const result = await agent.stream({
       messages: [

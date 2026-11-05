@@ -1,6 +1,7 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { generateText } from 'ai';
 import type { ResolvedConfig } from './config.js';
+import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS } from './config.js';
 import { AgentError } from './errors.js';
 import type { ToolApprovalRequest } from './tool-registry.js';
 
@@ -18,12 +19,33 @@ export async function approveToolCall(
   call: ToolApprovalRequest,
   signal: AbortSignal,
   control?: ApprovalControl,
+  humanWait?: { pause: () => void; resume: () => void },
 ): Promise<boolean> {
   signal.throwIfAborted();
   const actions = config.approval.rules.filter(({ toolName }) => toolName === call.toolName).map(({ action }) => action);
   if (actions.includes('deny')) return false;
   if (actions.includes('allow')) return true;
   if (!actions.includes('ask') && ['read_file', 'runtimeInfo'].includes(call.toolName)) return true;
+
+  if (config.approval.mode === 'human') {
+    if (!control) return false;
+    humanWait?.pause();
+    const timeout = new AbortController();
+    const timer = setTimeout(() => timeout.abort(), config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
+    const humanSignal = AbortSignal.any([signal, timeout.signal]);
+    try {
+      const decision = await waitForDecision(control, structuredClone(call), humanSignal);
+      signal.throwIfAborted();
+      return !timeout.signal.aborted && decision === 'approve';
+    } catch {
+      signal.throwIfAborted();
+      if (timeout.signal.aborted) return false;
+      throw new AgentError('APPROVAL_ERROR', '人工审批故障，已停止本轮；此前已完成的操作不会回滚。');
+    } finally {
+      clearTimeout(timer);
+      humanWait?.resume();
+    }
+  }
 
   const timeout = AbortSignal.timeout(config.approval.timeoutMs);
   const reviewSignal = AbortSignal.any([signal, timeout]);
