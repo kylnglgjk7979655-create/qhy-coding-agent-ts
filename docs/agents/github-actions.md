@@ -40,9 +40,9 @@ gh secret set CODEX_AUTH_JSON \
 
 ### 4. 配置 PR 发布权限
 
-在 Settings → Actions → General → Workflow permissions 勾选 **Allow GitHub Actions to create and approve pull requests**。各 job 已声明需要的权限，默认工作流权限可保持只读。发布 API 使用 job 的 `GITHUB_TOKEN`，审查只发布 COMMENT，不自动批准或合并。
+在 Settings → Actions → General → Workflow permissions 勾选 **Allow GitHub Actions to create and approve pull requests**。各 job 已声明需要的权限，默认工作流权限可保持只读。除用 `AGENT_PAT` 创建 PR 外，发布 API 使用 job 的 `GITHUB_TOKEN`；审查只发布 COMMENT，不自动批准或合并。
 
-可选配置 **`AGENT_PAT`**：fine-grained PAT 限制到本仓库，授予 Contents 读写；允许 Agent 修改 workflow 文件时另需 Workflows 写权限。该 PAT 只负责 git push，不参与订阅认证回存。未配置时仍可推送普通代码、创建 PR 和接续工作流；修改 workflow 文件会被 GitHub 拒绝。
+可选配置 **`AGENT_PAT`**：fine-grained PAT 限制到本仓库，授予 Contents 读写和 Pull requests 读写；允许 Agent 修改 workflow 文件时另需 Workflows 写权限。该 PAT 用于推送代码和创建 PR，使 PR 检查由仓库成员触发；它不参与订阅认证回存。未配置时仍可通过 `GITHUB_TOKEN` 推送普通代码、创建 PR 和接续工作流，但 GitHub 可能要求先批准 Bot 创建的 PR 工作流；修改 workflow 文件会被 GitHub 拒绝。
 
 代码变更发布后会通过 `workflow_dispatch` 显式启动 PR 分支的 `Check`，因此普通任务不必为了 CI 触发而额外配置 PAT。
 
@@ -56,7 +56,7 @@ gh secret set CODEX_AUTH_JSON \
 | --- | --- | --- |
 | Secret `CODEX_AUTH_JSON` | 是 | CI 专用的 Codex 订阅登录文件 |
 | Secret `CODEX_AUTH_STORE_PAT` | 是 | 自动回存刷新后的登录态，Secrets 读写权限 |
-| Secret `AGENT_PAT` | 可选 | 可选的 git 推送凭据，允许修改 workflow 时需相应权限 |
+| Secret `AGENT_PAT` | 可选 | 代码推送和 PR 创建；需要 Contents、Pull requests 读写权限，允许修改 workflow 时另需 Workflows 写权限 |
 | Variable `CODEX_MODEL` | 可选 | 显式指定模型；未设置时会自动选择 `codex debug models` 返回的首个可用模型（探测失败回退 `gpt-6-luna`） |
 
 云端工作流不读取 `OPENAI_API_KEY`。演示 CLI 的 `agent.config.json`、第三方 baseURL 和 `.env` 与此订阅认证分开。

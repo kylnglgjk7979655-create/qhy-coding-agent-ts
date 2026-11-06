@@ -324,9 +324,26 @@ async function publish({ github, context, core, cwd = process.cwd() }) {
   }
   if (!pr) {
     const children = task.children ?? [];
-    ({ data: pr } = await github.rest.pulls.create({ ...context.repo, base: task.base, head: task.branch, draft: true,
+    const pull = { base: task.base, head: task.branch, draft: true,
       title: result.prTitle ?? `[Codex] ${task.issue.title}`.slice(0, 200),
-      body: prBody(task, result, children) }));
+      body: prBody(task, result, children) };
+    if (process.env.AGENT_PAT) {
+      const response = await fetch(`https://api.github.com/repos/${context.repo.owner}/${context.repo.repo}/pulls`, {
+        method: 'POST',
+        headers: {
+          accept: 'application/vnd.github+json',
+          authorization: `Bearer ${process.env.AGENT_PAT}`,
+          'content-type': 'application/json',
+          'x-github-api-version': '2022-11-28',
+        },
+        body: JSON.stringify(pull),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(`创建 PR 失败（HTTP ${response.status}）：${data.message ?? 'GitHub API 请求失败'}`);
+      pr = data;
+    } else {
+      ({ data: pr } = await github.rest.pulls.create({ ...context.repo, ...pull }));
+    }
   }
   core.setOutput('url', pr.html_url);
   core.setOutput('pr_number', String(pr.number));
