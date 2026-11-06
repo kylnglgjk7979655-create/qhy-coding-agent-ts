@@ -221,8 +221,10 @@ jobs:
           path: ${{ runner.temp }}/codex-result
       - uses: actions/github-script@v7
         id: publish
+        env:
+          AGENT_PAT: ${{ secrets.AGENT_PAT }}
         with:
-          # API 发布始终使用本 job 的 Token；AGENT_PAT 仅负责 git push。
+          # AGENT_PAT 用于创建 PR，使其 pull_request 工作流由仓库成员触发；其余 API 仍使用 job token。
           script: await require('./.github/scripts/tasks.cjs').publish({ github, context, core })
 
   finish:
