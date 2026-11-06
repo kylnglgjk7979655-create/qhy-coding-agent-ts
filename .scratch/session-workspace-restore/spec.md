@@ -1,6 +1,7 @@
 # Session 工作现场恢复
 
 Status: ready-for-agent
+Issue: https://github.com/kylnglgjk7979655-create/qhy-coding-agent-ts/issues/23
 
 ## Problem Statement
 

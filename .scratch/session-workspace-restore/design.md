@@ -1,6 +1,6 @@
 # Session 工作现场恢复设计
 
-状态：用户已确认。本文整理访谈已确认的业务规则与实现约束；正式需求见 [spec.md](spec.md)，尚未进入代码实现。
+状态：用户已确认。本文保留访谈形成的设计记录；正式需求以 [GitHub Issue #23](https://github.com/kylnglgjk7979655-create/qhy-coding-agent-ts/issues/23) 为准，本地规格副本见 [spec.md](spec.md)。
 
 ## 目标与会话边界
 
