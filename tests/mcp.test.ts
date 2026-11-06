@@ -1,12 +1,11 @@
-import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
+import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import { startLocalMCP } from './helpers/local-mcp-fixture.js';
 
-const cli = resolve('dist/cli.js');
 let cwd = '';
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -29,18 +28,10 @@ async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0], revie
   return model;
 }
 function run(input = '执行远程工具\n/exit\n', onOutput?: (stdout: string) => void) {
-  const child = spawn(process.execPath, [cli, '--conversation-id', 'mcp'], {
-    cwd, env: { ...process.env, TEST_MODEL_API_KEY: 'fake-model', QA_MCP_HEADER: 'fake-mcp-header-marker' }, stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  let stdout = '', stderr = '';
-  const done = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
-    const timer = setTimeout(() => child.kill('SIGKILL'), 7000);
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); onOutput?.(stdout); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.once('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
-  });
-  child.stdin.end(input);
-  return { child, done };
+  return startCLI({
+    cwd, conversationId: 'mcp', input,
+    env: { TEST_MODEL_API_KEY: 'fake-model', QA_MCP_HEADER: 'fake-mcp-header-marker' },
+  }, onOutput);
 }
 function results(model: Awaited<ReturnType<typeof setup>>) {
   return model.requests.at(-1)!.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ tool_call_id: string; content: string }>;

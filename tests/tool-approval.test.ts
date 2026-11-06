@@ -1,12 +1,11 @@
-import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
+import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureToolCall } from './helpers/local-openai-fixture.js';
 
-const cli = resolve('dist/cli.js');
 let cwd = '';
 const fixtures: Awaited<ReturnType<typeof startLocalOpenAIModel>>[] = [];
 afterEach(async () => {
@@ -27,19 +26,7 @@ async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0], revie
   return fixture;
 }
 function run(input = '私有用户目标\n/exit\n', onOutput?: (stdout: string) => void) {
-  const child = spawn(process.execPath, [cli, '--conversation-id', 'approval'], {
-    cwd, env: { ...process.env, TEST_APPROVAL_KEY: 'fake-approval-secret' }, stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  let stdout = '';
-  let stderr = '';
-  const done = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
-    const timer = setTimeout(() => child.kill('SIGKILL'), 7000);
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); onOutput?.(stdout); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.once('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
-  });
-  child.stdin.end(input);
-  return { child, done };
+  return startCLI({ cwd, conversationId: 'approval', input, env: { TEST_APPROVAL_KEY: 'fake-approval-secret' } }, onOutput);
 }
 function results(fixture: Awaited<ReturnType<typeof startLocalOpenAIModel>>) {
   return fixture.requests.at(-1)!.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ tool_call_id: string; content: string }>;

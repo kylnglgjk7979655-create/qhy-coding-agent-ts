@@ -1,13 +1,12 @@
-import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import type { ModelMessage } from 'ai';
 import { afterEach, expect, it } from 'vitest';
+import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import { startLocalMCP } from './helpers/local-mcp-fixture.js';
 
-const cli = resolve('dist/cli.js');
 let cwd = '';
 const fixtures: Awaited<ReturnType<typeof startLocalOpenAIModel>>[] = [];
 const mcpFixtures: Awaited<ReturnType<typeof startLocalMCP>>[] = [];
@@ -48,19 +47,7 @@ async function setup(
   return fixture;
 }
 function run(input = '当前需求\n/exit\n') {
-  const child = spawn(process.execPath, [cli, '--conversation-id', 'summary'], {
-    cwd, env: { ...process.env, TEST_MODEL_API_KEY: 'fake-summary-key' }, stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  let stdout = '', stderr = '';
-  const done = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-    const timer = setTimeout(() => child.kill('SIGKILL'), 7000);
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.once('error', reject);
-    child.once('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
-  });
-  child.stdin.end(input);
-  return { child, done };
+  return startCLI({ cwd, conversationId: 'summary', input, env: { TEST_MODEL_API_KEY: 'fake-summary-key' } });
 }
 
 it('同轮工具结果增长触发摘要，后续步骤和成功历史保留完整当前轮而不恢复旧原文', async () => {
