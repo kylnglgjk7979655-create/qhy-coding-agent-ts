@@ -1,7 +1,8 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
-const SECRET_NAME = 'CODEX_AUTH_JSON';
+const { selectAuthSlot } = require('./auth-slots.cjs');
+const secretName = () => selectAuthSlot(0, process.env.CODEX_AUTH_SECRET_NAME || 'CODEX_AUTH_JSON');
 
 function validateAuth(text) {
   let auth;
@@ -24,15 +25,15 @@ function assertFreshSnapshot(updatedAt, createdAt) {
 
 async function publicKey({ github, context }) {
   if (process.env.AUTH_STORE_CONFIGURED !== 'true' || process.env.AUTH_JSON_CONFIGURED !== 'true') {
-    throw new Error('请先配置 CODEX_AUTH_JSON 和 CODEX_AUTH_STORE_PAT 两个仓库 Secret。');
+    throw new Error('请先配置所选 CODEX_AUTH_JSON 认证槽位及 CODEX_AUTH_STORE_PAT 仓库 Secret。');
   }
-  const { data: metadata } = await github.rest.actions.getRepoSecret({ ...context.repo, secret_name: SECRET_NAME });
+  const { data: metadata } = await github.rest.actions.getRepoSecret({ ...context.repo, secret_name: secretName() });
   assertFreshSnapshot(metadata.updated_at, process.env.RUN_CREATED_AT);
   const { data: key } = await github.rest.actions.getRepoPublicKey(context.repo);
   const dir = path.join(process.env.RUNNER_TEMP, 'codex-public-key');
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, 'key.json'), JSON.stringify({
-    key: key.key, key_id: key.key_id, expected_updated_at: metadata.updated_at,
+    key: key.key, key_id: key.key_id, expected_updated_at: metadata.updated_at, secret_name: secretName(),
   }));
 }
 
@@ -55,6 +56,7 @@ async function sealAuth(auth, key) {
   const publicKey = sodium.from_base64(key.key, sodium.base64_variants.ORIGINAL);
   if (publicKey.length !== sodium.crypto_box_PUBLICKEYBYTES) throw new Error('GitHub 加密公钥长度不正确。');
   return {
+    secret_name: key.secret_name || secretName(),
     key_id: key.key_id,
     expected_updated_at: key.expected_updated_at,
     encrypted_value: sodium.to_base64(sodium.crypto_box_seal(auth, publicKey), sodium.base64_variants.ORIGINAL),
@@ -77,15 +79,15 @@ async function persist({ github, context }) {
   if (typeof payload.encrypted_value !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload.encrypted_value)
     || payload.encrypted_value.length < 64 || payload.encrypted_value.length > 70_000
     || typeof payload.key_id !== 'string' || !/^[\w-]+$/.test(payload.key_id)
-    || typeof payload.expected_updated_at !== 'string') {
+    || typeof payload.expected_updated_at !== 'string' || payload.secret_name !== secretName()) {
     throw new Error('加密认证包格式错误，停止写回。');
   }
-  const { data: current } = await github.rest.actions.getRepoSecret({ ...context.repo, secret_name: SECRET_NAME });
+  const { data: current } = await github.rest.actions.getRepoSecret({ ...context.repo, secret_name: secretName() });
   if (current.updated_at !== payload.expected_updated_at) {
     throw new Error('运行期间凭据被其他操作更新，停止覆盖；请重新触发工作流。');
   }
   await github.rest.actions.createOrUpdateRepoSecret({
-    ...context.repo, secret_name: SECRET_NAME,
+    ...context.repo, secret_name: secretName(),
     key_id: payload.key_id, encrypted_value: payload.encrypted_value,
   });
 }

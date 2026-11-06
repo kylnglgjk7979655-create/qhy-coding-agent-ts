@@ -2,17 +2,17 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { run } from '@ai-hero/sandcastle';
+import { run, Output } from '@ai-hero/sandcastle';
+import { z } from 'zod';
 import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
-import { loadTaskSkills } from './skills.js';
+import { loadTaskPrompt } from './prompts.js';
 import { createIssuePrompt } from './issue-context.js';
 import { runCodex } from './codex-run.js';
 import { codexAuthEnvironment, resolveCodexModel } from './codex-auth.js';
 
 const contextPath = process.env.ISSUE_CONTEXT_PATH;
 if (!contextPath) throw new Error('缺少 ISSUE_CONTEXT_PATH；请指定 Issue JSON 文件。');
-const instructions = await readFile(new URL('./implement.prompt.md', import.meta.url), 'utf8');
-const prompt = createIssuePrompt(JSON.parse(await readFile(contextPath, 'utf8')), `${await loadTaskSkills('implement')}\n\n${instructions}`);
+const prompt = createIssuePrompt(JSON.parse(await readFile(contextPath, 'utf8')), await loadTaskPrompt('implement'));
 if (process.argv.includes('--dry-run')) {
   console.log(prompt);
   process.exit(0);
@@ -45,10 +45,11 @@ const result = await runCodex(model, authEnv, (agent) => run({
   branchStrategy: { type: 'head' },
   cwd: resolve(dirname(fileURLToPath(import.meta.url)), '..'),
   prompt,
+  output: Output.object({ tag: 'output', schema: z.object({ summary: z.string().min(1), completed: z.literal(true) }) }),
   maxIterations: 1,
   idleTimeoutSeconds: 300,
   logging: { type: 'stdout' },
   signal: AbortSignal.timeout(45 * 60 * 1000),
 }));
 
-await writeFile(resolve(outputDir, 'summary.md'), result.stdout || 'Codex 已完成本轮任务。\n');
+await writeFile(resolve(outputDir, 'summary.md'), result.output.summary);

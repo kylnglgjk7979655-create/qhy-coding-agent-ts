@@ -1,3 +1,17 @@
-按已加载的 to-tickets 生成待人审批的拆票计划。只读代码和父 issue，不发布、不修改源代码。每片适合一个全新上下文，blockedBy 用从1开始的切片位置引用真实依赖，只能引用前面的位置。必要的宽重构使用 expand–contract。实现切片的 execution 为 "agent"。
-本轮只生成计划，外层发布计划评论；维护者检查后通过 agent:publish-tickets 确认才创建原生子 Issue。执行仍需之后给父 Issue 添加 agent:implement。正文不含自动关闭引用。
-输出：{"summary":"拆分与验收说明","slices":[{"title":"实现功能","execution":"agent","blockedBy":[],"whatToBuild":"行为和测试入口","acceptanceCriteria":["可核验结果"]}]}。共1至30项。
+# TASK
+
+只读探索父 issue 和相关代码，生成待人审批的拆票计划。本轮输出计划，外层发布评论；人确认 agent:publish-tickets 后才创建原生子 Issue 和依赖，之后给父 Issue 添加 agent:implement 才授权执行。
+
+# EXECUTION
+
+每片是一个可独立验证的端到端纵向切片，适合一个全新上下文；避免按数据库、服务和测试等水平层拆分。先完成必要的前置整理。标题使用项目领域词汇。
+
+blockedBy 是从 1 开始的切片位置，只引用真正先完成才能开始的前项；无依赖的切片可以并行。显式标明会阻塞后续工作的接口或行为决定，避免依赖正文推断。每片包含目标行为、批准的公共测试入口和可核验的验收要求，少写容易过时的路径与代码。
+
+宽范围机械迁移使用 expand–contract：先兼容新增，再按范围迁移，最后在全部迁移完成后移除旧形式。每片都应可独立验证和合并；无法独立保持绿色的工作合成一个任务，不依赖隐含的共用分支。
+
+实现片 execution 为 agent。需要人工 QA 时保留为最后一项，execution 为 human-qa，标题以 QA: 开头并依赖所有实现片；不以自动检查冒充人工验收。不包含自动关闭引用。
+
+# RESULT
+
+输出 <output>{"summary":"切片和验收说明","slices":[{"title":"功能切片","execution":"agent","blockedBy":[],"whatToBuild":"可验证行为和测试入口","acceptanceCriteria":["可核验结果"]}]}</output>，共 1–30 项。外层负责批准和发布，不在本轮等待在线确认。

@@ -1,4 +1,9 @@
-实现上下文 issue 的完整需求。修复 bug 时先用回归测试重现再修复。保留修改供外层导出补丁。
-输出：{"summary":"修改和验证结果"}。需求无法完成时让执行失败。
+# TASK
 
-按照已加载 pr 方法组织本轮摘要、验证证据和合并风险；可输出 prTitle 和 prBody 用于 PR 正文，描述父需求整体。prBody 不写 Closes/Fixes/Resolves 引用，父单和人工 QA 的关闭策略由发布端决定。
+实现任务 JSON 中 issue 的功能和验收要求。只处理当前 Issue 的范围；parent（若有）提供背景，不代表需要实现父规格的所有子任务。
+
+探索源码和测试，按下文 TDD 方法逐个完成行为。遇到测试失败时建立明确反馈信号并修复。
+
+# RESULT
+
+输出 <output>{"summary":"实现内容、验收与验证证据、剩余限制","completed":true}</output>。阻塞时 completed:false。

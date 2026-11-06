@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { readdir } from 'node:fs/promises';
 import { codex, type AgentProvider } from '@ai-hero/sandcastle';
 import { withCodexDiagnostics } from './codex-diagnostics.js';
 
@@ -9,8 +10,22 @@ export async function runCodex<T>(model: string, env: Record<string, string>, ex
   const provider = codex(model, { effort: 'high', captureSessions: false, env, sessionStorage: { hostSessionsDir: sessionsDir } });
   let sessionId: string | undefined;
   const diagnostics = withCodexDiagnostics(provider);
+  const skillsRoot = join(process.env.AGENT_WORKSPACE || process.cwd(), '.agents', 'skills');
+  let skills: string[];
+  try {
+    skills = (await readdir(skillsRoot, { recursive: true })).filter((file) => file.endsWith('SKILL.md'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    skills = [];
+  }
+  const disabledSkills = `skills.config=[${skills.map((file) => `{path=${JSON.stringify(join(skillsRoot, file))},enabled=false}`).join(',')}]`;
+  const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
   const agent: AgentProvider = {
     ...diagnostics,
+    buildPrintCommand(options) {
+      const command = diagnostics.buildPrintCommand(options);
+      return { ...command, command: `${command.command} -c ${shellQuote(disabledSkills)}` };
+    },
     parseStreamLine(line) {
       const events = diagnostics.parseStreamLine(line);
       for (const event of events) if (event.type === 'session_id') sessionId = event.sessionId;

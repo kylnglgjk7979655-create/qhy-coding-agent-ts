@@ -9,6 +9,10 @@ on:
         description: 本仓库的开放 PR 编号
         required: true
         type: string
+      auth_secret:
+        description: 内部调度指定的认证槽位；留空自动选择
+        default: ''
+        type: string
 permissions:
   contents: write
   issues: write
@@ -21,4 +25,5 @@ jobs:
     with:
       mode: review
       number: ${{ inputs.pr_number || format('{0}', github.event.pull_request.number) }}
+      auth_secret: ${{ inputs.auth_secret }}
     secrets: inherit

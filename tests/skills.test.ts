@@ -1,28 +1,25 @@
-import { readFile, access } from 'node:fs/promises';
+import { readFile, mkdtemp, cp, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { loadTaskSkills } from '../.sandcastle/skills.js';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { loadTaskPrompt } from '../.sandcastle/prompts.js';
 import { runReviewPhases } from '../.sandcastle/review-phases.js';
 
-describe('仓库 skill 加载', () => {
-  it('使用已提交的完整 skill 内容，引用文件指向控制脚本目录', async () => {
-    const text = await loadTaskSkills('implement');
-    const implementSpec = await readFile(new URL('../.agents/skills/implement-spec/SKILL.md', import.meta.url), 'utf8');
-    expect(text).toContain(implementSpec);
-    expect(await loadTaskSkills('implement-prd')).toContain(implementSpec);
-    await expect(access(new URL('../.agents/skills/implement/SKILL.md', import.meta.url))).rejects.toThrow();
-    const original = await readFile(new URL('../.agents/skills/tdd/SKILL.md', import.meta.url), 'utf8');
-    expect(text).toContain(original); expect(text).toContain('tdd/tests.md'); expect(text).toContain('tdd/mocking.md');
-    expect(text).toContain('diagnosing-bugs/scripts/hitl-loop.template.sh');
-    expect(text).toContain('codebase-design/DEEPENING.md');
-    expect(text).toContain(new URL('../.agents/skills/', import.meta.url).pathname);
-  });
-  it('拆票加载 to-tickets，架构加载共享设计方法', async () => {
-    expect(await loadTaskSkills('to-issues')).toContain(await readFile(new URL('../.agents/skills/to-tickets/SKILL.md', import.meta.url), 'utf8'));
-    expect(await loadTaskSkills('architecture')).toContain('Codebase Design');
-    await expect(access(new URL('../.agents/skills/to-tickets-with-qa/SKILL.md', import.meta.url))).rejects.toThrow();
-    await expect(access(new URL('../.agents/skills/improve-codebase-architecture-project/SKILL.md', import.meta.url))).rejects.toThrow();
-    await expect(loadTaskSkills('unknown')).rejects.toThrow();
+describe('完整任务 prompt 与上游来源', () => {
+  it('只复制模板也能构建所有任务，无需 skill 目录', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agent-prompts-'));
+    try {
+      await cp(new URL('../.sandcastle/prompts/', import.meta.url), root, { recursive: true });
+      for (const mode of ['implement', 'bugfix', 'code-design', 'review', 'implement-pr', 'update-branch', 'to-issues', 'architecture']) {
+        const prompt = await loadTaskPrompt(mode, pathToFileURL(`${root}/`));
+        expect(prompt).toContain('<output>');
+        expect(prompt).not.toContain('已加载的');
+        expect(prompt).not.toMatch(/\]\((?:tests|mocking|DEEPENING|DESIGN-IT-TWICE)\.md\)/);
+      }
+      await expect(loadTaskPrompt('unknown')).rejects.toThrow();
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
   it('全部上游文件与锁定版本校验值一致，避免不知情地修改上游内容', async () => {
     const manifest = JSON.parse(await readFile(new URL('../.agents/skills/UPSTREAM.json', import.meta.url), 'utf8')) as { sha256: Record<string, string> };

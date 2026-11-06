@@ -5,8 +5,17 @@ on:
   workflow_dispatch:
     inputs:
       issue_number:
-        description: 要实现的 Issue 或父 PRD 编号
+        description: 要执行的 Issue、子 Issue 或父规格编号
         required: true
+        type: string
+      mode:
+        description: 任务类型
+        type: choice
+        default: implement
+        options: [implement, bugfix, code-design]
+      auth_secret:
+        description: 内部调度指定的认证槽位；留空自动选择
+        default: ''
         type: string
 permissions:
   contents: write
@@ -15,9 +24,10 @@ permissions:
   actions: write
 jobs:
   run:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:implement'
+    if: github.event_name == 'workflow_dispatch' || contains(fromJSON('["agent:implement","agent:bugfix","agent:code-design"]'), github.event.label.name)
     uses: ./.github/workflows/codex-task.yml
     with:
-      mode: implement
+      mode: ${{ inputs.mode || (github.event.label.name == 'agent:bugfix' && 'bugfix') || (github.event.label.name == 'agent:code-design' && 'code-design') || 'implement' }}
       number: ${{ inputs.issue_number || format('{0}', github.event.issue.number) }}
+      auth_secret: ${{ inputs.auth_secret }}
     secrets: inherit

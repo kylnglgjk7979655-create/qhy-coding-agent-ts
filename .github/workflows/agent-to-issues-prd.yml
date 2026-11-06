@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: codex-subscription-${{ github.repository }}
+      group: publish-tickets-${{ github.repository }}-${{ inputs.issue_number || github.event.issue.number }}
       cancel-in-progress: false
     permissions:
       contents: read
