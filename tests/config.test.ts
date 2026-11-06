@@ -38,6 +38,13 @@ describe('configuration', () => {
     await expect(loadConfig({ cwd, workspace: '.', env: {} })).rejects.toMatchObject({ code: 'CONFIG_ERROR', exitCode: 2 });
   });
 
+  it('上下文默认保留两轮，阈值八成且目标五成，容量和回答预留有明确默认值', () => {
+    expect(configSchema.parse({ context: {} }).context).toEqual({
+      capacityTokens: 128_000, answerReserveTokens: 8192,
+      triggerRatio: 0.8, targetRatio: 0.5, keepRecentTurns: 2,
+    });
+  });
+
   it('rejects nonexistent workspaces and files used as directories', async () => {
     await writeFile(join(cwd, 'file'), 'text');
     for (const workspace of ['missing', 'file']) {

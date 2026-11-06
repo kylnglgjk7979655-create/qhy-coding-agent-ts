@@ -1,5 +1,23 @@
 # 基础 CLI 验收记录
 
+## 工具权限、宿主 Bash、基础 MCP 与摘要组合验证
+
+日期：2026-11-05。子任务 #16，基于本轮输入版本 `e56ae3f` 叠加工作区修改；Node.js 24.22.2、pnpm 9.12.3，Linux 临时 Runner。本轮只交付组合验证和人工验收准备，最终人工 QA #17 仍待人执行。
+
+| 检查 | 结果 |
+| --- | --- |
+| `pnpm check` | 通过：严格类型检查、构建、21 个测试文件共 311 项测试 |
+| `pnpm demo:test` | 通过：3 项基础测试 |
+| 编译后 CLI 组合测试 | 通过：混合批次顺序、调用 ID、普通失败隔离；文件和远端副作用后审批故障；轮内工具增长后的摘要成功、失败与空响应；预算及配对故障停止后继续输入 |
+| 独立 QA 启动入口 | 通过：真实子进程生成配置、旧格式历史和受控命令，CLI 完成摘要及跨进程续聊，并在下轮发现新版 MCP schema；历史权限保持 0600 |
+| 人工审批与真实进程 | 通过：人工等待跨过原截止时间后仍能批准，后续整轮超时或 SIGTERM 终止 Bash 与子进程；已有写入保留，后续调用及延迟标记不发生 |
+| 文档中的独立启动命令 | 已实际执行 `pnpm exec tsx tests/helpers/local-qa-fixture.ts --directory <全新目录> --scenario normal`，收到 `QA_READY`，`status` 显示计数，`exit` 正常关闭 |
+| `git diff --check` | 通过 |
+
+新增 12 项测试：`capability-integration.test.ts` 9 项、`local-qa-launcher.test.ts` 1 项、`human-approval.test.ts` 2 项。组合夹具的初始测试在入口缺失及故障场景未提供时失败，补齐后通过。测试使用本地模型、两个真实 Streamable HTTP MCP 夹具和假认证标记，不依赖真实账号或在线服务；检查模型请求、历史和普通日志不含连接器认证值。
+
+复现、配置字段与人工场景见 [本地 QA 指南](qa-tool-capabilities.md)。未运行故意失败的 `demo:bug` 或真实模型 `smoke`。MCP 独立断连、超时、取消及结果未知专项按需求评论延期；自动测试和代码审查不代表这些场景或最终人工 QA 已通过。没有提交、发布或关闭任务，后续审查由外层 workflow 负责。
+
 ## 工具执行框架最终审查修复
 
 日期：2026-11-04。基于集成分支 `feat/tool-execution-framework` 的 `22dd4ae`，在独立工作树执行。

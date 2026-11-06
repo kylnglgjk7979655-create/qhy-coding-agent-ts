@@ -2,16 +2,30 @@ import { randomUUID } from 'node:crypto';
 import { unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createOpenAI } from '@ai-sdk/openai';
-import { APICallError, InvalidToolInputError, isStepCount, NoSuchToolError, ToolChoiceViolationError, ToolLoopAgent, tool, wrapLanguageModel } from 'ai';
+import { APICallError, InvalidToolInputError, isStepCount, NoSuchToolError, ToolChoiceViolationError, ToolLoopAgent, wrapLanguageModel } from 'ai';
 import type { ModelMessage } from 'ai';
 import { z } from 'zod';
 import type { ResolvedConfig } from './config.js';
 import { AgentError, publicError } from './errors.js';
 import { readWorkspaceFile, writeWorkspaceFile } from './workspace-files.js';
+import { approveToolCall } from './tool-approval.js';
+import type { ApprovalControl } from './tool-approval.js';
+import { ToolRegistry } from './tool-registry.js';
+import { prepareBashInput, runHostBash } from './host-bash.js';
+import { registerRemoteMCP } from './remote-mcp.js';
+import { DEFAULT_CONTEXT } from './config.js';
+import { prepareConversation } from './context-summary.js';
+import type { ToolExecutionEvent } from './tool-registry.js';
+
+export type { ApprovalControl } from './tool-approval.js';
+export type { ToolApprovalRequest } from './tool-registry.js';
+export type { ToolExecutionEvent } from './tool-registry.js';
 
 export interface RunResult {
   text: string;
   responseMessages: ModelMessage[];
+  /** 本轮成功使用的完整有效历史，可直接用于保存及下一轮输入。 */
+  effectiveHistory: ModelMessage[];
   steps: number;
   toolCalls: number;
   finishReason: string;
@@ -19,34 +33,10 @@ export interface RunResult {
   toolSmokePassed: boolean;
 }
 
-export interface ToolExecutionEvent {
-  callId: string;
-  toolName: string;
-  status: 'started' | 'succeeded' | 'failed' | 'rejected';
-  errorCode?: 'INVALID_TOOL_ARGUMENTS' | 'UNKNOWN_TOOL' | 'TOOL_EXECUTION_ERROR';
-}
-
-type ToolErrorCode = NonNullable<ToolExecutionEvent['errorCode']>;
-type ToolFailure = { is_error: true; error: { code: ToolErrorCode; message: string } };
-
 function modelStreamError(error: unknown): AgentError {
   if (error instanceof AgentError) return error;
   if (APICallError.isInstance(error) || ToolChoiceViolationError.isInstance(error)) return publicError(error);
   return new AgentError('PROVIDER_ERROR', '模型响应流无效，已终止当前对话轮次。');
-}
-
-function reportToolEvent(options: { onToolEvent?: (event: ToolExecutionEvent) => unknown }, event: ToolExecutionEvent): void {
-  try {
-    const notification = options.onToolEvent?.(event);
-    if (typeof notification === 'object' && notification !== null && 'then' in notification && typeof notification.then === 'function') {
-      void Promise.resolve(notification).catch(() => {
-        process.stderr.write('执行事件通知失败。\n');
-      });
-    }
-  } catch {
-    // 事件通知只用于观察，不改变工具结果。
-    process.stderr.write('执行事件通知失败。\n');
-  }
 }
 
 async function validatedOpenAIFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
@@ -176,24 +166,6 @@ async function validatedOpenAIFetch(input: string | URL | Request, init?: Reques
   return response;
 }
 
-async function executeTool<T>(
-  options: { onToolEvent?: (event: ToolExecutionEvent) => unknown },
-  callId: string,
-  toolName: string,
-  operation: () => Promise<T> | T,
-): Promise<{ is_error: false; output: T } | ToolFailure> {
-  reportToolEvent(options, { callId, toolName, status: 'started' });
-  try {
-    const output = await operation();
-    reportToolEvent(options, { callId, toolName, status: 'succeeded' });
-    return { is_error: false, output };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : '工具执行失败。';
-    reportToolEvent(options, { callId, toolName, status: 'failed', errorCode: 'TOOL_EXECUTION_ERROR' });
-    return { is_error: true, error: { code: 'TOOL_EXECUTION_ERROR', message } };
-  }
-}
-
 export async function runAgent(
   config: ResolvedConfig,
   prompt: string,
@@ -204,6 +176,7 @@ export async function runAgent(
     onToolCall?: (name: string) => void;
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
+    approvalControl?: ApprovalControl;
   },
 ): Promise<RunResult> {
   if (options.smokeTool && config.maxSteps < 2) {
@@ -218,94 +191,155 @@ export async function runAgent(
   const probe = randomUUID();
   const smokeProbePath = `.agent-smoke-${probe}.txt`;
   if (options.smokeTool) await writeFile(join(config.workspace, smokeProbePath), probe, { encoding: 'utf8', flag: 'wx' });
-  const agentTools = {
-    runtimeInfo: tool({
-      description: '返回已配置的工作区绝对路径和本次运行探针。',
-      inputSchema: z.object({}),
-      execute: async (_input, { toolCallId }) => executeTool(options, toolCallId, 'runtimeInfo', () => ({ workspace: config.workspace, probe })),
-    }),
-    read_file: tool({
-      description: '读取工作区内的文本文件。',
-      inputSchema: z.strictObject({ path: z.string().min(1) }),
-      execute: async ({ path }, { toolCallId }) => executeTool(options, toolCallId, 'read_file', async () => ({ content: await readWorkspaceFile(config.workspace, path) })),
-    }),
-    write_file: tool({
-      description: '将工作区内文件完整替换为指定内容；目标不存在时创建文件，不会创建父目录。',
-      inputSchema: z.strictObject({ path: z.string().min(1), content: z.string() }),
-      execute: async ({ path, content }, { toolCallId }) => executeTool(options, toolCallId, 'write_file', async () => {
-        await writeWorkspaceFile(config.workspace, path, content);
-        return { success: true as const };
-      }),
-    }),
-  };
   const frameworkAbort = new AbortController();
+  const bashOperations = new Set<Promise<unknown>>();
   let frameworkError: AgentError | undefined;
-  const model = wrapLanguageModel({
-    model: provider.chat(config.model),
-    middleware: {
-      wrapStream: async ({ doStream }) => {
-        const result = await doStream();
-        return {
-          ...result,
-          stream: result.stream.pipeThrough(new TransformStream({
-            transform(part, controller) {
-              if (part.type === 'error') {
-                frameworkError = modelStreamError(part.error);
-                frameworkAbort.abort(frameworkError);
-                controller.error(frameworkError);
-                return;
-              }
-              controller.enqueue(part);
-            },
-          })),
-        };
-      },
-    },
-  });
-  const agent = new ToolLoopAgent({
-    model,
-    instructions: [
-      '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
-      '可使用 read_file 读取工作区文件，使用 write_file 完整替换或创建工作区文件；文件访问仅限配置的工作区。',
-      'runtimeInfo 可获取工作区路径和本次探针。没有执行命令的能力。',
-    ].join('\n'),
-    tools: agentTools,
-    toolCallConcurrency: 1,
-    stopWhen: isStepCount(config.maxSteps),
-    onError: ({ error }) => {
-      if (InvalidToolInputError.isInstance(error) || NoSuchToolError.isInstance(error)) return;
-      frameworkError = modelStreamError(error);
-      frameworkAbort.abort(frameworkError);
-    },
-    // Avoid automatic retries hiding auth failures or extending the deadline.
-    maxRetries: 0,
-    ...(options.smokeTool ? {
-      prepareStep: ({ stepNumber }: { stepNumber: number }) => ({
-        toolChoice: stepNumber === 0
-          ? { type: 'tool' as const, toolName: 'read_file' as const }
-          : 'none' as const,
-      }),
-    } : {}),
-  });
-
   const deadline = new AbortController();
   const pairingAbort = new AbortController();
   let pairingError: AgentError | undefined;
-  const timer = setTimeout(() => deadline.abort(), config.timeoutMs);
+  let remainingMs = config.timeoutMs;
+  let activeSince = performance.now();
+  let timer = setTimeout(() => deadline.abort(), remainingMs);
   const signal = options.signal === undefined
     ? AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal])
     : AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal, options.signal]);
+  function pauseDeadline(): void {
+    signal.throwIfAborted();
+    clearTimeout(timer);
+    remainingMs -= performance.now() - activeSince;
+    if (remainingMs <= 0) deadline.abort();
+    signal.throwIfAborted();
+  }
+  function resumeDeadline(): void {
+    if (signal.aborted) return;
+    activeSince = performance.now();
+    timer = setTimeout(() => deadline.abort(), remainingMs);
+  }
+  const registry = new ToolRegistry({
+    ...options,
+    approve: async (call) => {
+      signal.throwIfAborted();
+      try {
+        return await approveToolCall(config, call, signal, options.approvalControl, { pause: pauseDeadline, resume: resumeDeadline });
+      } catch (error) {
+        if (!signal.aborted) {
+          frameworkError = error instanceof AgentError ? error : new AgentError('APPROVAL_ERROR', '工具审批故障，已停止本轮。');
+          frameworkAbort.abort(frameworkError);
+        }
+        throw error;
+      }
+    },
+  });
+  registry.register({
+    name: 'runtimeInfo',
+    description: '返回已配置的工作区绝对路径和本次运行探针。',
+    inputSchema: z.object({}),
+    execute: () => ({ workspace: config.workspace, probe }),
+  });
+  registry.register({
+    name: 'read_file',
+    description: '读取工作区内的文本文件。',
+    inputSchema: z.strictObject({ path: z.string().min(1) }),
+    execute: async ({ path }) => ({ content: await readWorkspaceFile(config.workspace, path) }),
+  });
+  registry.register({
+    name: 'write_file',
+    description: '将工作区内文件完整替换为指定内容；目标不存在时创建文件，不会创建父目录。',
+    inputSchema: z.strictObject({ path: z.string().min(1), content: z.string() }),
+    execute: async ({ path, content }) => {
+      await writeWorkspaceFile(config.workspace, path, content);
+      return { success: true as const };
+    },
+  });
+  registry.register({
+    name: 'Bash',
+    description: '使用独立宿主 Bash 执行命令，继承 CLI 环境；cwd 仅约束启动目录，不提供操作系统隔离。',
+    inputSchema: z.strictObject({ command: z.string().refine((value) => value.trim().length > 0), cwd: z.string().min(1).optional() }),
+    prepare: (input) => prepareBashInput(config.workspace, input),
+    execute: ({ command, cwd }, execution) => {
+      const operation = runHostBash(command, cwd ?? config.workspace, execution.abortSignal, config.bash?.timeoutMs);
+      bashOperations.add(operation);
+      void operation.finally(() => bashOperations.delete(operation)).catch(() => undefined);
+      return operation;
+    },
+  });
+  let closeMCP: (() => Promise<void>) | undefined;
   try {
-    const result = await agent.stream({
-      messages: [
-        ...(options.smokeTool ? [] : options.history ?? []),
-        {
-          role: 'user',
-          content: options.smokeTool
-            ? `调用 read_file 读取 ${smokeProbePath}，然后在最终回答中逐字写出文件内容。`
-            : prompt,
+    closeMCP = await registerRemoteMCP(config, registry, signal);
+    const model = wrapLanguageModel({
+      model: provider.chat(config.model),
+      middleware: {
+        wrapStream: async ({ doStream }) => {
+          signal.throwIfAborted();
+          const result = await doStream();
+          return {
+            ...result,
+            stream: result.stream.pipeThrough(new TransformStream({
+              transform(part, controller) {
+                if (part.type === 'error') {
+                  frameworkError = modelStreamError(part.error);
+                  frameworkAbort.abort(frameworkError);
+                  controller.error(frameworkError);
+                  return;
+                }
+                controller.enqueue(part);
+              },
+            })),
+          };
         },
-      ],
+      },
+    });
+    const instructions = [
+        '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
+        '可使用 read_file 读取工作区文件，使用 write_file 完整替换或创建工作区文件；文件访问仅限配置的工作区。',
+        'write_file 和 Bash 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
+        'Bash 可运行命令和项目测试，每次使用独立 shell，继承 CLI 环境并以宿主当前用户权限执行；cwd 只约束启动位置，不提供文件系统或网络隔离。',
+        'runtimeInfo 可获取工作区路径和本次探针。',
+        '如公布了 mcp_ 前缀工具，可调用对应远程 MCP 服务；这些工具默认需要独立审批，调用可能产生远端副作用。',
+    ].join('\n');
+    const tools = registry.tools();
+    let preparedHistory: ModelMessage[] = [];
+    let preparedResponseCount = 0;
+    const agent = new ToolLoopAgent({
+      model,
+      instructions,
+      maxOutputTokens: (config.context ?? DEFAULT_CONTEXT).answerReserveTokens,
+      tools,
+      toolCallConcurrency: 1,
+      stopWhen: isStepCount(config.maxSteps),
+      onError: ({ error }) => {
+        if (InvalidToolInputError.isInstance(error) || NoSuchToolError.isInstance(error)) return;
+        frameworkError ??= modelStreamError(error);
+        frameworkAbort.abort(frameworkError);
+      },
+      // Avoid automatic retries hiding auth failures or extending the deadline.
+      maxRetries: 0,
+      prepareStep: async ({ stepNumber, messages, responseMessages }) => {
+        signal.throwIfAborted();
+        preparedHistory = await prepareConversation(config, instructions, messages, tools, signal);
+        preparedResponseCount = responseMessages.length;
+        signal.throwIfAborted();
+        return {
+          messages: preparedHistory,
+          ...(options.smokeTool ? { toolChoice: stepNumber === 0
+            ? { type: 'tool' as const, toolName: 'read_file' as const }
+            : 'none' as const } : {}),
+        };
+      },
+    });
+
+    signal.throwIfAborted();
+    const inputMessages: ModelMessage[] = [
+      ...(options.smokeTool ? [] : options.history ?? []),
+      {
+        role: 'user',
+        content: options.smokeTool
+          ? `调用 read_file 读取 ${smokeProbePath}，然后在最终回答中逐字写出文件内容。`
+          : prompt,
+      },
+    ];
+    const result = await agent.stream({
+      messages: inputMessages,
       abortSignal: signal,
       experimental_transform: () => new TransformStream({
         transform(part, controller) {
@@ -313,37 +347,24 @@ export async function runAgent(
             controller.enqueue(part);
             return;
           }
-          const errorText = typeof part.error === 'string' ? part.error : '';
-          const invalidInput = InvalidToolInputError.isInstance(part.error)
-            || errorText.startsWith('AI_InvalidToolInputError:');
-          const unknownTool = NoSuchToolError.isInstance(part.error)
-            || errorText.startsWith('AI_NoSuchToolError:');
-          if (!invalidInput && !unknownTool) {
-            frameworkError = new AgentError('PROVIDER_ERROR', '工具执行发生不可恢复错误，已终止当前对话轮次。');
+          const rejection = registry.reject(part.toolCallId, part.toolName, part.error);
+          if (!rejection) {
+            frameworkError ??= new AgentError('PROVIDER_ERROR', '工具执行发生不可恢复错误，已终止当前对话轮次。');
             frameworkAbort.abort(frameworkError);
             controller.error(frameworkError);
             return;
           }
-          const code = unknownTool ? 'UNKNOWN_TOOL' : 'INVALID_TOOL_ARGUMENTS';
-          reportToolEvent(options, {
-            callId: part.toolCallId,
-            toolName: part.toolName,
-            status: 'rejected',
-            errorCode: code,
-          });
-          const message = invalidInput
-            ? '工具参数无效，请根据工具参数定义修正后重试。'
-            : `不存在名为 ${part.toolName} 的工具。`;
           controller.enqueue({
             type: 'tool-result',
             toolCallId: part.toolCallId,
             toolName: part.toolName,
             input: part.input,
-            output: { is_error: true, error: { code, message } },
+            output: rejection,
           } as unknown as typeof part);
         },
       }),
       onStepFinish: ({ toolCalls, toolResults }) => {
+        if (signal.aborted) return;
         for (const call of toolCalls) options.onToolCall?.(call.toolName);
         // This callback is awaited by the SDK before it starts the next model request.
         const callIds = toolCalls.map(({ toolCallId }) => toolCallId);
@@ -364,6 +385,7 @@ export async function runAgent(
       result.finishReason,
       result.totalUsage,
     ]);
+    signal.throwIfAborted();
     const toolResults = steps.flatMap((step) => step.toolResults);
     const toolSmokePassed = toolResults.some((item) => {
       if (item.toolName !== 'read_file') return false;
@@ -386,6 +408,8 @@ export async function runAgent(
     return {
       text,
       responseMessages,
+      // 最后一次请求的历史已包含此前工具往返，只追加该请求之后的新响应。
+      effectiveHistory: [...preparedHistory, ...responseMessages.slice(preparedResponseCount)],
       steps: steps.length,
       toolCalls: steps.reduce((count, step) => count + step.toolCalls.length, 0),
       finishReason,
@@ -405,6 +429,8 @@ export async function runAgent(
     throw error;
   } finally {
     clearTimeout(timer);
+    await closeMCP?.();
+    await Promise.allSettled(bashOperations);
     if (options.smokeTool) await unlink(join(config.workspace, smokeProbePath)).catch(() => undefined);
   }
 }

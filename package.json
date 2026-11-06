@@ -23,8 +23,10 @@
     "agent:implement": "tsx .sandcastle/implement.ts"
   },
   "dependencies": {
+    "@ai-sdk/mcp": "2.0.90",
     "@ai-sdk/openai": "4.0.108",
     "ai": "7.0.162",
+    "ajv": "8.20.0",
     "zod": "4.6.7"
   },
   "devDependencies": {

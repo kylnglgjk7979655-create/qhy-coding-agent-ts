@@ -8,10 +8,14 @@ export type ErrorCode =
   | 'TOOL_COMPATIBILITY_ERROR'
   | 'STEP_LIMIT'
   | 'CANCELLED'
+  | 'APPROVAL_ERROR'
+  | 'CONTEXT_ERROR'
   | 'INTERNAL_ERROR';
 
 const exitCodes: Record<ErrorCode, number> = {
   CONFIG_ERROR: 2,
+  APPROVAL_ERROR: 8,
+  CONTEXT_ERROR: 9,
   AUTH_ERROR: 3,
   TIMEOUT: 4,
   PROVIDER_ERROR: 5,

@@ -1,3 +1,11 @@
-# Scope Agent file access to the workspace
+# 文件工具限制在工作区内，并通过工具策略控制写入
 
-The Agent's `read_file` and `write_file` tools may access files only within the configured workspace, with relative paths resolved from that workspace and absolute paths accepted when they remain inside it. No per-operation confirmation is required; paths that escape the workspace, including through symlinks, are rejected. This gives the Agent direct file-editing ability while keeping its filesystem access bounded to the project the user selected.
+Agent 的 `read_file` 和 `write_file` 只能访问配置的工作区：相对路径从工作区解析，绝对路径仅在目标仍位于工作区内时接受。路径穿越及符号链接逃逸都被拒绝。
+
+父需求 #6 的子任务 #9 替代初版“文件操作无需逐次确认”的约定：`read_file` 和 `runtimeInfo` 默认允许，`write_file` 默认进入独立模型审批。固定工具策略仅匹配工具名称，允许可直接执行，拒绝不可由模型放行，同名规则冲突时拒绝优先。批准发生在实际操作前，每次只适用于对应调用和参数；未知工具与无效参数先于审批被拒绝。
+
+模型审批只使用专用提示词、本次工具名称和完整参数，不接收用户目标或对话历史，不具备工具执行能力。明确拒绝以权限拒绝工具结果回传，只影响当前调用；审批超时、不可用或无效响应停止本轮，保留此前副作用，不保存失败轮次。公共可等待审批控制与观察用执行事件分离，通知故障不改变审批决定。
+
+工具策略与批准都不放宽路径及符号链接边界，也不提供操作系统隔离。文件访问仍由工作区边界约束，普通文件操作失败按原有规则隔离。
+
+子任务 #10 增加可切换的人工审批：固定策略优先，终端按当前审批编号等待逐次批准或拒绝；非交互、输入关闭及等待超时直接拒绝本次调用。人工等待默认最多五分钟且单独计时，结束后继续使用整轮剩余执行时间，取消仍立即生效。完整参数仅在人工审批界面展示，执行事件保持只用于观察。
