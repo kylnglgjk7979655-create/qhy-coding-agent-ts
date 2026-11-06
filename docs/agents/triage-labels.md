@@ -19,7 +19,7 @@ When a skill mentions a role, use the corresponding label string from this table
 | 标签 | 含义 |
 | --- | --- |
 | `agent:implement` | 启动 Codex 实现 |
-| `agent:to-issues` | 生成含人工 QA 的待审批拆票计划 |
+| `agent:to-issues` | 生成待审批拆票计划 |
 | `agent:publish-tickets` | 确认计划并发布原生子任务和依赖 |
 | `agent:in-progress` | 本轮自动实现正在执行 |
 | `agent:blocked` | 本轮失败，查看运行日志后重试 |

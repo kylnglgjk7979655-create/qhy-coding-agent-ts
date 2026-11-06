@@ -8,8 +8,7 @@
     "diagnosing-bugs",
     "codebase-design",
     "to-spec",
-    "pr",
-    "implement"
+    "pr"
   ],
   "sha256": {
     "code-review/SKILL.md": "9c921a8d88138a41401d8897ca1bb852088ab1b7b605cdd04edc13e3e8aab6dd",
@@ -30,7 +29,19 @@
     "pr/CREDITS.md": "a7a087127665d7298a72280ef6e19c41ad8404523712a788c8dc3ab414bc2497",
     "pr/SKILL.md": "ab63f1cf78647389edcd386c9427c5dfca27ed2836930c24773ffee834c19bcd",
     "pr/agents/openai.yaml": "2295b586624db4ef546f3fd4695492f039d941a46d8a1593a702ce3ca511b8ad",
-    "implement/SKILL.md": "483bdc4ccf4ac31d86ac7beeaa0d0db80313e71e120bb8c59b3196ae5decd53d",
-    "implement/agents/openai.yaml": "8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc"
+    "implement-spec/SKILL.md": "7a22dd2e60b8fcece478ced9d2533582adf3520d695acd3ab715341535c9e56d",
+    "implement-spec/agents/openai.yaml": "fd41efb42c60c96320d6531be7e4bf15cbf5518cd652d57dff27ccffa46988e9",
+    "to-tickets/SKILL.md": "56ec23c5b2782785d4e65bff9e315b6d3aeb4ef977c174a219e99489fada1995",
+    "to-tickets/agents/openai.yaml": "21bc6215fffcd7614e9f772bb1760e87cc5fc7dcc707e7d282bc9414267a6090"
+  },
+  "localSnapshots": {
+    "implement-spec": {
+      "source": "/Users/qhy/.codex/skills/implement-spec",
+      "description": "本机已安装的 implement-spec 快照；来源 commit 未确认"
+    },
+    "to-tickets": {
+      "source": "/Users/qhy/.codex/skills/to-tickets",
+      "description": "本机已安装的 to-tickets 快照；来源 commit 未确认"
+    }
   }
 }

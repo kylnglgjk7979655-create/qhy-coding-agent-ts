@@ -4,12 +4,12 @@ import { resolve, relative, join } from 'node:path';
 
 const skillsRoot = fileURLToPath(new URL('../.agents/skills/', import.meta.url));
 const taskSkills: Record<string, readonly string[]> = {
-  implement: ['implement', 'tdd', 'diagnosing-bugs', 'codebase-design', 'pr'],
-  'implement-prd': ['implement', 'tdd', 'diagnosing-bugs', 'codebase-design', 'pr'],
+  implement: ['implement-spec', 'tdd', 'diagnosing-bugs', 'codebase-design', 'pr'],
+  'implement-prd': ['implement-spec', 'tdd', 'diagnosing-bugs', 'codebase-design', 'pr'],
   review: ['code-review', 'tdd', 'codebase-design'],
   'implement-pr': ['tdd', 'diagnosing-bugs'],
   'update-branch': ['tdd'],
-  'to-issues': ['to-tickets-with-qa'],
+  'to-issues': ['to-tickets'],
   architecture: ['codebase-design'],
 };
 export async function loadTaskSkills(mode: string, root = skillsRoot): Promise<string> {

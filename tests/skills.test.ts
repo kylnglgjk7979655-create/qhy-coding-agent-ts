@@ -7,16 +7,20 @@ import { runReviewPhases } from '../.sandcastle/review-phases.js';
 describe('仓库 skill 加载', () => {
   it('使用已提交的完整 skill 内容，引用文件指向控制脚本目录', async () => {
     const text = await loadTaskSkills('implement');
+    const implementSpec = await readFile(new URL('../.agents/skills/implement-spec/SKILL.md', import.meta.url), 'utf8');
+    expect(text).toContain(implementSpec);
+    expect(await loadTaskSkills('implement-prd')).toContain(implementSpec);
+    await expect(access(new URL('../.agents/skills/implement/SKILL.md', import.meta.url))).rejects.toThrow();
     const original = await readFile(new URL('../.agents/skills/tdd/SKILL.md', import.meta.url), 'utf8');
     expect(text).toContain(original); expect(text).toContain('tdd/tests.md'); expect(text).toContain('tdd/mocking.md');
     expect(text).toContain('diagnosing-bugs/scripts/hitl-loop.template.sh');
     expect(text).toContain('codebase-design/DEEPENING.md');
     expect(text).toContain(new URL('../.agents/skills/', import.meta.url).pathname);
   });
-  it('拆票仅加载项目 QA skill，架构仅加载新版共享设计方法', async () => {
-    expect(await loadTaskSkills('to-issues')).toContain('最终人工 QA');
+  it('拆票加载 to-tickets，架构加载共享设计方法', async () => {
+    expect(await loadTaskSkills('to-issues')).toContain(await readFile(new URL('../.agents/skills/to-tickets/SKILL.md', import.meta.url), 'utf8'));
     expect(await loadTaskSkills('architecture')).toContain('Codebase Design');
-    await expect(access(new URL('../.agents/skills/to-tickets/SKILL.md', import.meta.url))).rejects.toThrow();
+    await expect(access(new URL('../.agents/skills/to-tickets-with-qa/SKILL.md', import.meta.url))).rejects.toThrow();
     await expect(access(new URL('../.agents/skills/improve-codebase-architecture-project/SKILL.md', import.meta.url))).rejects.toThrow();
     await expect(loadTaskSkills('unknown')).rejects.toThrow();
   });
