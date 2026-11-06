@@ -133,4 +133,4 @@ CLI 用户希望退出、主动中断或进程意外结束后，仍能找到之�
 - [ADR 0005](../../docs/adr/0005-shared-workspace-explicit-code-restore.md) 规定共用工作目录与显式代码恢复；[ADR 0006](../../docs/adr/0006-message-checkpoints-track-files.md) 规定文件追踪和错误行为；[ADR 0007](../../docs/adr/0007-session-transcript-source-of-truth.md) 规定完整 transcript、配置恢复和原文保留。
 - ADR 0007 取代早期 ADR 中仅成功轮次落盘、摘要后不留原文的约定；用户中断与返回输入行为按本规格执行。既有工具策略、审批、工作区边界、调用配对、预算和进程终止规则继续适用。
 - 现有测试先例包括 `tests/interactive-cli.test.ts`、`tests/context-summary.test.ts`、`tests/bash.test.ts`、`tests/tool-pairing.test.ts`、`tests/human-approval.test.ts`，及 `tests/helpers/cli-process.ts`、`tests/helpers/local-openai-fixture.ts`。这些是测试入口参考，不是要求固定不变的实现布局。
-- 本地 tracker 发布位置为当前功能目录的 `spec.md`，状态为 `ready-for-agent`。该状态仅表示需求已准备；本次不执行实现、不拆票，也不创建 GitHub Issue 或触发云端任务。
+- 默认 tracker 已切换为 GitHub Issues；本地文件保留为已确认规格的副本，发布后的最新需求以对应 Issue 正文、评论及标签为准。`ready-for-agent` 表示规格已准备；用户另行要求添加 `agent:implement` 启动自动实现。

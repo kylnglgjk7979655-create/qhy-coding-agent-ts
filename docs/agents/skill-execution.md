@@ -4,7 +4,7 @@
 
 ## 规划与执行
 
-- 本地使用 `.scratch/`，布局见 [issue-tracker.md](issue-tracker.md)。云端以父 Issue、子 Issue、评论和原生依赖为准。
+- 本地与云端统一使用 GitHub Issues，规格、工单、评论及原生依赖以 GitHub 为准；`.scratch/` 仅保存草稿、历史及补充材料。发布和读取规则见 [issue-tracker.md](issue-tracker.md)。
 - `ready-for-agent` 表示需求已准备，不触发实现；`agent:implement` 或显式手动运行才授权执行。人工任务使用 `ready-for-human`，即使被误加执行或排队标签，也不交给模型。
 - to-spec 从已有讨论产生规格，保留准备状态，先确定公共测试入口。大型需求交给 to-tickets 拆分，父规格在拆分及检查前不会自动执行。
 - to-tickets 按真实依赖拆分实现任务。云端 `agent:to-issues` 只输出计划评论；人检查具体计划后添加 `agent:publish-tickets`，才创建子 Issue 及原生阻塞关系。发布过程失败后重新确认可恢复，不重复创建。已保存的含人工 QA 计划仍可发布。

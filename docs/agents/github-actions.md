@@ -113,7 +113,7 @@ GitHub 临时 Runner 每轮结束都会销毁，因此每轮需要恢复、运�
 
 Agent 最长运行 45 分钟，连续无输出 5 分钟失败；生成 job 超时 60 分钟。没有自动批准、自动合并。架构审查每个工作日运行一次，会消耗 Actions 时间与 Codex 订阅用量；不需要时可在 Actions 中禁用该 workflow。
 
-任务显式读取仓库 `.agents/skills/` 的固定版本：implement-spec、tdd、diagnosing-bugs、codebase-design、code-review、pr 和 to-tickets。to-spec 供本地规格编写使用。原文及引用文件完整提交，来源与文件校验值见 `.agents/skills/UPSTREAM.json`；本地和云端不自动下载或更新。implement-spec 的云端执行按任务依赖串行推进，由 workflow 管理分支及发布。
+任务显式读取仓库 `.agents/skills/` 的固定版本：implement-spec、tdd、diagnosing-bugs、codebase-design、code-review、pr 和 to-tickets。to-spec 从本地讨论整理规格，发布到仓库 GitHub Issues。原文及引用文件完整提交，来源与文件校验值见 `.agents/skills/UPSTREAM.json`；本地和云端不自动下载或更新。implement-spec 的云端执行按任务依赖串行推进，由 workflow 管理分支及发布。
 
 具体适配见 [skill-execution.md](skill-execution.md)。结构化结果不合法时本轮失败，不自动重复有副作用的任务。
 
