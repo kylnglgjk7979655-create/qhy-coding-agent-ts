@@ -2,11 +2,11 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { codex, run } from '@ai-hero/sandcastle';
+import { run } from '@ai-hero/sandcastle';
 import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
 import { loadTaskSkills } from './skills.js';
 import { createIssuePrompt } from './issue-context.js';
-import { withCodexDiagnostics } from './codex-diagnostics.js';
+import { runCodex } from './codex-run.js';
 import { codexAuthEnvironment, resolveCodexModel } from './codex-auth.js';
 
 const contextPath = process.env.ISSUE_CONTEXT_PATH;
@@ -38,13 +38,9 @@ const model = resolveCodexModel({ ...process.env, ...authEnv }, (env) => {
 const outputDir = resolve(process.env.AGENT_OUTPUT_DIR ?? '.sandcastle/output');
 await mkdir(outputDir, { recursive: true });
 
-const result = await run({
+const result = await runCodex(model, authEnv, (agent) => run({
   name: 'codex-implement-issue',
-  agent: withCodexDiagnostics(codex(model, {
-    effort: 'high',
-    captureSessions: false,
-    env: authEnv,
-  })),
+  agent,
   sandbox: noSandbox(),
   branchStrategy: { type: 'head' },
   cwd: resolve(dirname(fileURLToPath(import.meta.url)), '..'),
@@ -53,6 +49,6 @@ const result = await run({
   idleTimeoutSeconds: 300,
   logging: { type: 'stdout' },
   signal: AbortSignal.timeout(45 * 60 * 1000),
-});
+}));
 
 await writeFile(resolve(outputDir, 'summary.md'), result.stdout || 'Codex 已完成本轮任务。\n');

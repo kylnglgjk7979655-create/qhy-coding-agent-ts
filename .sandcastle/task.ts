@@ -2,12 +2,12 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { codex, run, Output } from '@ai-hero/sandcastle';
+import { run, Output } from '@ai-hero/sandcastle';
 import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
 import { z } from 'zod';
 import { loadTaskSkills } from './skills.js';
 import { runReviewPhases } from './review-phases.js';
-import { withCodexDiagnostics } from './codex-diagnostics.js';
+import { runCodex } from './codex-run.js';
 import { codexAuthEnvironment, resolveCodexModel } from './codex-auth.js';
 
 const require = createRequire(import.meta.url);
@@ -42,22 +42,21 @@ const schema = z.unknown().transform((value, ctx) => {
   }
 });
 const signal = AbortSignal.timeout(45 * 60 * 1000);
-const agent = withCodexDiagnostics(codex(model, { effort: 'high', captureSessions: false, env: authEnv }));
-const execute = (text: string) => run({
+const execute = (text: string) => runCodex(model, authEnv, (agent) => run({
   name: `codex-${task.mode}`, agent,
   sandbox: noSandbox(), branchStrategy: { type: 'head' }, cwd: resolve(cwd), prompt: text,
   output: Output.object({ tag: 'output', schema }),
   maxIterations: 1, idleTimeoutSeconds: 300, logging: { type: 'stdout' },
   signal,
-});
+}));
 const result = task.mode === 'review' ? await runReviewPhases({
   review: async (axis) => {
-    const response = await run({
+    const response = await runCodex(model, authEnv, (agent) => run({
       name: `codex-review-${axis}`, agent, sandbox: noSandbox(), branchStrategy: { type: 'head' }, cwd: resolve(cwd),
       prompt: `${prompt}\n\n本次仅执行 code-review 的 ${axis} 轴。外层负责两轮全新会话，请直接完成本轴，不再派发子 Agent。保持只读，不修复、不回复评论。${axis === 'Spec' ? '只检查需求及已关闭的实现子任务；人工 QA 状态不代表代码功能缺失。无规格时明确报告无 spec。' : '收集所有仓库规范，并应用完整 smell baseline；仓库规范优先。'}\n输出 <output>{"report":"本轴完整报告，引用规范或需求依据，少于400词"}</output>。`,
       output: Output.object({ tag: 'output', schema: z.object({ report: z.string().min(1).max(20000) }) }),
       maxIterations: 1, idleTimeoutSeconds: 300, logging: { type: 'stdout' }, signal,
-    });
+    }));
     return response.output.report;
   },
   assertReadOnly: async () => {

@@ -69,7 +69,7 @@ gh secret set CODEX_AUTH_JSON \
 | 审查 PR | PR 添加 `agent:review` | 按仓库规范、关联 Issue 与已关闭子任务审查；可修复明确问题，发布行内评论及摘要 |
 | 根据反馈修改 | PR 留下反馈后添加 `agent:implement` | 读取顶层评论、review 摘要和未解决 threads，修改并回复有关 thread |
 | 更新 PR 分支 | PR 添加 `agent:update-branch` | 合并 PR 基准分支，必要时让 Codex 解决冲突；创建保留两个父提交的 merge commit |
-| 生成拆票计划 | 父 Issue 添加 `agent:to-issues` | 加载 to-tickets-with-qa，只读生成实现切片、依赖和最终人工 QA，写入待审批评论 |
+| 生成拆票计划 | 父 Issue 添加 `agent:to-issues` | 加载 to-tickets，只读生成实现切片和依赖，写入待审批评论 |
 | 确认发布工单 | 父 Issue 添加 `agent:publish-tickets` | 按已保存计划创建原生子 Issue、执行角色及依赖；不调用模型或启动实现 |
 | 逐轮实现 PRD | 含子 Issue 的父 Issue 添加 `agent:implement` | 自动选择 PRD 模式，每轮实现一个依赖已完成的 Agent 子任务，共用 `codex/prd-编号` 分支及一个草稿 PR |
 | 等待依赖 | 根 Issue 配置原生 GitHub `blocked by` 关系并添加 `agent:queued` | 依赖完成后每次只派发一个符合条件的任务 |
@@ -77,7 +77,7 @@ gh secret set CODEX_AUTH_JSON \
 
 各模型任务都有手动入口：在 Actions 选对应工作流，填写 `issue_number` 或 `pr_number`。`Codex Implement PRD` 是逐轮实现的接续与恢复入口；Issue 标签仍由 `Codex Implement Issue` 自动识别。`Codex Subscription Task` 是内部复用流程，不直接手动运行。
 
-PRD 建议顺序：写父 Issue → `agent:to-issues` → 检查评论中的完整计划 → `agent:publish-tickets` → 检查生成的实现与 QA 子任务 → 给父 Issue 添加 `agent:implement` → 按真实依赖串行实现 → 自动审查同一个 PR → 人工合并与 QA。实现子 Issue 在代码推送、检查和 PR 发布成功后关闭；Human QA 保持开放，由人执行并记录测试版本和结果。有 QA 的 PR 使用 `Refs #父规格`，父规格由人确认关闭。只支持扁平子任务，不直接给子 Issue 添加实现标签。
+PRD 建议顺序：写父 Issue → `agent:to-issues` → 检查评论中的完整计划 → `agent:publish-tickets` → 检查生成的子任务 → 给父 Issue 添加 `agent:implement` → 按真实依赖串行实现 → 自动审查同一个 PR → 人工合并。实现子 Issue 在代码推送、检查和 PR 发布成功后关闭；已有 Human QA 任务保持开放，由人执行并记录测试版本和结果。有 QA 的 PR 使用 `Refs #父规格`，父规格由人确认关闭。只支持扁平子任务，不直接给子 Issue 添加实现标签。
 
 手动生成或发布计划使用 Actions → Codex Plan and Publish Tickets：填写父 Issue 编号，生成计划时保持 `publish_approved=false`；检查计划后再勾选该选项启动新的运行。发布阶段不需要恢复订阅登录；失败时重新添加 `agent:publish-tickets` 可复用原计划和已创建的 Issue、挂接及依赖。不要通过重跑旧规划来覆盖发布中的计划。
 
@@ -109,9 +109,11 @@ GitHub 临时 Runner 每轮结束都会销毁，因此每轮需要恢复、运�
 
 若出现 `model is not supported when using Codex with a ChatGPT account`，设置仓库 Variable `CODEX_MODEL` 为该订阅可用的模型；错误中的模型名才是排查线索。Codex 的 stdout 错误现在会额外输出，避免仅看到 `Reading prompt from stdin...`。
 
+每次启动 Codex 时日志显示选用的模型，结束时显示该会话最后一次模型调用的输入 token 数及可用时的上下文上限。审查的三个独立会话分别报告；若会话记录没有用量，日志会显示不可用。
+
 Agent 最长运行 45 分钟，连续无输出 5 分钟失败；生成 job 超时 60 分钟。没有自动批准、自动合并。架构审查每个工作日运行一次，会消耗 Actions 时间与 Codex 订阅用量；不需要时可在 Actions 中禁用该 workflow。
 
-任务显式读取仓库 `.agents/skills/` 的固定版本：implement、tdd、diagnosing-bugs、codebase-design、code-review、pr，以及项目 to-tickets-with-qa。to-spec 供本地规格编写使用。原文及引用文件完整提交，来源 SHA 与文件校验值见 `.agents/skills/UPSTREAM.json`；本地和云端不自动下载或更新。架构方法统一使用最新版 codebase-design，没有重复的项目架构 skill；没有安装独立 to-tickets 或 implement-spec。
+任务显式读取仓库 `.agents/skills/` 的固定版本：implement-spec、tdd、diagnosing-bugs、codebase-design、code-review、pr 和 to-tickets。to-spec 供本地规格编写使用。原文及引用文件完整提交，来源与文件校验值见 `.agents/skills/UPSTREAM.json`；本地和云端不自动下载或更新。implement-spec 的云端执行按任务依赖串行推进，由 workflow 管理分支及发布。
 
 具体适配见 [skill-execution.md](skill-execution.md)。结构化结果不合法时本轮失败，不自动重复有副作用的任务。
 
