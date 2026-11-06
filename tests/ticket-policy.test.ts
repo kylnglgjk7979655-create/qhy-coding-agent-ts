@@ -21,12 +21,14 @@ describe('人工 QA 及依赖图', () => {
     expect(parentReference(42, [{ labels: ['ready-for-human'] }])).toBe('Refs #42');
     expect(parentReference(42, [])).toBe('Closes #42');
   });
-  it('强制最终 QA 依赖全部实现，拒绝循环、未来依赖、重复依赖和缺失 QA', () => {
+  it('接受纯实现计划及已有人工 QA 计划，拒绝无效依赖', () => {
     const a = { title: '第一片', execution: 'agent', blockedBy: [], whatToBuild: '行为', acceptanceCriteria: ['验收'] };
     const b = { ...a, title: '第二片', blockedBy: [1] };
     const qa = { ...a, title: 'QA: 验收', execution: 'human-qa', blockedBy: [1, 2] };
     expect(validateResult('to-issues', { summary: '计划', slices: [a, b, qa] }).slices).toHaveLength(3);
-    for (const slices of [[a, b], [a, b, { ...qa, blockedBy: [1] }], [{ ...a, blockedBy: [2] }, b, qa], [a, { ...b, blockedBy: [1, 1] }, qa]]) {
+    expect(validateResult('to-issues', { summary: '计划', slices: [a] }).slices).toHaveLength(1);
+    expect(validateResult('to-issues', { summary: '计划', slices: [a, b] }).slices).toHaveLength(2);
+    for (const slices of [[a, b, { ...qa, blockedBy: [1] }], [{ ...a, blockedBy: [2] }, b, qa], [a, { ...b, blockedBy: [1, 1] }, qa], [qa], [a, qa, b]]) {
       expect(() => validateResult('to-issues', { summary: '计划', slices })).toThrow();
     }
   });

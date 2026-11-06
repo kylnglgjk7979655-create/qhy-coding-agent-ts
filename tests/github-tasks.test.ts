@@ -119,6 +119,18 @@ describe('依赖队列与自动接续', () => {
 });
 
 describe('PRD 拆分故障恢复', () => {
+  it('发布纯实现计划时不创建人工 QA', async () => {
+    const plan = { ...validPlan(), slices: [validPlan().slices[0]!] };
+    const comments = [{ user: { login: 'github-actions[bot]' }, body: `<!-- codex-prd-plan -->${JSON.stringify(plan)}` }];
+    const create = vi.fn().mockResolvedValue({ data: { id: 100, number: 50 } });
+    const createComment = vi.fn();
+    const github = { rest: { issues: { listComments: 'comments', listForRepo: 'all', create, createComment } }, request: vi.fn(),
+      paginate: vi.fn(async (route) => route === 'comments' ? comments : []) };
+    await publishSlices(github, context, { number: 42 }, plan);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]?.[0].labels).toEqual(['ready-for-agent']);
+    expect(createComment.mock.calls[0]?.[0].body).not.toContain('最后一项是人工 QA');
+  });
   it('审批后创建成功但挂接失败，重试复用原计划及原 Issue，并补齐依赖', async () => {
     const plan = validPlan();
     const comments = [{ user: { login: 'github-actions[bot]' }, body: `<!-- codex-prd-plan -->${JSON.stringify(plan)}` }];

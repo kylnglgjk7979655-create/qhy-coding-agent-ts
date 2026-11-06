@@ -201,7 +201,7 @@ async function saveDraftPlan(github, context, task, result) {
   const all = await github.paginate(github.rest.issues.listForRepo, { ...context.repo, state: 'all', per_page: 100 });
   if (all.some((issue) => issue.body?.includes(`<!-- codex-prd:${task.number}:slice:`))) throw new Error('已有发布中的计划，请继续 agent:publish-tickets，不要重新规划。');
   await github.rest.issues.createComment({ ...context.repo, issue_number: task.number,
-    body: `${PLAN_MARKER}\n\x60\x60\x60json\n${JSON.stringify(result, null, 2)}\n\x60\x60\x60\n\n拆票计划待审批。请检查切片、依赖和最终人工 QA；确认后添加 agent:publish-tickets，再给父需求添加 agent:implement 才开始实现。` });
+    body: `${PLAN_MARKER}\n\x60\x60\x60json\n${JSON.stringify(result, null, 2)}\n\x60\x60\x60\n\n拆票计划待审批。请检查切片和依赖；确认后添加 agent:publish-tickets，再给父需求添加 agent:implement 才开始实现。` });
 }
 async function publishSlices(github, context, task, proposedResult) {
   const args = { ...context.repo, issue_number: task.number };
@@ -233,7 +233,7 @@ async function publishSlices(github, context, task, proposedResult) {
       if (!existing.some((dep) => dep.id === blocker.id)) await github.request('POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by', { ...context.repo, issue_number: issue.number, issue_id: blocker.id });
     }
   }
-  await github.rest.issues.createComment({ ...args, body: `已发布 ${result.slices.length} 个原生子 Issue 和阻塞关系，最后一项是人工 QA。请给父需求添加 agent:implement 开始；人工 QA 不会由 Agent 执行或关闭。\n\n${result.summary}` });
+  await github.rest.issues.createComment({ ...args, body: `已发布 ${result.slices.length} 个原生子 Issue 和阻塞关系。请给父需求添加 agent:implement 开始；人工任务不会由 Agent 执行或关闭。\n\n${result.summary}` });
 }
 async function publishApprovedSlices({ github, context, core }) {
   await authorize(github, context);
@@ -249,7 +249,7 @@ async function publishApprovedSlices({ github, context, core }) {
   await setup({ github, context });
   await publishSlices(github, context, { number }, parsePlan(comment));
   await removeLabel(github, { ...context.repo, issue_number: number }, 'agent:publish-tickets');
-  core.notice('已按批准计划发布实现子任务和最终人工 QA。');
+  core.notice('已按批准计划发布子任务及依赖关系。');
 }
 function prBody(task, result, children = []) {
   const content = result.prBody ?? `## Summary\n\n${result.summary}\n\n## Evidence\n\n- pnpm check\n- pnpm demo:test\n\n## Merge Danger\n\n**Door:** two-way\n\n**Blast Radius:** 本 Issue 涉及的模块；请人工检查差异和验收结果。`;

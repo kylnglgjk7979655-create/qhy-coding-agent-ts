@@ -10,11 +10,11 @@ function validateResult(mode, value) {
   if (JSON.stringify(value).length > 60000) throw new Error('结果超过 GitHub 评论长度限制。');
   const summary = text(value.summary, 'summary');
   if (mode === 'to-issues') {
-    if (!Array.isArray(value.slices) || value.slices.length < 2 || value.slices.length > 30) throw new Error('需要实现任务及最终人工 QA，共2至30项。');
+    if (!Array.isArray(value.slices) || value.slices.length < 1 || value.slices.length > 30) throw new Error('需要1至30项任务。');
     const slices = value.slices.map((slice, index) => {
       if (!Array.isArray(slice.acceptanceCriteria) || !slice.acceptanceCriteria.length || slice.acceptanceCriteria.length > 30) throw new Error('缺少验收条件。');
-      const execution = index === value.slices.length - 1 ? 'human-qa' : 'agent';
-      if (slice.execution !== execution) throw new Error('最后一项必须是人工 QA，其他项必须为实现任务。');
+      const execution = slice.execution;
+      if (execution !== 'agent' && !(execution === 'human-qa' && index > 0 && index === value.slices.length - 1)) throw new Error('实现任务须由 Agent 执行；人工 QA 只能作为最后一项。');
       if (!Array.isArray(slice.blockedBy) || new Set(slice.blockedBy).size !== slice.blockedBy.length
         || slice.blockedBy.some((n) => !Number.isSafeInteger(n) || n < 1 || n > index)) throw new Error('依赖必须指向前面的任务且不能重复。');
       if (execution === 'human-qa' && (slice.blockedBy.length !== index || !/^QA\s*:/i.test(slice.title ?? ''))) throw new Error('最终 QA 必须依赖所有实现任务，标题以 QA: 开头。');

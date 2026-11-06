@@ -27,15 +27,20 @@ const prompt = fs.readFileSync(0,'utf8');
 const axis = prompt.includes('本次仅执行 code-review 的 Standards 轴') ? 'Standards' : prompt.includes('本次仅执行 code-review 的 Spec 轴') ? 'Spec' : 'repair';
 fs.appendFileSync(process.env.MOCK_CALLS,JSON.stringify({axis,args})+'\\n');
 const result = axis === 'repair' ? {summary:'Standards / Spec 已完成，假 CLI 验证通过',inlineComments:[],replies:[]} : {report:axis+'独立报告'};
+const sessions = require('node:path').join(process.env.CODEX_HOME,'sessions','2026','01','01');
+fs.mkdirSync(sessions, {recursive:true});
+fs.writeFileSync(require('node:path').join(sessions, 'rollout-test-'+axis+'.jsonl'), JSON.stringify({type:'event_msg',payload:{type:'token_count',info:{last_token_usage:{input_tokens:1234},model_context_window:10000}}}));
 console.log(JSON.stringify({type:'thread.started',thread_id:axis}));
 console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'<output>'+JSON.stringify(result)+'</output>'}}));
 console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}));
 `, { mode: 0o755 });
-    execFileSync(process.execPath, ['--import', 'tsx', fileURLToPath(new URL('../.sandcastle/task.ts', import.meta.url))], {
+    const logs = execFileSync(process.execPath, ['--import', 'tsx', fileURLToPath(new URL('../.sandcastle/task.ts', import.meta.url))], {
       cwd: fileURLToPath(new URL('..', import.meta.url)), timeout: 30000,
       env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, ALLOW_HOST_EXECUTION: '1', TASK_CONTEXT_PATH: context, AGENT_WORKSPACE: work, AGENT_OUTPUT_DIR: output, CODEX_HOME: join(root, 'fake-home'), CODEX_AUTH_MODE: 'chatgpt', CODEX_MODEL: 'mock-model', MOCK_CALLS: calls, OPENAI_API_KEY: '', CODEX_API_KEY: '' },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8',
     });
+    expect(logs.match(/Codex 模型：mock-model/g)).toHaveLength(3);
+    expect(logs.match(/Codex 上下文：1234 tokens \/ 10000 tokens/g)).toHaveLength(3);
     const events = (await readFile(calls, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as { axis: string; args: string[] });
     expect(events.map((event) => event.axis)).toEqual(['Standards', 'Spec', 'repair']);
     expect(events.every((event) => !event.args.includes('resume'))).toBe(true);
