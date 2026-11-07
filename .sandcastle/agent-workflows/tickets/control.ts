@@ -75,6 +75,22 @@ try {
       new Queue(github).verify(number());
       break;
     }
+    case 'continue-parent': {
+      const parent = Number(required('PARENT_NUMBER'));
+      if (!Number.isSafeInteger(parent) || parent < 1 || github.parent(number()) !== parent) {
+        throw new Error('父 Issue 不匹配，拒绝接续。');
+      }
+      const child = github.issue(number());
+      if (child.state !== 'closed' || child.state_reason !== 'completed') {
+        throw new Error('子任务尚未完成，拒绝接续。');
+      }
+      const root = github.issue(parent);
+      if (root.state !== 'open' || !hasLabel(root, 'agent:queued')
+        || ['agent:blocked', 'agent:to-issues', 'agent:publish-tickets', 'agent:implement'].some((label) => hasLabel(root, label))) break;
+      if (!github.children(parent).some((issue) => issue.state === 'open')) break;
+      new GitHub(github.repo, required('AGENT_PAT')).addLabels(parent, ['agent:implement']);
+      break;
+    }
     case 'promote': {
       if (hasModelRun(github)) {
         console.log('模型工作流仍在运行或排队，保留 queued 任务等待下一次扫描。');

@@ -164,6 +164,12 @@ jobs:
             gh api --method POST "repos/$GH_REPO/actions/workflows/check.yml/dispatches" -f ref="$BRANCH"
           fi
 
+      - name: Continue parent with PAT
+        if: steps.route.outputs.proceed == 'true' && steps.completion.outputs.review == 'false' && success()
+        env:
+          AGENT_PAT: ${{ secrets.AGENT_PAT }}
+        run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts continue-parent
+
       - name: Mark blocked on failure
         if: failure()
         env:
