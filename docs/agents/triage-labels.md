@@ -26,6 +26,6 @@
 
 `ready-for-agent` 不自动执行。Explore 的 `easy-call` 结论会换成 `agent:implement`，有 `AGENT_PAT` 时立即通过标签事件接续，没有时由定时扫描拾取；`needs-a-human` 换成 `ready-for-human`，`blocked` 换成 `agent:blocked`。结论值本身不是 GitHub 标签。
 
-拆票、审批发布和依赖队列是参考 course-video-manager 增加的项目适配。父需求保留 `agent:queued` 以便在子任务 PR 合并后推进；每个父需求最多有一个活动子任务或未合并 PR，全部完成后仍由维护者验收父需求。正文中的依赖文字不代替 GitHub 原生阻塞关系。
+拆票、审批发布和依赖队列是参考 course-video-manager 增加的项目适配。父需求保留 `agent:queued` 以便子任务提交到共享草稿 PR 后继续推进；每个父需求最多有一个活动子任务，全部完成后整体审查，由维护者验收父需求。正文中的依赖文字不代替 GitHub 原生阻塞关系。
 
 自动接续默认使用内置 `GITHUB_TOKEN` 的内部 dispatch，也兼容可选 `AGENT_PAT` 的标签事件；`agent:queued` 是执行授权，不是纯展示标签。暂停父需求时添加 `agent:blocked`，恢复时重新添加 `agent:implement`；正在执行的 Actions 需要另行取消。`source:architecture-review` 仍没有入口。配置和重试见 [GitHub Actions](github-actions.md)。

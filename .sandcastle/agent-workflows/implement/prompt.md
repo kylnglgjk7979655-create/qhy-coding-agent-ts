@@ -4,7 +4,7 @@ Implement issue #{{ISSUE_NUMBER}}: {{ISSUE_TITLE}}
 
 使用 $implement skill 实现本 Issue。
 
-You are on branch `{{BRANCH}}`, already created from `main`.
+You are on branch `{{BRANCH}}`, created from `main` or continued from the parent issue’s shared branch.
 
 # ISSUE
 

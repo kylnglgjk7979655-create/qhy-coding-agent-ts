@@ -3,7 +3,7 @@ import type { Issue } from './github.js';
 import { PLAN_MARKER } from './plan.js';
 
 interface Pull {
-  number: number; body: string | null; base: { ref: string };
+  number: number; body: string | null; base: { ref: string }; head?: { ref: string; repo?: { full_name: string } }; draft?: boolean; labels?: { name: string }[];
 }
 export const closesIssue = (body: string, number: number): boolean =>
   new RegExp(`\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+#${number}\\b`, 'iu').test(body);
@@ -17,29 +17,31 @@ export class Queue {
     this.pulls = github.list<Pull>('pulls?state=open');
   }
 
-  private hasPull(number: number): boolean {
-    return this.pulls.some((pull) => closesIssue(pull.body ?? '', number));
+  private hasPull(number: number, parent?: number | null): boolean {
+    return this.pulls.some((pull) => closesIssue(pull.body ?? '', number)
+      && !(parent != null && pull.head?.ref === `agent/parent-${parent}` && pull.head.repo?.full_name === this.github.repo && pull.base.ref === 'main'));
   }
 
   private dependenciesDone(number: number): boolean {
-    return this.github.blockers(number).every((issue) => completed(issue) && !this.hasPull(issue.number));
+    const parent = this.github.parent(number);
+    return this.github.blockers(number).every((issue) => completed(issue) && !this.hasPull(issue.number, parent));
   }
 
-  private eligible(issue: Issue): boolean {
+  private eligible(issue: Issue, parent?: number | null): boolean {
     return issue.state === 'open' && !hasLabel(issue, 'agent:blocked')
-      && !hasLabel(issue, 'agent:in-progress') && !this.hasPull(issue.number)
+      && !hasLabel(issue, 'agent:in-progress') && !this.hasPull(issue.number, parent)
       && this.dependenciesDone(issue.number);
   }
 
-  /** 只选择，不启动模型；每个父需求最多一个未合并 PR。 */
+  /** 只选择，不启动模型；每个父需求最多一个活动子任务。 */
   select(root: Issue): Issue | undefined {
     if (!this.eligible(root)) return undefined;
     const children = this.github.children(root.number);
     if (!children.length) return root;
-    if (children.some((child) => hasLabel(child, 'agent:in-progress') || this.hasPull(child.number))) return undefined;
+    if (children.some((child) => hasLabel(child, 'agent:in-progress') || this.hasPull(child.number, root.number))) return undefined;
     for (const child of children.sort((a, b) => a.number - b.number)) {
       if (this.github.children(child.number).length) throw new Error('暂不支持嵌套父 Issue。');
-      if (this.eligible(child)) return child;
+      if (this.eligible(child, root.number)) return child;
     }
     return undefined;
   }
@@ -72,13 +74,13 @@ export class Queue {
       }
       const siblings = this.github.children(parent);
       if (siblings.some((sibling) => sibling.number !== number
-        && (hasLabel(sibling, 'agent:in-progress') || this.hasPull(sibling.number)))) {
+        && (hasLabel(sibling, 'agent:in-progress') || this.hasPull(sibling.number, parent)))) {
         this.github.addLabels(number, ['agent:queued']);
         this.github.removeLabel(fresh, 'agent:implement');
         return {};
       }
     }
-    const selected = this.select(fresh);
+    const selected = parent !== null ? (this.eligible(fresh, parent) ? fresh : undefined) : this.select(fresh);
     this.github.removeLabel(fresh, 'agent:implement');
     if (children.length) {
       this.github.addLabels(number, ['agent:queued']);
@@ -107,10 +109,25 @@ export class Queue {
         const ancestor = this.github.issue(parent);
         if (paused(ancestor) || !this.dependenciesDone(parent)) continue;
         if (this.github.children(parent).some((sibling) => sibling.number !== root.number
-          && (this.hasPull(sibling.number) || hasLabel(sibling, 'agent:in-progress')))) continue;
+          && (this.hasPull(sibling.number, parent) || hasLabel(sibling, 'agent:in-progress')))) continue;
       }
       const children = this.github.children(root.number);
-      if (children.length && this.dependenciesDone(root.number) && children.every((child) => completed(child) && !this.hasPull(child.number))) {
+      if (children.length && this.dependenciesDone(root.number) && children.every((child) => completed(child) && !this.hasPull(child.number, root.number))) {
+        const shared = this.pulls.find((pull) => pull.head?.ref === `agent/parent-${root.number}`
+          && pull.head.repo?.full_name === this.github.repo && pull.base.ref === 'main');
+        if (shared?.draft && !shared.labels?.some((label) => label.name === 'agent:blocked')) {
+          const writer = this.dispatch ?? this.github;
+          if (this.dispatch && shared.labels?.some((label) => label.name === 'agent:review')) {
+            writer.removeLabel({ ...root, number: shared.number, labels: shared.labels }, 'agent:review');
+          }
+          writer.addLabels(shared.number, ['agent:review']);
+          if (!this.dispatch) {
+            this.github.api('POST', 'actions/workflows/check.yml/dispatches', { ref: shared.head!.ref });
+            this.github.api('POST', 'actions/workflows/agent-review.yml/dispatches', {
+              ref: 'main', inputs: { pr_number: String(shared.number) },
+            });
+          }
+        }
         this.github.removeLabel(root, 'agent:queued');
         const marker = '<!-- agent-queue-complete -->';
         if (!this.github.comments(root.number).some((comment) => comment.body.startsWith(marker) && comment.user.login === 'github-actions[bot]')) {
@@ -118,7 +135,7 @@ export class Queue {
         }
         continue;
       }
-      if (this.select(root)) {
+      if (parent !== null ? this.eligible(root, parent) : this.select(root)) {
         // 对被 GitHub 单待运行槽替换掉的事件，重新贴标恢复执行。
         const writer = this.dispatch ?? this.github;
         writer.removeLabel(root, 'agent:implement');

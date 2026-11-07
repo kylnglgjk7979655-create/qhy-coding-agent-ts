@@ -43,8 +43,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
 
     steps:
-      - name: Resolve dispatched PR snapshot
-        if: github.event_name == 'workflow_dispatch'
+      - name: Validate PR and resolve current snapshot
         run: |
           set -euo pipefail
           if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then

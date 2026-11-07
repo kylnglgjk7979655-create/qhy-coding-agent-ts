@@ -41,7 +41,7 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 | Agent Explore | Issue 添加 `agent:explore`；或 Actions 手动运行 | 一次调查所有开放的 explore Issue，识别重复、给出结论，独立 apply job 校验后发布 |
 | Agent To Issues | 父 Issue 添加 `agent:to-issues` | 从 GitHub 读取 spec 和评论，结合代码生成待审批计划评论 |
 | Agent Publish Tickets | 父 Issue 添加 `agent:publish-tickets` | 批准计划并创建原生子任务和依赖，不启动实现 |
-| Agent Implement | Issue／父 Issue 添加 `agent:implement` | 校验依赖；父需求选择就绪子票；从 main 创建独立分支和草稿 PR，再请求审查 |
+| Agent Implement | Issue／父 Issue 添加 `agent:implement` | 校验依赖；父需求选择就绪子票；父需求复用共享分支和草稿 PR，全部子票完成后请求整体审查；独立 Issue 单独创建 PR |
 | Agent Promote Queued | 添加 `agent:queued`；Issue 关闭或重开；同仓库 PR 合并；每 5 分钟扫描；Actions 手动运行 | 一次转交一个就绪需求；不运行模型，保留队列以补偿遗漏事件 |
 | Agent Review | PR 添加 `agent:review` | 按关联 Issue 和 diff 审查；允许修复并提交，发布评论和回复，标记 Ready |
 | Agent Implement PR | PR 留下反馈后添加 `agent:implement` | 修改代码或回复反馈；若既无提交也无评论则失败 |
@@ -54,23 +54,23 @@ Explore 的手动入口默认 `dry_run=true`，只展示计划；取消勾选才
 ## 从 spec 到按依赖实现
 
 1. 将 spec 上传到一个 GitHub 父 Issue 正文，补充要求写在评论。拆票 prompt 直接执行 `gh issue view <编号> --comments`；不依赖本地 spec 副本。
-2. 添加 `agent:to-issues`。只读 Agent 调查代码并输出 slices；来源快照在 Agent 运行前保存，认证回存成功后，由独立 job 校验并发布完整计划评论。此时没有子任务，也不执行实现。
+2. 添加 `agent:to-issues`。预检通过后移除 `agent:to-issues` 并添加 `agent:in-progress`，只读 Agent 调查代码并输出 slices；来源快照在 Agent 运行前保存，认证回存成功后，由独立 job 校验并发布完整计划评论。发布或失败后清除 `agent:in-progress`；此时没有子任务，也不执行实现。
 3. 在父 Issue 评论中检查每票行为、验收标准和阻塞关系。需要修改时留言，再重新添加 `agent:to-issues`。认可后添加 `agent:publish-tickets`：它批准贴标时已存在的最新有效机器人计划。
 4. 发布脚本创建真正的 GitHub 子 Issue，添加 `ready-for-agent`，设置原生父子及 blocked-by 关系，返回带真实票号的评论。发布阶段不调用模型，也不启动实现。
-5. 给父 Issue 添加 `agent:implement`。父需求保留 `agent:queued`，每次选择一个依赖已完成的开放子票。子票在最新 main 上独立实现，草稿 PR 只 `Closes` 当前子票，父需求只作背景引用。
-6. 人工审查并合并子票 PR 后，队列扫描下一张就绪票；原生依赖而不是标题编号或正文文字决定能否执行。为减少共享工作区代码冲突，每个父需求最多一个活动子任务或未合并 PR。全部子票完成后，移除父需求的排队标签并评论，由维护者验收父需求，脚本不自动关闭它。
+5. 给父 Issue 添加 `agent:implement`。父需求保留 `agent:queued`，每次选择一个依赖已完成的开放子票。第一张子票从 main 创建父需求共享分支和草稿 PR；后续子票在同一分支继续并更新同一个 PR。提交并更新 PR 后关闭该子票为 completed，全部子票完成后对共享 PR 请求整体审查。
+6. 子票提交至共享 PR 并关闭后，队列扫描下一张就绪票，无需等待 PR 合并；原生依赖而不是标题编号或正文文字决定能否执行。每个父需求最多一个活动子任务。全部子票完成后，移除父需求的排队标签并评论，由维护者验收父需求，脚本不自动关闭它。
 
-独立 Issue 或单个子 Issue 也可以添加 `agent:queued` 预约执行，或直接添加 `agent:implement`；直接执行仍检查本票、父需求的原生依赖和兄弟活动任务。前置票必须以 `completed` 关闭且没有仍开放的实现 PR；`not_planned` 不算完成。明确以 completed 关闭人工交付票同样可解锁依赖，创建 PR、审查完成或仅提交代码不会解锁。
+独立 Issue 或单个子 Issue 也可以添加 `agent:queued` 预约执行，或直接添加 `agent:implement`；直接执行仍检查本票、父需求的原生依赖和兄弟活动任务。前置票必须以 `completed` 关闭；同父需求的共享 PR 可以保持开放，其他开放实现 PR 仍会阻塞；`not_planned` 不算完成。明确以 completed 关闭人工交付票同样可解锁依赖，仅创建 PR、审查完成或提交代码不会解锁。
 
 ### 重新规划、失败与暂停
 
 - 规格正文、标题或人工评论变化会使旧计划失效，必须重新生成再批准。审批后改写的计划也不能发布；人工仿造的计划评论不被接受。只支持一层父子关系，已有其他子任务的父需求不能混入新计划。
 - 发布中途失败时，修复原因后重新添加 `agent:publish-tickets`。稳定发布标记能找回已创建但尚未挂接的票，补齐挂接和依赖，避免重复创建。父需求正文不改写、不关闭。
-- 实现失败标记当前票 `agent:blocked`，不会自动重试。处理原因后给该票重新添加 `agent:implement`；父需求中其他满足依赖的任务仍可推进。已有开放 PR 时继续用 PR 反馈入口，不另建重复 PR。
+- 实现失败标记当前票 `agent:blocked`，不会自动重试。处理原因后给该票重新添加 `agent:implement`；父需求中其他满足依赖的任务仍可推进。共享 PR 已存在时重试会继续使用原分支和 PR。
 - 暂停父需求时添加 `agent:blocked`；暂停独立任务可移除 `agent:queued`。已开始的 Actions 另行取消，恢复时重新添加 `agent:implement`。子票执行后、推送前还会复查票状态和依赖。
 - 定时扫描会补偿丢失的接续事件以及仍保留执行标签但尚未启动的请求。它发现模型工作流仍在运行或排队时保留队列，空闲后最多发出一个请求。有 PAT 时使用标签事件，没有时贴标签并内部 dispatch；两条路径不会重复启动同一任务。
 
-这些扩展不恢复旧的同分支累积总 PR 模式，不自动合并 PR。
+共享 PR 不会自动合并。
 
 日常仍使用标签。Implement 和 Review 的 `workflow_dispatch` 输入分别为 `issue_number`、`pr_number`，供内部接续；Implement 必须仍携带执行标签，Review 必须为开放、同仓库且仍携带审查标签的 PR，输入编号本身不能绕过授权。队列也提供无参数手动扫描入口。失败后查看 Actions 链接，解决原因，再重新添加对应标签。分支有冲突时先使用 `agent:update-branch`。
 
@@ -97,6 +97,7 @@ gh label create 'agent:explore' --color 5319E7 --description '批量调查 Issue
 gh label create 'agent:to-issues' --color 5319E7 --description '父 Issue：生成待审批的拆票计划' --force
 gh label create 'agent:publish-tickets' --color 0E8A16 --description '父 Issue：批准计划，创建子任务和原生依赖' --force
 gh label create 'agent:queued' --color FEF2C0 --description 'Issue／父 Issue：等待前置依赖完成后自动启动' --force
+gh label create 'agent:in-progress' --color FBCA04 --description 'Agent 当前轮任务执行中' --force
 ```
 
 本地调试使用官方各阶段所需的环境变量，例如在独立 Git 副本、已创建工作分支且 `gh` 可读该仓库时：

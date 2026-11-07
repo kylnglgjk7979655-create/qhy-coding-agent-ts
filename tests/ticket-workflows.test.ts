@@ -18,7 +18,7 @@ interface FixtureComment {
 }
 interface State {
   issues: Record<number, FixtureIssue>; parents: Record<number, number>; blockers: Record<number, number[]>;
-  comments: Record<number, FixtureComment[]>; pulls: { number: number; body: string; base: { ref: string } }[];
+  comments: Record<number, FixtureComment[]>; pulls: { number: number; body: string; base: { ref: string }; head?: { ref: string; repo?: { full_name: string } }; draft?: boolean; labels?: { name: string }[] }[];
   requests: { method: string; resource: string; token: string; body?: unknown }[]; failNext?: string;
   runs?: { path: string; status: string }[];
 }
@@ -68,7 +68,7 @@ function harness() {
     ok('snapshot');
     const source = JSON.parse(readFileSync(sourceFile, 'utf8')) as { source_hash: string };
     writeFileSync(planFile, JSON.stringify(planFromDraft(draft, 23, source.source_hash)));
-    ok('record');
+    ok('record'); ok('finish-plan');
   };
   const approve = () => update((state) => { state.issues[23]!.labels.push('agent:publish-tickets'); });
   const publish = () => { plan(); approve(); ok('publish'); };
@@ -108,7 +108,7 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     const prototype = structuredClone(draft);
     prototype.slices[0]!.whatToBuild += '\n\n原型确认的状态：\n```json\n{"state":"ready"}\n```';
     writeFileSync(h.planFile, JSON.stringify(planFromDraft(prototype, 23, source.source_hash)));
-    h.ok('record'); h.approve(); h.ok('publish');
+    h.ok('record'); h.ok('finish-plan'); h.approve(); h.ok('publish');
     expect(h.read().issues[24]!.body).toContain('{"state":"ready"}');
   });
 
@@ -159,6 +159,43 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(h.read().issues[23]!.labels).not.toContain('agent:queued');
     expect(h.read().issues[23]!.state).toBe('open');
   }, 30_000);
+
+  it('共享 PR 未合并时，已完成的前置子票允许下一张开始', () => {
+    const h = harness(); h.publish();
+    h.update((state) => {
+      state.issues[23]!.labels.push('agent:queued');
+      state.issues[24]!.state = 'closed'; state.issues[24]!.state_reason = 'completed';
+      state.pulls = [{ number: 80, body: 'Closes #24', base: { ref: 'main' }, head: { ref: 'agent/parent-23', repo: { full_name: 'owner/repo' } } }];
+    });
+    h.ok('promote');
+    expect(h.read().issues[23]!.labels).toContain('agent:implement');
+    expect(h.ok('prepare').environment).toMatch(/ISSUE_NUMBER<<[^\n]+\n25\n/u);
+  }, 30_000);
+
+  it('最后一票完成后，队列可恢复丢失的共享 PR 整体审查', () => {
+    const h = harness(); h.publish();
+    h.update((state) => {
+      state.issues[23]!.labels.push('agent:queued');
+      for (const number of [24, 25]) {
+        state.issues[number]!.state = 'closed'; state.issues[number]!.state_reason = 'completed';
+      }
+      state.issues[80] = issue(80);
+      state.pulls = [{ number: 80, body: 'Closes #24\nCloses #25', base: { ref: 'main' },
+        head: { ref: 'agent/parent-23', repo: { full_name: 'owner/repo' } }, draft: true, labels: [] }];
+    });
+    h.ok('promote', { AGENT_PAT: '' });
+    expect(h.read().issues[80]!.labels).toContain('agent:review');
+    expect(h.read().requests).toContainEqual(expect.objectContaining({
+      resource: 'actions/workflows/agent-review.yml/dispatches',
+      body: { ref: 'main', inputs: { pr_number: '80' } },
+    }));
+  }, 30_000);
+
+  it('拆票预检后立即切换执行标签', () => {
+    const h = harness(); h.ok('snapshot');
+    expect(h.read().issues[23]!.labels).toContain('agent:in-progress');
+    expect(h.read().issues[23]!.labels).not.toContain('agent:to-issues');
+  });
 
   it('子票直接 implement 也不能绕过依赖，API 读失败不会被当作无依赖', () => {
     const h = harness(); h.publish();
@@ -243,6 +280,7 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
 
   it('Agent 从 GitHub 读取 PRD，输出与参考仓库对齐的 slices，不触发真实模型或发布', () => {
     const h = harness(); h.ok('snapshot');
+    h.update((state) => { state.requests = []; });
     const work = join(h.root, 'work'); mkdirSync(work);
     const git = (...args: string[]) => execFileSync('git', args, { cwd: work, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     git('init', '-b', 'main'); git('config', 'user.name', 'test'); git('config', 'user.email', 'test@example.com');
