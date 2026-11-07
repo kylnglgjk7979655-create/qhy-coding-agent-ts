@@ -29,4 +29,3 @@ jobs:
       - uses: ./.github/actions/setup
       - name: Publish approved plan with native dependencies
         run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts publish
-

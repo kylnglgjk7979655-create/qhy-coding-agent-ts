@@ -68,4 +68,3 @@ GitHub 官方 REST 同时支持 `GET/POST /repos/{owner}/{repo}/issues/{issue_nu
 事件要求目标 workflow 文件已经存在于默认分支，因此这项能力合入默认分支后才可作为正式标签链路使用。来源：[workflow_dispatch 事件要求](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)。
 
 适配建议：内部 dispatch 只传稳定的 Issue 标识，执行前重新读取当前标签、原生阻塞关系和已有 PR，确保它仍属于用户批准执行的 queued/implement 队列；调度不得仅凭输入标识绕过审批，也不能同时使用 PAT 标签接续和 dispatch 为同一任务启动两次运行。
-

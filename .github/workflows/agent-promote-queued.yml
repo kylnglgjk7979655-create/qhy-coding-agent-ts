@@ -37,4 +37,3 @@ jobs:
       - uses: ./.github/actions/setup
       - name: Promote one eligible queued issue
         run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts promote
-

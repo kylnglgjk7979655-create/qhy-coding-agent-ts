@@ -90,4 +90,3 @@ jobs:
           SOURCE_FILE: ${{ runner.temp }}/source/source.json
           PLAN_FILE: ${{ runner.temp }}/plan/plan.json
         run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts record
-
