@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -71,9 +71,15 @@ describe('compiled CLI process driver', () => {
       const firstId = findConversationId((await first.done).stderr);
       const recordPath = join(firstUserDir, '.qhy-coding-agents', 'sessions', firstId, 'record.json');
       const stored = await readFile(recordPath, 'utf8');
-      const record = JSON.parse(stored) as { workspace: string; transcript: Array<{ content: unknown }>; rounds: Array<{ status: string }>; config: { apiKeyEnv: string } };
+      const record = JSON.parse(stored) as { workspace: string; transcript: Array<{ role?: string; content: unknown }>; effectiveHistory: unknown[]; rounds: Array<{ status: string }>; config: { apiKeyEnv: string } };
       expect(record.workspace).toBe(firstCwd);
       expect(JSON.stringify(record.transcript)).toContain('第二条');
+      expect(JSON.stringify(record.transcript)).toContain('write_file');
+      expect(JSON.stringify(record.transcript)).toContain('第一条');
+      expect(record.transcript.some(({ role }) => role === 'tool')).toBe(true);
+      expect(JSON.stringify(record.transcript)).toContain('printf');
+      expect(Array.isArray(record.effectiveHistory)).toBe(true);
+      expect(JSON.stringify(record.effectiveHistory)).toContain('第一条');
       expect(record.rounds.map(({ status }) => status)).toEqual(['succeeded', 'succeeded']);
       expect(record.config.apiKeyEnv).toBe('TEST_MODEL_API_KEY');
       expect(stored).not.toContain(secret);
@@ -92,6 +98,88 @@ describe('compiled CLI process driver', () => {
       expect(model.requests).toHaveLength(8);
       expect(JSON.stringify(model.requests[7])).toContain(`${secondCwd}|${secondUserDir}`);
     } finally {
+      await model.close();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('persists partial output while running and keeps failed round transcript', async () => {
+    const cwd = await directory('transcript-cwd');
+    const userDir = await directory('transcript-user');
+    let finishResponse!: () => void;
+    const responseGate = new Promise<void>((resolve) => { finishResponse = resolve; });
+    const model = await startLocalOpenAIModel(async (_request, index) => {
+      if (index === 1) return {
+        frames: [
+          { delta: { content: '已观察到的部分输出' }, finish_reason: null },
+          { delta: {}, finish_reason: 'stop' },
+        ],
+        endDelayMs: 1000,
+      };
+      await responseGate;
+      return { status: 503, content: 'fixture failure' };
+    });
+    try {
+      await configure(cwd, model.baseURL);
+      let output = '';
+      const child = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      child.send('第一轮\n');
+      await waitForRequests(model.requests, 1);
+      await waitForOutput(() => output, '已观察到的部分输出', 1);
+      // The generated id is the sole session directory created for this process.
+      const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      expect(id).toBeTruthy();
+      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id!, 'record.json');
+      const running = JSON.parse(await readFile(recordPath, 'utf8')) as { transcript: unknown[]; rounds: Array<{ status: string }>; config: { model: string } };
+      expect(JSON.stringify(running.transcript)).toContain('第一轮');
+      expect(JSON.stringify(running.transcript)).toContain('已观察到的部分输出');
+      expect(running.rounds.map(({ status }) => status)).toEqual(['running']);
+      expect(running.config.model).toBe('fixture');
+
+      child.send('第二轮\n');
+      await waitForRequests(model.requests, 2);
+      finishResponse();
+      child.end('/exit\n');
+      expect((await child.done).code).toBe(0);
+      const failed = JSON.parse(await readFile(recordPath, 'utf8')) as { transcript: unknown[]; effectiveHistory: unknown[]; rounds: Array<{ status: string }> };
+      expect(JSON.stringify(failed.transcript)).toContain('第二轮');
+      expect(JSON.stringify(failed.effectiveHistory)).not.toContain('第二轮');
+      expect(failed.rounds.map(({ status }) => status)).toEqual(['succeeded', 'failed']);
+    } finally {
+      finishResponse();
+      await model.close();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('stops before tool execution when transcript persistence fails', async () => {
+    const cwd = await directory('transcript-write-failure-cwd');
+    const userDir = await directory('transcript-write-failure-user');
+    let finishResponse!: () => void;
+    const responseGate = new Promise<void>((resolve) => { finishResponse = resolve; });
+    const model = await startLocalOpenAIModel(async () => {
+      await responseGate;
+      return { calls: [{ id: 'write-after-storage-failure', type: 'function', function: {
+        name: 'write_file', arguments: JSON.stringify({ path: 'must-not-exist.txt', content: 'must not run' }),
+      } }] };
+    });
+    try {
+      await configure(cwd, model.baseURL);
+      let output = '';
+      const child = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      child.send('写入前停止\n');
+      await waitForRequests(model.requests, 1);
+      const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!id) throw new Error('初始会话未创建');
+      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
+      await rm(recordPath);
+      await mkdir(recordPath);
+      finishResponse();
+      await waitForOutput(() => output, '错误：', 1);
+      child.end('/exit\n');
+      await child.done;
+      expect(model.requests).toHaveLength(1);
+      await expect(readFile(join(cwd, 'must-not-exist.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      finishResponse();
       await model.close();
     }
   });

@@ -21,7 +21,17 @@ export interface SessionRecord {
   config: ModelConfig;
   transcript: ModelMessage[];
   effectiveHistory: ModelMessage[];
-  rounds: Array<{ id: string; status: 'running' | 'succeeded' | 'failed' | 'cancelled'; startedAt: string; finishedAt?: string }>;
+  rounds: Array<{
+    id: string;
+    status: 'running' | 'succeeded' | 'failed' | 'cancelled';
+    startedAt: string;
+    finishedAt?: string;
+    config?: ModelConfig;
+    transcriptStart?: number;
+    messages?: ModelMessage[];
+    partialText?: string;
+    error?: { code: string; message: string };
+  }>;
   summaries: Array<{ text: string; coversThrough: number }>;
   checkpoints: Array<{ id: string; messageId: string; createdAt: string }>;
   backups: Array<{ path: string; content?: string; existed: boolean }>;
@@ -114,15 +124,69 @@ export async function saveSession(home: string, record: SessionRecord): Promise<
   await writeSessionRecord(home, { ...record, updatedAt: new Date().toISOString() });
 }
 
-export async function saveSuccessfulRound(home: string, conversationId: string, prompt: string, response: ModelMessage[], effectiveHistory: ModelMessage[], startedAt: string): Promise<void> {
+export async function startSessionRound(home: string, conversationId: string, prompt: string, config: ModelConfig): Promise<string> {
   const session = await loadSession(home, conversationId);
-  const finishedAt = new Date().toISOString();
   const roundId = randomUUID();
+  const transcriptStart = session.transcript.length;
   await saveSession(home, {
     ...session,
-    transcript: [...session.transcript, { role: 'user', content: prompt }, ...response],
-    effectiveHistory,
-    rounds: [...session.rounds, { id: roundId, status: 'succeeded', startedAt, finishedAt }],
+    transcript: [...session.transcript, { role: 'user', content: prompt }],
+    rounds: [...session.rounds, { id: roundId, status: 'running', startedAt: new Date().toISOString(), config, transcriptStart, messages: [], partialText: '' }],
+  });
+  return roundId;
+}
+
+export async function appendRoundMessages(home: string, conversationId: string, roundId: string, messages: ModelMessage[]): Promise<void> {
+  await updateRound(home, conversationId, roundId, (round) => ({
+    ...round,
+    messages: [
+      ...(round.messages ?? []),
+      ...(round.partialText ? [{ role: 'assistant' as const, content: round.partialText }] : []),
+      ...messages,
+    ],
+    partialText: '',
+  }));
+}
+
+export async function appendRoundText(home: string, conversationId: string, roundId: string, text: string): Promise<void> {
+  await updateRound(home, conversationId, roundId, (round) => ({ ...round, partialText: `${round.partialText ?? ''}${text}` }));
+}
+
+export async function finishSessionRound(home: string, conversationId: string, roundId: string, outcome: {
+  status: 'succeeded' | 'failed' | 'cancelled';
+  response?: ModelMessage[];
+  effectiveHistory?: ModelMessage[];
+  error?: { code: string; message: string };
+}): Promise<void> {
+  await updateRound(home, conversationId, roundId, (round) => ({
+    ...round,
+    status: outcome.status,
+    finishedAt: new Date().toISOString(),
+    ...(outcome.error ? { error: outcome.error } : {}),
+    ...(outcome.status === 'succeeded' ? { messages: outcome.response ?? round.messages ?? [], partialText: '' } : {}),
+  }), outcome.effectiveHistory);
+}
+
+async function updateRound(
+  home: string,
+  conversationId: string,
+  roundId: string,
+  update: (round: SessionRecord['rounds'][number]) => SessionRecord['rounds'][number],
+  effectiveHistory?: ModelMessage[],
+): Promise<void> {
+  const session = await loadSession(home, conversationId);
+  const index = session.rounds.findIndex((round) => round.id === roundId);
+  const current = session.rounds[index];
+  if (!current || current.status !== 'running') throw new AgentError('PROVIDER_ERROR', '当前轮次记录不可用，已停止后续操作。');
+  const round = update(current);
+  const transcriptStart = current.transcriptStart ?? session.transcript.length - 1;
+  const observed = [...(round.messages ?? []), ...(round.partialText ? [{ role: 'assistant' as const, content: round.partialText }] : [])];
+  const transcript = [...session.transcript.slice(0, transcriptStart + 1), ...observed];
+  await saveSession(home, {
+    ...session,
+    transcript,
+    rounds: session.rounds.map((item, itemIndex) => itemIndex === index ? round : item),
+    ...(effectiveHistory ? { effectiveHistory } : {}),
   });
 }
 
@@ -234,7 +298,13 @@ function isRoundRecord(value: unknown): value is SessionRecord['rounds'][number]
   return typeof round.id === 'string'
     && ['running', 'succeeded', 'failed', 'cancelled'].includes(round.status)
     && typeof round.startedAt === 'string'
-    && (round.finishedAt === undefined || typeof round.finishedAt === 'string');
+    && (round.finishedAt === undefined || typeof round.finishedAt === 'string')
+    && (round.config === undefined || isModelConfig(round.config))
+    && (round.transcriptStart === undefined || typeof round.transcriptStart === 'number')
+    && (round.messages === undefined || (Array.isArray(round.messages) && round.messages.every(isModelMessage)))
+    && (round.partialText === undefined || typeof round.partialText === 'string')
+    && (round.error === undefined || (typeof round.error === 'object' && round.error !== null
+      && typeof round.error.code === 'string' && typeof round.error.message === 'string'));
 }
 
 function isSummaryRecord(value: unknown): value is SessionRecord['summaries'][number] {

@@ -172,7 +172,9 @@ export async function runAgent(
   options: {
     smokeTool: boolean;
     history?: ModelMessage[];
-    onText?: (chunk: string) => void;
+    onText?: (chunk: string) => Promise<void> | void;
+    onToolCallStart?: (call: { callId: string; toolName: string; input: unknown }) => Promise<void> | void;
+    onStepMessages?: (content: unknown[]) => Promise<void> | void;
     onToolCall?: (name: string) => void;
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
@@ -216,7 +218,8 @@ export async function runAgent(
     timer = setTimeout(() => deadline.abort(), remainingMs);
   }
   const registry = new ToolRegistry({
-    ...options,
+    ...(options.onToolEvent ? { onToolEvent: options.onToolEvent } : {}),
+    ...(options.onToolCallStart ? { beforeTool: options.onToolCallStart } : {}),
     approve: async (call) => {
       signal.throwIfAborted();
       try {
@@ -363,7 +366,7 @@ export async function runAgent(
           } as unknown as typeof part);
         },
       }),
-      onStepFinish: ({ toolCalls, toolResults }) => {
+      onStepFinish: async ({ toolCalls, toolResults, content }) => {
         if (signal.aborted) return;
         for (const call of toolCalls) options.onToolCall?.(call.toolName);
         // This callback is awaited by the SDK before it starts the next model request.
@@ -375,9 +378,10 @@ export async function runAgent(
           pairingError = new AgentError('PROVIDER_ERROR', '工具调用与结果无法一一配对，已终止当前对话轮次。');
           pairingAbort.abort(pairingError);
         }
+        await options.onStepMessages?.(content);
       },
     });
-    for await (const chunk of result.textStream) options.onText?.(chunk);
+    for await (const chunk of result.textStream) await options.onText?.(chunk);
     const [steps, responseMessages, text, finishReason, totalUsage] = await Promise.all([
       result.steps,
       result.responseMessages,

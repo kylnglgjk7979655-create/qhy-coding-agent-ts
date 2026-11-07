@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { runAgent } from './agent.js';
 import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './config.js';
-import { createSession, listSessions, loadLegacyConversation, loadSession, newConversationId, saveLegacyConversation, saveSuccessfulRound } from './conversations.js';
+import { appendRoundMessages, appendRoundText, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, saveLegacyConversation, startSessionRound } from './conversations.js';
 import { AgentError, publicError } from './errors.js';
 import { CliInput } from './cli-input.js';
 import type { ApprovalControl } from './tool-approval.js';
@@ -205,7 +205,7 @@ async function runTurn(
   approvalControl?: ApprovalControl,
   legacyDirectory?: string,
 ): Promise<ModelMessage[]> {
-  const turnStartedAt = new Date().toISOString();
+  let roundId: string | undefined;
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
   log({
@@ -213,10 +213,29 @@ async function runTurn(
     ...(smokeTool ? {} : { conversationId }),
   });
   try {
+    if (!smokeTool) {
+      const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+      roundId = await startSessionRound(userHome, conversationId, prompt, persistedConfig);
+    }
     const result = await runAgent(config, prompt, {
       smokeTool,
       history,
-      onText: (chunk) => process.stdout.write(chunk),
+      onText: async (chunk) => {
+        if (!smokeTool && roundId) await appendRoundText(userHome, conversationId, roundId, chunk);
+        process.stdout.write(chunk);
+      },
+      onToolCallStart: async ({ callId, toolName, input }) => {
+        if (!smokeTool && roundId) {
+          await appendRoundMessages(userHome, conversationId, roundId, [{
+            role: 'assistant', content: [{ type: 'tool-call', toolCallId: callId, toolName, input }],
+          } as unknown as ModelMessage]);
+        }
+      },
+      onStepMessages: async (content) => {
+        if (smokeTool || !roundId) return;
+        const results = content.filter((part): part is Record<string, unknown> => typeof part === 'object' && part !== null && (part as { type?: string }).type === 'tool-result');
+        if (results.length > 0) await appendRoundMessages(userHome, conversationId, roundId, [{ role: 'tool', content: results } as unknown as ModelMessage]);
+      },
       onToolEvent: ({ toolName, status }) => {
         const label = {
           started: '开始',
@@ -232,7 +251,8 @@ async function runTurn(
     signal.throwIfAborted();
     const nextHistory = smokeTool ? history : result.effectiveHistory;
     if (!smokeTool) {
-      await saveSuccessfulRound(userHome, conversationId, prompt, result.responseMessages, nextHistory, turnStartedAt);
+      if (!roundId) throw new AgentError('PROVIDER_ERROR', '当前轮次未能建立持久化记录。');
+      await finishSessionRound(userHome, conversationId, roundId, { status: 'succeeded', response: result.responseMessages, effectiveHistory: nextHistory });
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }
     process.stdout.write('\n');
@@ -247,6 +267,12 @@ async function runTurn(
     return nextHistory;
   } catch (error) {
     const failure = publicError(error);
+    if (!smokeTool && roundId) {
+      await finishSessionRound(userHome, conversationId, roundId, {
+        status: failure.code === 'CANCELLED' ? 'cancelled' : 'failed',
+        error: { code: failure.code, message: failure.message },
+      }).catch(() => undefined);
+    }
     if (!smokeTool) {
       log({
         event: 'run.finished', runId: lastRunId, status: 'failed',
