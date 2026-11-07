@@ -2,7 +2,7 @@
   "provider": "openai",
   "model": "doubao-seed-2.0-mini",
   "apiKeyEnv": "ARK_API_KEY",
-  "baseURL": "https://ark.cn-beijing.volces.com/api/coding/v3",
+  "baseURL": "https://ark.cn-beijing.volces.com/api/v3",
   "workspace": "./demo",
   "timeoutMs": 60000,
   "maxSteps": 20
