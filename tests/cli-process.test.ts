@@ -164,7 +164,7 @@ describe('compiled CLI process driver', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('previews, refreshes, and confirms a rewind without changing untracked files', async () => {
+  it.skipIf(process.platform !== 'linux')('previews, refreshes, and confirms a rewind without changing untracked files', async () => {
     const cwd = await directory('rewind-cwd');
     const userDir = await directory('rewind-user');
     await writeFile(join(cwd, 'note.txt'), 'before');
@@ -178,14 +178,14 @@ describe('compiled CLI process driver', () => {
     try {
       await configure(cwd, model.baseURL);
       let output = '';
-      const cli = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      const cli = startCLI({ cwd, userDir, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
       cli.send('编辑文件\n');
       await waitForRequests(model.requests, 2);
       await waitForOutput(() => output, '编辑已完成。', 1);
 
       cli.send('/rewind\n');
-      await waitForOutput(() => output, '消息检查点：', 1);
-      cli.send('1\n');
+      await waitForOutput(() => output, '选择要预览的用户消息恢复点', 1);
+      cli.send('\r');
       await waitForOutput(() => output, '改动统计', 1);
       expect(output).toContain('note.txt');
       expect(output).toContain('created.txt');
@@ -198,8 +198,8 @@ describe('compiled CLI process driver', () => {
       expect(await readFile(join(cwd, 'created.txt'), 'utf8')).toBe('remove me');
 
       cli.send('/rewind\n');
-      await waitForOutput(() => output, '消息检查点：', 2);
-      cli.send('1\n');
+      await waitForOutput(() => output, '选择要预览的用户消息恢复点', 2);
+      cli.send('\r');
       await waitForOutput(() => output, '改动统计', 2);
 
       await writeFile(join(cwd, 'note.txt'), 'external change');
@@ -222,7 +222,8 @@ describe('compiled CLI process driver', () => {
       cli.end('/exit\n');
       expect((await cli.done).code).toBe(0);
 
-      const id = findConversationId((await cli.done).stderr);
+      const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!id) throw new Error('会话未保存');
       const record = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json'), 'utf8')) as {
         transcript: unknown[];
         effectiveHistory: unknown[];
@@ -238,7 +239,69 @@ describe('compiled CLI process driver', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('refuses to start a rewind when a checkpoint backup is missing', async () => {
+  it.skipIf(process.platform !== 'linux')('binds identical rewind messages to distinct checkpoints and refuses piped selection', async () => {
+    const cwd = await directory('rewind-duplicate-cwd');
+    const userDir = await directory('rewind-duplicate-user');
+    await writeFile(join(cwd, 'note.txt'), 'before-first-message');
+    const model = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1 || index === 3) return { calls: [{
+        id: `duplicate-write-${index}`,
+        type: 'function',
+        function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: `after-${index}` }) },
+      }] };
+      return { content: '完成。' };
+    });
+    try {
+      await configure(cwd, model.baseURL);
+      const first = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '重复请求\n重复请求\n/exit\n' });
+      expect((await first.done).code).toBe(0);
+      const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!id) throw new Error('会话未保存');
+      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
+      const record = JSON.parse(await readFile(recordPath, 'utf8')) as {
+        checkpoints: Array<{ id: string; messageId: string }>;
+        rounds: Array<{ id: string; transcriptStart?: number }>;
+      };
+      expect(record.checkpoints).toHaveLength(2);
+
+      let output = '';
+      const chooser = startCLI({ cwd, userDir, conversationId: id, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      chooser.send('/rewind\n');
+      await waitForOutput(() => output, '选择要预览的用户消息恢复点', 1);
+      expect(output.split('重复请求').length - 1).toBeGreaterThanOrEqual(2);
+      chooser.send('\u001b[A');
+      chooser.send('\r');
+      await waitForOutput(() => output, `消息 ${record.checkpoints[0]!.messageId}`, 1);
+      chooser.send('yes\n');
+      await waitForOutput(() => output, '恢复结果', 1);
+      expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('before-first-message');
+      chooser.end('/exit\n');
+      expect((await chooser.done).code).toBe(0);
+
+      const legacyRound = record.rounds.find(({ id: roundId }) => roundId === record.checkpoints[0]!.messageId);
+      if (!legacyRound) throw new Error('检查点轮次未保存');
+      delete legacyRound.transcriptStart;
+      await writeFile(recordPath, JSON.stringify(record));
+      let legacyOutput = '';
+      const legacyChooser = startCLI({ cwd, userDir, conversationId: id, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { legacyOutput = text; });
+      legacyChooser.send('/rewind\n');
+      await waitForOutput(() => legacyOutput, `原始用户消息不可用（检查点 ${record.checkpoints[0]!.id}）`, 1);
+      legacyChooser.send('\u001b[A\r');
+      await waitForOutput(() => legacyOutput, `消息 ${record.checkpoints[0]!.messageId}`, 1);
+      legacyChooser.end('/cancel\n/exit\n');
+      expect((await legacyChooser.done).code).toBe(0);
+
+      const noninteractive = startCLI({ cwd, userDir, conversationId: id, env: { TEST_MODEL_API_KEY: secret }, input: '/rewind\n/exit\n' });
+      const result = await noninteractive.done;
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain('此选择需要交互终端');
+      expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('before-first-message');
+    } finally {
+      await model.close();
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')('refuses to start a rewind when a checkpoint backup is missing', async () => {
     const cwd = await directory('rewind-missing-backup-cwd');
     const userDir = await directory('rewind-missing-backup-user');
     await writeFile(join(cwd, 'note.txt'), 'before');
@@ -256,10 +319,10 @@ describe('compiled CLI process driver', () => {
       await writeFile(recordPath, JSON.stringify(record));
 
       let output = '';
-      const resumed = startCLI({ cwd, userDir, conversationId: id, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      const resumed = startCLI({ cwd, userDir, conversationId: id, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
       resumed.send('/rewind\n');
-      await waitForOutput(() => output, '消息检查点：', 1);
-      resumed.send('1\n');
+      await waitForOutput(() => output, '选择要预览的用户消息恢复点', 1);
+      resumed.send('\r');
       await waitForOutput(() => output, '检查点备份不完整', 1);
       expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('after');
       expect(model.requests).toHaveLength(2);
@@ -272,7 +335,7 @@ describe('compiled CLI process driver', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('continues restoring files after one target fails and records each result', async () => {
+  it.skipIf(process.platform !== 'linux')('continues restoring files after one target fails and records each result', async () => {
     const cwd = await directory('rewind-partial-cwd');
     const userDir = await directory('rewind-partial-user');
     await writeFile(join(cwd, 'blocked.txt'), 'blocked-before');
@@ -292,10 +355,10 @@ describe('compiled CLI process driver', () => {
       const id = findConversationId((await first.done).stderr);
       const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
       let output = '';
-      const resumed = startCLI({ cwd, userDir, conversationId: id, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      const resumed = startCLI({ cwd, userDir, conversationId: id, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
       resumed.send('/rewind\n');
-      await waitForOutput(() => output, '消息检查点：', 1);
-      resumed.send('1\n');
+      await waitForOutput(() => output, '选择要预览的用户消息恢复点', 1);
+      resumed.send('\r');
       await waitForOutput(() => output, '改动统计', 1);
 
       await rm(join(cwd, 'blocked.txt'));
@@ -490,7 +553,7 @@ describe('compiled CLI process driver', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('lists current workspace sessions by default and allows selecting from all sessions', async () => {
+  it.skipIf(process.platform !== 'linux')('lists current workspace sessions by default and allows selecting from all sessions', async () => {
     const firstCwd = await directory('list-first-cwd');
     const secondCwd = await directory('list-second-cwd');
     const userDir = await directory('list-user');
@@ -504,19 +567,20 @@ describe('compiled CLI process driver', () => {
       if (!firstId) throw new Error('初始会话未创建');
 
       let output = '';
-      const chooser = startCLI({ cwd: secondCwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      const chooser = startCLI({ cwd: secondCwd, userDir, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
       chooser.send('/resume\n');
-      await waitForOutput(() => output, '当前工作区会话：', 1);
-      const currentListing = output.slice(output.indexOf('当前工作区会话：'), output.indexOf('全部会话：'));
+      await waitForOutput(() => output, '当前工作区会话', 1);
+      const currentListing = output.slice(output.indexOf('当前工作区会话'));
       expect(currentListing).not.toContain(firstId);
       const localIds = (await readdir(join(userDir, '.qhy-coding-agents', 'sessions'))).filter((id) => id !== firstId);
       expect(localIds.length).toBeGreaterThan(0);
       for (const id of localIds) expect(currentListing).toContain(id);
 
-      chooser.send('all\n');
-      await waitForOutput(() => output, '全部会话：', 1);
-      expect(output.slice(output.indexOf('全部会话：'))).toContain(firstId);
-      chooser.send(`${firstId}\n`);
+      chooser.send('\u001b[B\r');
+      await waitForOutput(() => output, '全部工作区会话', 1);
+      expect(output).toContain(firstId);
+      chooser.send('\u001b[B');
+      chooser.send('\r');
       await waitForOutput(() => output, `已继续会话：${firstId}`, 1);
       chooser.end('跨工作区选择\n/exit\n');
       expect((await chooser.done).code).toBe(0);

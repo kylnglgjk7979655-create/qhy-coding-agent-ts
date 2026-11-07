@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createSession, loadSession, sessionStorageRoot } from '../src/conversations.js';
+import { createSession, loadSession, saveSession, sessionStorageRoot, startSessionRound } from '../src/conversations.js';
 
 describe('user-level session storage', () => {
   let userDirectory: string | undefined;
@@ -40,6 +40,35 @@ describe('user-level session storage', () => {
     expect(restarted.config.apiKeyEnv).toBe('TEST_API_KEY');
     expect(await readFile(join(sessionStorageRoot(home), 'sessions', 'durable-session', 'record.json'), 'utf8'))
       .not.toContain('credential-value');
+  });
+
+  it('derives and persists a title from the first user message, while upgrading older records on save', async () => {
+    const home = await makeUserDirectory();
+    const config = {
+      provider: 'openai' as const,
+      model: 'fixture-model',
+      apiKeyEnv: 'TEST_API_KEY',
+      workspace: '/work/project',
+      timeoutMs: 60_000,
+      maxSteps: 20,
+      approval: { mode: 'model' as const, rules: [], timeoutMs: 30_000 },
+    };
+    const session = await createSession(home, { id: 'titled-session', workspace: '/work/project', config });
+    await startSessionRound(home, session.id, '  第一个需求\n请修改文件  ', config);
+    await startSessionRound(home, session.id, '后续需求不得覆盖标题', config);
+
+    const stored = JSON.parse(await readFile(join(sessionStorageRoot(home), 'sessions', session.id, 'record.json'), 'utf8')) as { title?: string };
+    expect(stored.title).toBe('第一个需求 请修改文件');
+    const restarted = await loadSession(home, session.id);
+    expect(restarted.title).toBe('第一个需求 请修改文件');
+
+    delete stored.title;
+    await writeFile(join(sessionStorageRoot(home), 'sessions', session.id, 'record.json'), JSON.stringify(stored));
+    const legacy = await loadSession(home, session.id);
+    expect(legacy.title).toBe('第一个需求 请修改文件');
+    await saveSession(home, legacy);
+    expect(JSON.parse(await readFile(join(sessionStorageRoot(home), 'sessions', session.id, 'record.json'), 'utf8')))
+      .toMatchObject({ title: '第一个需求 请修改文件' });
   });
 
   it('rejects a damaged record and leaves it unchanged', async () => {

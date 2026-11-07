@@ -20,7 +20,7 @@ const help = `用法：node dist/cli.js [选项]
 
 启动后直接进入交互式对话，输入 /exit 结束。
   /new                 在当前工作区新建会话
-  /resume [ID]         继续会话；省略 ID 时选择会话，输入 all 查看全部
+  /resume [ID]         继续会话；省略 ID 时用方向键选择，/resume all 查看全部
   /rewind              预览并确认恢复到消息级文件检查点
 
 选项：
@@ -140,8 +140,7 @@ async function main(): Promise<void> {
       process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
       return resumed;
     };
-    let selection: { sessions: Awaited<ReturnType<typeof listSessions>>; all: boolean } | undefined;
-    let rewindSelection: { checkpoints: Awaited<ReturnType<typeof loadSession>>['checkpoints']; plan?: FileRewindPlan } | undefined;
+    let rewindSelection: { plan: FileRewindPlan } | undefined;
     if (process.stdin.isTTY) input.prompt();
     for await (const line of input) {
       const prompt = line.trim();
@@ -153,26 +152,6 @@ async function main(): Promise<void> {
         if (prompt === '/cancel' || prompt.toLowerCase() === 'no' || prompt.toLowerCase() === 'n') {
           rewindSelection = undefined;
           process.stdout.write('已取消文件检查点恢复，文件保持不变。\n');
-          if (process.stdin.isTTY) input.prompt();
-          continue;
-        }
-        if (!rewindSelection.plan) {
-          const chosen = /^\d+$/.test(prompt)
-            ? rewindSelection.checkpoints[Number(prompt) - 1]
-            : rewindSelection.checkpoints.find(({ id }) => id === prompt);
-          if (!chosen) {
-            process.stdout.write('无效的检查点选择；请输入列表编号或检查点 ID，输入 /cancel 取消。\n');
-            if (process.stdin.isTTY) input.prompt();
-            continue;
-          }
-          try {
-            const plan = await prepareFileRewind(await loadSession(userHome, conversationId), chosen.id);
-            rewindSelection.plan = plan;
-            process.stdout.write(`${formatFileRewindPreview(plan)}\n确认恢复请输入 yes，输入 no 或 /cancel 取消：\n`);
-          } catch (error) {
-            process.stdout.write(`无法开始恢复：${error instanceof Error ? error.message : '检查点无效。'}\n`);
-            rewindSelection = undefined;
-          }
           if (process.stdin.isTTY) input.prompt();
           continue;
         }
@@ -208,29 +187,6 @@ async function main(): Promise<void> {
         continue;
       }
       if (prompt === '/exit') break;
-      if (selection) {
-        if (prompt.toLowerCase() === 'all' && !selection.all) {
-          selection = { sessions: await listSessions(userHome), all: true };
-          printSessionChoices(selection.sessions, true);
-          if (process.stdin.isTTY) input.prompt();
-          continue;
-        }
-        const chosen = /^\d+$/.test(prompt) ? selection.sessions[Number(prompt) - 1] : selection.sessions.find(({ id }) => id === prompt);
-        if (!chosen) {
-          if (prompt === '/cancel') selection = undefined;
-          else process.stdout.write('无效的会话选择；请输入列表编号或会话 ID，输入 /cancel 取消。\n');
-          if (process.stdin.isTTY) input.prompt();
-          continue;
-        }
-        try {
-          ({ config, conversationId, history, recoveredRoundIds } = await switchSession(chosen.id));
-          selection = undefined;
-        } catch (error) {
-          process.stdout.write(`\n错误：${publicError(error).message}\n`);
-        }
-        if (process.stdin.isTTY) input.prompt();
-        continue;
-      }
       if (prompt === '/new') {
         const id = newConversationId();
         const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
@@ -250,18 +206,65 @@ async function main(): Promise<void> {
         const checkpoints = [...currentSession.checkpoints].reverse();
         if (checkpoints.length === 0) process.stdout.write('当前会话没有可用的消息检查点。\n');
         else {
-          rewindSelection = { checkpoints };
-          process.stdout.write('消息检查点：\n');
-          checkpoints.forEach((checkpoint, index) => process.stdout.write(`${index + 1}. 消息 ${checkpoint.messageId}  ${checkpoint.createdAt}  [${checkpoint.id}]\n`));
-          process.stdout.write('输入编号或检查点 ID 预览，输入 /cancel 取消。\n');
+          const choices = checkpoints.map((checkpoint) => {
+            const round = currentSession.rounds.find(({ id }) => id === checkpoint.messageId);
+            const transcriptMessage = round?.transcriptStart === undefined
+              ? undefined : currentSession.transcript[round.transcriptStart];
+            const message = transcriptMessage?.role === 'user' ? userMessageText(transcriptMessage) : '';
+            return {
+              label: message || `原始用户消息不可用（检查点 ${checkpoint.id}）`,
+              detail: `${checkpoint.createdAt} · 检查点 ${checkpoint.id}${checkpoint.files ? ` · ${checkpoint.files.length} 个文件` : ' · 文件清单缺失'}`,
+              value: checkpoint.id,
+            };
+          });
+          const checkpointId = await input.select('选择要预览的用户消息恢复点', choices);
+          if (checkpointId) {
+            try {
+              const plan = await prepareFileRewind(await loadSession(userHome, conversationId), checkpointId);
+              rewindSelection = { plan };
+              process.stdout.write(`${formatFileRewindPreview(plan)}\n确认恢复请输入 yes，输入 no 或 /cancel 取消：\n`);
+            } catch (error) {
+              process.stdout.write(`无法开始恢复：${error instanceof Error ? error.message : '检查点无效。'}\n`);
+            }
+          } else process.stdout.write('已取消文件检查点选择，文件保持不变。\n');
         }
         if (process.stdin.isTTY) input.prompt();
         continue;
       }
       if (prompt === '/resume' || prompt === '/resume all') {
         const all = prompt.endsWith(' all');
-        selection = { sessions: await listSessions(userHome, all ? undefined : config.workspace), all };
-        printSessionChoices(selection.sessions, all);
+        const sessions = await listSessions(userHome, all ? undefined : config.workspace);
+        const choices: Array<{ label: string; detail: string; value: { kind: 'session'; id: string } | { kind: 'all' } }> = sessions.map((session) => ({
+          label: session.title || '未命名会话',
+          detail: `${session.updatedAt} · ${session.workspace} · ${session.id}`,
+          value: { kind: 'session' as const, id: session.id },
+        }));
+        if (!all) choices.push({ label: '查看全部会话', detail: '包括其他工作区的会话', value: { kind: 'all' as const } });
+        if (choices.length === 0) process.stdout.write('没有可用会话。\n');
+        else {
+          const id = await input.select(all ? '全部会话' : '当前工作区会话', choices);
+          if (id?.kind === 'all') {
+            const allSessions = await listSessions(userHome);
+            if (allSessions.length === 0) {
+              process.stdout.write('没有可用会话。\n');
+              if (process.stdin.isTTY) input.prompt();
+              continue;
+            }
+            const allChoices = allSessions.map((session) => ({
+              label: session.title || '未命名会话',
+              detail: `${session.updatedAt} · ${session.workspace} · ${session.id}`,
+              value: session.id,
+            }));
+            const selectedId = await input.select('全部工作区会话', allChoices);
+            if (selectedId) {
+              try { ({ config, conversationId, history, recoveredRoundIds } = await switchSession(selectedId)); }
+              catch (error) { process.stdout.write(`\n错误：${publicError(error).message}\n`); }
+            }
+          } else if (id?.kind === 'session') {
+            try { ({ config, conversationId, history, recoveredRoundIds } = await switchSession(id.id)); }
+            catch (error) { process.stdout.write(`\n错误：${publicError(error).message}\n`); }
+          }
+        }
         if (process.stdin.isTTY) input.prompt();
         continue;
       }
@@ -466,13 +469,11 @@ async function resumeSession(userHome: string, id: string): Promise<{
   return { config, conversationId: id, ...recovered };
 }
 
-function printSessionChoices(sessions: Awaited<ReturnType<typeof listSessions>>, all: boolean): void {
-  if (sessions.length === 0) process.stdout.write('没有可用会话。\n');
-  else {
-    process.stdout.write(`${all ? '全部会话' : '当前工作区会话'}：\n`);
-    sessions.forEach((session, index) => {
-      process.stdout.write(`${index + 1}. ${session.id}  ${session.updatedAt}${all ? `  ${session.workspace}` : ''}\n`);
-    });
-  }
-  process.stdout.write(all ? '输入编号或会话 ID 选择，输入 /cancel 取消。\n' : '输入编号或会话 ID 选择，输入 all 查看全部会话，输入 /cancel 取消。\n');
+function userMessageText(message: ModelMessage): string {
+  const text = typeof message.content === 'string'
+    ? message.content
+    : Array.isArray(message.content)
+      ? message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n')
+      : '';
+  return text.trim();
 }
