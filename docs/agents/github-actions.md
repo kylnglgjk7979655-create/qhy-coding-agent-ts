@@ -25,7 +25,7 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 
 父需求共享 PR 的子任务之间使用 `AGENT_PAT` 重新给父 Issue 添加 `agent:implement` 接续；未配置 PAT 时实现后显式调度分支的 `Check` 和同仓库 PR 的 `Agent Review`，审查产生新提交时再对新版本调度 `Check`，避免机器人推送或贴标签不触发下一条 workflow。GitHub 官方将 dispatch 列为该限制的例外，来源见[调查记录](../notes/course-video-manager-ticket-workflows.md#无-agent_pat-时的内部接续)。
 
-配置 `AGENT_PAT`：权限至少为本仓库 **Contents、Issues、Pull requests → Read and write**，推送 workflow 修改时另需 **Workflows → Read and write**。配置后使用该 Token 推送和贴接续标签，不再为同一次转交重复 dispatch。没有 PAT 时，父需求的直接接续会失败并保留队列；Explore 转交的实现标签仍可由定时队列扫描拾取。
+配置 `AGENT_PAT`：权限至少为本仓库 **Contents、Issues、Pull requests → Read and write**，推送 workflow 修改时另需 **Workflows → Read and write**。配置后使用该 Token 推送和贴接续标签，不再为同一次转交重复 dispatch。没有 PAT 时，父需求的直接接续会失败并保留队列；Explore 转交的实现标签需要人工移除并重新添加。
 
 | Secret / Variable | 用途 |
 | --- | --- |
@@ -42,7 +42,7 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 | Agent To Issues | 父 Issue 添加 `agent:to-issues` | 从 GitHub 读取 spec 和评论，结合代码生成待审批计划评论 |
 | Agent Publish Tickets | 父 Issue 添加 `agent:publish-tickets` | 批准计划并创建原生子任务和依赖，不启动实现 |
 | Agent Implement | Issue／父 Issue 添加 `agent:implement` | 校验依赖；父需求选择就绪子票；父需求复用共享分支和草稿 PR，全部子票完成后请求整体审查；独立 Issue 单独创建 PR |
-| Agent Promote Queued | 添加 `agent:queued`；Issue 关闭或重开；同仓库 PR 合并；模型工作流结束；每 5 分钟扫描；Actions 手动运行 | 一次转交一个就绪需求；不运行模型，保留队列以补偿遗漏事件 |
+| Agent Promote Queued | Issue 以 completed 关闭 | 检查直接依赖该 Issue 的排队任务并转交就绪任务，不运行模型 |
 | Agent Review | PR 添加 `agent:review` | 按关联 Issue 和 diff 审查；允许修复并提交，发布评论和回复，标记 Ready |
 | Agent Implement PR | PR 留下反馈后添加 `agent:implement` | 修改代码或回复反馈；若既无提交也无评论则失败 |
 | Agent Update Branch | 同仓库 PR 添加 `agent:update-branch` | 合并基准分支，发生冲突时才调用 Codex；推送并评论 |
@@ -60,7 +60,7 @@ Explore 的手动入口默认 `dry_run=true`，只展示计划；取消勾选才
 5. 给父 Issue 添加 `agent:implement`。父需求保留 `agent:queued`，每次选择一个依赖已完成的开放子票。第一张子票从 main 创建父需求共享分支和草稿 PR；后续子票在同一分支继续并更新同一个 PR。提交并更新 PR 后关闭该子票为 completed，全部子票完成后对共享 PR 请求整体审查。
 6. 子票提交至共享 PR 并关闭后，使用 `AGENT_PAT` 给父 Issue 重新添加 `agent:implement`；下一轮检查依赖后选择就绪票，无需等待 PR 合并；原生依赖而不是标题编号或正文文字决定能否执行。每个父需求最多一个活动子任务。全部子票完成后，移除父需求的排队标签并评论，由维护者验收父需求，脚本不自动关闭它。
 
-独立 Issue 或单个子 Issue 也可以添加 `agent:queued` 预约执行，或直接添加 `agent:implement`；直接执行仍检查本票、父需求的原生依赖和兄弟活动任务。前置票必须以 `completed` 关闭；同父需求的共享 PR 可以保持开放，其他开放实现 PR 仍会阻塞；`not_planned` 不算完成。明确以 completed 关闭人工交付票同样可解锁依赖，仅创建 PR、审查完成或提交代码不会解锁。
+独立 Issue 或单个子 Issue 也可以在前置完成前添加 `agent:queued` 预约执行，或直接添加 `agent:implement`；直接执行仍检查本票、父需求的原生依赖和兄弟活动任务。前置票必须以 `completed` 关闭；同父需求的共享 PR 可以保持开放，其他开放实现 PR 仍会阻塞；`not_planned` 不算完成。明确以 completed 关闭人工交付票同样可解锁依赖，仅创建 PR、审查完成或提交代码不会解锁。
 
 ### 重新规划、失败与暂停
 
@@ -68,11 +68,11 @@ Explore 的手动入口默认 `dry_run=true`，只展示计划；取消勾选才
 - 发布中途失败时，修复原因后重新添加 `agent:publish-tickets`。稳定发布标记能找回已创建但尚未挂接的票，补齐挂接和依赖，避免重复创建。父需求正文不改写、不关闭。
 - 实现失败标记当前票 `agent:blocked`，不会自动重试。处理原因后给该票重新添加 `agent:implement`；父需求中其他满足依赖的任务仍可推进。共享 PR 已存在时重试会继续使用原分支和 PR。
 - 暂停父需求时添加 `agent:blocked`；暂停独立任务可移除 `agent:queued`。已开始的 Actions 另行取消，恢复时重新添加 `agent:implement`。子票执行后、推送前还会复查票状态和依赖。
-- 模型工作流结束后自动唤醒队列，机器人关闭子票也能接续；定时扫描补偿丢失的接续事件以及仍保留执行标签但尚未启动的请求。它发现模型工作流仍在运行或排队时保留队列，空闲后最多发出一个请求。有 PAT 时使用标签事件，没有时贴标签并内部 dispatch；两条路径不会重复启动同一任务。
+- 不再扫描队列或补偿丢失的事件。已排队任务仅在直接前置 Issue 以 completed 关闭时检查；若此前置的实现 PR 尚未合并，或排队发生在关闭之后，需要在条件满足后人工重新添加 `agent:implement`。
 
 共享 PR 不会自动合并。
 
-日常仍使用标签。Implement 和 Review 的 `workflow_dispatch` 输入分别为 `issue_number`、`pr_number`，供内部接续；Implement 必须仍携带执行标签，Review 必须为开放、同仓库且仍携带审查标签的 PR，输入编号本身不能绕过授权。队列也提供无参数手动扫描入口。失败后查看 Actions 链接，解决原因，再重新添加对应标签。分支有冲突时先使用 `agent:update-branch`。
+日常仍使用标签。Implement 和 Review 的 `workflow_dispatch` 输入分别为 `issue_number`、`pr_number`，供内部接续；Implement 必须仍携带执行标签，Review 必须为开放、同仓库且仍携带审查标签的 PR，输入编号本身不能绕过授权。失败后查看 Actions 链接，解决原因，再重新添加对应标签。分支有冲突时先使用 `agent:update-branch`。
 
 ## 执行与订阅维护
 
@@ -86,7 +86,7 @@ Explore 的手动入口默认 `dry_run=true`，只展示计划；取消勾选才
 2. `codex-auth-restore` 验证凭据版本、恢复订阅文件并注册日志遮罩；排队后 Secret 已更新的运行拒绝使用旧快照。
 3. `codex-auth-save` 在 Agent 返回后（包括失败）加密刷新文件，比较版本并回存 Secret，始终清理临时登录。成功路径必须回存完成，才推送或触发下一轮。
 
-认证 Secret 写入 Token 仅用于恢复和回存步骤；不通过 artifact 传递明文认证。回存与执行在同一 job，不再使用旧的五阶段发布框架。GitHub 并发组只有一个待运行槽，不是 FIFO 队列；不要同时启动多个订阅任务。取消、超时或回存失败后，可能需要重新登录并更新 `CODEX_AUTH_JSON`；不要重跑使用旧凭据的运行。
+认证 Secret 写入 Token 仅用于恢复和回存步骤；不通过 artifact 传递明文认证。回存与执行在同一 job，不再使用旧的五阶段发布框架。GitHub 并发组只有一个待运行槽，不是 FIFO 队列；不要同时启动多个订阅任务。被替换的请求不会自动恢复，需人工重新添加对应标签。取消、超时或回存失败后，可能需要重新登录并更新 `CODEX_AUTH_JSON`；不要重跑使用旧凭据的运行。
 
 ## 标签准备和本地调试
 

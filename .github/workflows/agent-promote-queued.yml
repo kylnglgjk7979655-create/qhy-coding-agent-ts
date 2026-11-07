@@ -1,27 +1,13 @@
 name: Agent Promote Queued
 on:
   issues:
-    types: [labeled, closed, reopened]
-  pull_request:
     types: [closed]
-  workflow_run:
-    workflows: [Agent Implement, Agent Review, Agent Implement PR, Agent Update Branch, Agent Explore, Agent To Issues]
-    types: [completed]
-  schedule:
-    - cron: '*/5 * * * *'
-  workflow_dispatch:
-# 扫描持久化标签，事件合并不丢任务；不占用订阅认证锁。
 concurrency:
-  group: ${{ (github.event_name != 'issues' || github.event.action != 'labeled' || github.event.label.name == 'agent:queued') && format('agent-promote-queued-{0}', github.repository) || format('agent-ignored-{0}', github.run_id) }}
+  group: agent-promote-queued-${{ github.repository }}-${{ github.event.issue.number }}
   cancel-in-progress: false
 jobs:
   promote:
-    if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'skipped') ||
-      (github.event_name == 'issues' && (github.event.action != 'labeled' || github.event.label.name == 'agent:queued')) ||
-      (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository)
+    if: github.event.issue.state_reason == 'completed'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -33,11 +19,12 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       AGENT_PAT: ${{ secrets.AGENT_PAT }}
       GH_REPO: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - name: Promote one eligible queued issue
+      - name: Promote eligible direct dependents
         run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts promote

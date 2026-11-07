@@ -53,6 +53,9 @@ export class GitHub {
   blockers(number: number): Issue[] {
     return this.list<unknown>(`issues/${number}/dependencies/blocked_by`).map((value) => issueSchema.parse(value));
   }
+  dependents(number: number): Issue[] {
+    return this.list<unknown>(`issues/${number}/dependencies/blocking`).map((value) => issueSchema.parse(value));
+  }
   comments(number: number): Comment[] { return this.list<Comment>(`issues/${number}/comments`); }
   comment(number: number, body: string): void { this.api('POST', `issues/${number}/comments`, { body }); }
   addLabels(number: number, labels: string[]): void { this.api('POST', `issues/${number}/labels`, { labels }); }

@@ -136,35 +136,23 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(h.read().blockers[25]).toEqual([24]);
   }, 30_000);
 
-  it('父 implement 只执行就绪子票，前置 PR 未合并时等待，完成后自动推进', () => {
+  it('父 implement 按依赖选择子票并通过 PAT 接续', () => {
     const h = harness(); h.publish();
     h.update((state) => { state.issues[23]!.labels.push('agent:implement'); });
-    const first = h.ok('prepare');
-    expect(first.output).toBe('proceed=true\n'); expect(first.environment).toMatch(/ISSUE_NUMBER<<[^\n]+\n24\n/u);
-    expect(h.read().issues[23]!.labels).toContain('agent:queued');
-    expect(h.read().issues[24]!.labels).toContain('agent:in-progress');
+    expect(h.ok('prepare').environment).toMatch(/ISSUE_NUMBER<<[^\n]+\n24\n/u);
     h.update((state) => {
       state.issues[24]!.labels = []; state.issues[24]!.state = 'closed'; state.issues[24]!.state_reason = 'completed';
-      state.pulls = [{ number: 80, body: 'Closes #24', base: { ref: 'main' } }];
+      state.pulls = [{ number: 80, body: 'Closes #24', base: { ref: 'main' }, head: { ref: 'agent/parent-23', repo: { full_name: 'owner/repo' } } }];
     });
-    h.ok('promote'); expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
-    h.update((state) => { state.pulls = []; });
-    h.ok('promote');
-    expect(h.read().issues[23]!.labels).toContain('agent:implement');
-    const labels = h.read().requests.filter((entry) => entry.method === 'POST' && entry.resource === 'issues/23/labels');
-    expect(labels.at(-1)?.token).toBe('dispatch-token');
-    const second = h.ok('prepare'); expect(second.environment).toMatch(/ISSUE_NUMBER<<[^\n]+\n25\n/u);
-    h.update((state) => { state.issues[25]!.state = 'closed'; state.issues[25]!.state_reason = 'completed'; state.issues[25]!.labels = []; });
-    h.ok('promote');
-    expect(h.read().issues[23]!.labels).not.toContain('agent:queued');
-    expect(h.read().issues[23]!.state).toBe('open');
+    h.ok('continue-parent', { ISSUE_NUMBER: '24', PARENT_NUMBER: '23' });
+    expect(h.ok('prepare').environment).toMatch(/ISSUE_NUMBER<<[^\n]+\n25\n/u);
   }, 30_000);
 
-  it('模型工作流结束后唤醒队列，机器人完成子票也能接续', () => {
+  it('仅由 Issue 关闭事件触发依赖推进，不定时扫描或监听模型工作流', () => {
     const workflow = readFileSync(fileURLToPath(new URL('../.github/workflows/agent-promote-queued.yml', import.meta.url)), 'utf8');
-    expect(workflow).toMatch(/workflow_run:\s*\n\s*workflows:.*Agent Implement/u);
-    expect(workflow).toMatch(/workflow_run:[\s\S]*?types:\s*\[completed\]/u);
-    expect(workflow).toContain("github.event_name == 'workflow_run'");
+    expect(workflow).toContain('types: [closed]');
+    expect(workflow).not.toMatch(/workflow_run:|schedule:|workflow_dispatch:/u);
+    expect(workflow).toContain('github.event.issue.number');
   });
 
   it('子票完成后用 PAT 重新贴父票 implement；暂停和无剩余子票时不触发', () => {
@@ -196,37 +184,6 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
   }, 30_000);
 
-  it('共享 PR 未合并时，已完成的前置子票允许下一张开始', () => {
-    const h = harness(); h.publish();
-    h.update((state) => {
-      state.issues[23]!.labels.push('agent:queued');
-      state.issues[24]!.state = 'closed'; state.issues[24]!.state_reason = 'completed';
-      state.pulls = [{ number: 80, body: 'Closes #24', base: { ref: 'main' }, head: { ref: 'agent/parent-23', repo: { full_name: 'owner/repo' } } }];
-    });
-    h.ok('promote');
-    expect(h.read().issues[23]!.labels).toContain('agent:implement');
-    expect(h.ok('prepare').environment).toMatch(/ISSUE_NUMBER<<[^\n]+\n25\n/u);
-  }, 30_000);
-
-  it('最后一票完成后，队列可恢复丢失的共享 PR 整体审查', () => {
-    const h = harness(); h.publish();
-    h.update((state) => {
-      state.issues[23]!.labels.push('agent:queued');
-      for (const number of [24, 25]) {
-        state.issues[number]!.state = 'closed'; state.issues[number]!.state_reason = 'completed';
-      }
-      state.issues[80] = issue(80);
-      state.pulls = [{ number: 80, body: 'Closes #24\nCloses #25', base: { ref: 'main' },
-        head: { ref: 'agent/parent-23', repo: { full_name: 'owner/repo' } }, draft: true, labels: [] }];
-    });
-    h.ok('promote', { AGENT_PAT: '' });
-    expect(h.read().issues[80]!.labels).toContain('agent:review');
-    expect(h.read().requests).toContainEqual(expect.objectContaining({
-      resource: 'actions/workflows/agent-review.yml/dispatches',
-      body: { ref: 'main', inputs: { pr_number: '80' } },
-    }));
-  }, 30_000);
-
   it('拆票预检后立即切换执行标签', () => {
     const h = harness(); h.ok('snapshot');
     expect(h.read().issues[23]!.labels).toContain('agent:in-progress');
@@ -244,23 +201,25 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(h.read().issues[25]!.labels).not.toContain('agent:in-progress');
   }, 30_000);
 
-  it('未计划关闭不解锁，有活动模型任务时等待，无 PAT 时通过内置 Token dispatch', () => {
+  it('仅推进完成的 Issue 的已排队直接依赖，检查其他前置条件', () => {
     const h = harness();
     h.update((state) => {
-      state.issues[23]!.labels = ['agent:queued']; state.issues[22] = issue(22);
-      state.issues[22]!.state = 'closed'; state.issues[22]!.state_reason = 'not_planned'; state.blockers[23] = [22];
+      state.issues[22] = issue(22); state.issues[22]!.state = 'closed'; state.issues[22]!.state_reason = 'not_planned';
+      state.issues[23]!.labels = ['agent:queued']; state.blockers[23] = [22];
+      state.issues[24] = issue(24, ['agent:queued']); state.blockers[24] = [22, 25]; state.issues[25] = issue(25);
+      state.issues[26] = issue(26, ['agent:queued']);
     });
-    h.ok('promote'); expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
-    h.update((state) => { state.issues[22]!.state_reason = 'completed'; state.runs = [{ path: '.github/workflows/agent-review.yml', status: 'queued' }]; });
-    h.ok('promote'); expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
-    h.update((state) => { state.runs = []; });
-    h.ok('promote', { AGENT_PAT: '' });
-    expect(h.read().requests.at(-1)).toMatchObject({
-      method: 'POST', resource: 'actions/workflows/agent-implement.yml/dispatches', token: 'github-token',
-      body: { ref: 'main', inputs: { issue_number: '23' } },
-    });
+    h.ok('promote', { ISSUE_NUMBER: '22' });
+    expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
+    h.update((state) => { state.issues[22]!.state_reason = 'completed'; });
+    h.ok('promote', { ISSUE_NUMBER: '22', AGENT_PAT: '' });
     expect(h.read().issues[23]!.labels).toContain('agent:implement');
-    h.ok('promote'); expect(h.read().issues[23]!.labels).toContain('agent:implement');
+    expect(h.read().issues[24]!.labels).not.toContain('agent:implement');
+    expect(h.read().issues[26]!.labels).not.toContain('agent:implement');
+    expect(h.read().requests).toContainEqual(expect.objectContaining({
+      resource: 'actions/workflows/agent-implement.yml/dispatches',
+      body: { ref: 'main', inputs: { issue_number: '23' } },
+    }));
   }, 30_000);
 
   it('无 PAT 时显式调度 Check 和 Review，有 PAT 时只贴标签避免重复启动', () => {
@@ -279,7 +238,6 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
   it('失败子票不被自动重试，人工重加 implement 后才允许重试；推送前重新检查依赖', () => {
     const h = harness(); h.publish();
     h.update((state) => { state.issues[23]!.labels.push('agent:queued'); state.issues[24]!.labels.push('agent:blocked'); });
-    h.ok('promote'); expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
     h.update((state) => { state.issues[24]!.labels.push('agent:implement'); });
     expect(h.ok('prepare', { ISSUE_NUMBER: '24' }).output).toBe('proceed=true\n');
     h.ok('verify', { ISSUE_NUMBER: '24' });
@@ -287,31 +245,12 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(h.run('verify', { ISSUE_NUMBER: '24' }).status).toBe(1);
   }, 30_000);
 
-  it('扫描找回被并发待运行槽丢弃的 implement 请求，已有 PR 时不重复启动', () => {
-    const h = harness();
-    h.update((state) => { state.issues[23]!.labels = ['agent:implement']; });
-    h.ok('promote');
-    const writes = h.read().requests.filter((entry) => entry.method !== 'GET');
-    expect(writes.map((entry) => entry.method)).toEqual(['DELETE', 'POST']);
-    h.update((state) => { state.pulls = [{ number: 90, body: 'Closes #23', base: { ref: 'main' } }]; state.requests = []; });
-    h.ok('promote');
-    expect(h.read().requests.every((entry) => entry.method === 'GET')).toBe(true);
-  });
-
-  it('发布未完成的父需求阻止子票抢跑，最后一张票仍有开放 PR 时不能宣布父需求完成', () => {
+  it('发布未完成的父需求阻止子票抢跑', () => {
     const h = harness(); h.publish();
     h.update((state) => {
       state.issues[23]!.labels.push('agent:publish-tickets'); state.issues[24]!.labels.push('agent:implement');
     });
     expect(h.ok('prepare', { ISSUE_NUMBER: '24' }).output).toBe('proceed=false\n');
-    h.update((state) => {
-      state.issues[23]!.labels = ['agent:queued'];
-      for (const number of [24, 25]) { state.issues[number]!.state = 'closed'; state.issues[number]!.state_reason = 'completed'; state.issues[number]!.labels = []; }
-      state.pulls = [{ number: 90, body: 'Closes #25', base: { ref: 'main' } }];
-    });
-    h.ok('promote'); expect(h.read().issues[23]!.labels).toContain('agent:queued');
-    h.update((state) => { state.pulls = []; });
-    h.ok('promote'); expect(h.read().issues[23]!.labels).not.toContain('agent:queued');
   }, 30_000);
 
   it('Agent 从 GitHub 读取 PRD，输出与参考仓库对齐的 slices，不触发真实模型或发布', () => {

@@ -10,7 +10,7 @@ on:
         type: string
         required: true
 
-# 锁覆盖认证恢复、模型执行、回存与发布；queued 扫描负责找回被替换的待运行任务。
+# 锁覆盖认证恢复、模型执行、回存与发布。
 concurrency:
   group: ${{ (github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:implement') && format('codex-subscription-{0}', github.repository) || format('agent-ignored-{0}', github.run_id) }}
   cancel-in-progress: false
@@ -155,6 +155,12 @@ jobs:
           AGENT_PAT: ${{ secrets.AGENT_PAT }}
         run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts review
 
+      - name: Finish parent queue
+        if: steps.route.outputs.proceed == 'true' && steps.completion.outputs.review == 'true' && env.PARENT_NUMBER != '' && success()
+        run: |
+          gh issue edit "$PARENT_NUMBER" --remove-label "agent:queued"
+          gh issue comment "$PARENT_NUMBER" --body '所有子任务已完成，父 Issue 保持开放，等待维护者验收。'
+
       - name: Check intermediate shared branch
         if: steps.route.outputs.proceed == 'true' && steps.completion.outputs.review == 'false' && success()
         env:
@@ -181,7 +187,7 @@ jobs:
           fi
           body_file="$RUNNER_TEMP/failure-comment.md"
           if [ -n "$PARENT_NUMBER" ] && [ "$(gh issue view "$ISSUE_NUMBER" --json state --jq .state)" = "CLOSED" ]; then
-            printf '子任务已提交，但后续发布步骤失败。队列会尝试接续整体审查；如未恢复，请检查共享 PR。\n\n原因：%s\n\n运行：%s\n' "$reason" "$RUN_URL" > "$body_file"
+            printf '子任务已提交，但后续发布步骤失败。请检查共享 PR，并手动完成审查或清理父 Issue 的排队标签。\n\n原因：%s\n\n运行：%s\n' "$reason" "$RUN_URL" > "$body_file"
           else
             printf '自动实现失败，等待人工处理。\n\n原因：%s\n\n运行：%s\n\n处理后重新添加本 Issue 的 agent:implement。\n' "$reason" "$RUN_URL" > "$body_file"
             gh issue edit "$ISSUE_NUMBER" --remove-label "agent:implement" --add-label "agent:blocked" || true

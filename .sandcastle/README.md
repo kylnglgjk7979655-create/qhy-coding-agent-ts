@@ -19,7 +19,7 @@
 
 与参考仓库的直接创建、同分支累积总 PR 不同，本项目先发布计划评论等待人工批准，确定性发布原生子 Issue 与依赖，每票独立 PR，合并后推进。计划来源指纹、拓扑校验及发布幂等由脚本处理；订阅认证仍先回存再发布。研究与固定源码链接见[调查记录](../docs/notes/course-video-manager-ticket-workflows.md)。
 
-队列、实现后检查和 PR 审查默认通过内置 `GITHUB_TOKEN` 的 `workflow_dispatch` 自动接续，不要求新增 `AGENT_PAT`。配置 PAT 时沿用标签事件，避免同时 dispatch。内部实现入口复查执行标签，审查入口额外核验开放状态和同仓库 PR；认证恢复与回存仍使用现有的 Secret 配置。
+依赖关闭后的队列转交、实现后检查和 PR 审查可通过内置 `GITHUB_TOKEN` 的 `workflow_dispatch` 自动接续；父需求子票接续需要 `AGENT_PAT`。配置 PAT 时沿用标签事件，避免同时 dispatch。内部实现入口复查执行标签，审查入口额外核验开放状态和同仓库 PR；认证恢复与回存仍使用现有的 Secret 配置。
 
 旧的统一任务协议、同分支 PRD 累积实现、定时架构提案没有恢复。历史 Issue 和标签不自动删除。
 

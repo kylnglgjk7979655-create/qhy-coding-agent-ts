@@ -54,7 +54,7 @@ export class Queue {
       this.github.removeLabel(source, 'agent:implement');
       return {};
     }
-    // 人工重加 implement 是失败重试授权，队列扫描本身不会移除 blocked。
+    // 人工重加 implement 是失败重试授权。
     this.github.removeLabel(source, 'agent:blocked');
     this.github.removeLabel(source, 'agent:in-progress');
     const fresh = this.github.issue(number);
@@ -94,61 +94,31 @@ export class Queue {
     return { issue: selected, ...(children.length ? { parent: number } : parent === null ? {} : { parent }) };
   }
 
-  /** 扫描所有持久化 queued 标签；一次仅发出一个模型入口，避免订阅并发组覆盖待运行任务。 */
-  promote(): number | undefined {
-    const queued = [...new Map([
-      ...this.github.issues('state=open&labels=agent%3Aqueued'),
-      ...this.github.issues('state=open&labels=agent%3Aimplement'),
-    ].map((issue) => [issue.number, issue])).values()];
-    const roots = new Set(queued.map((issue) => issue.number));
-    for (const root of queued.sort((a, b) => a.number - b.number)) {
-      if (hasLabel(root, 'agent:blocked') || hasLabel(root, 'agent:in-progress')) continue;
+  /** 当前置 Issue 完成时，只检查直接依赖它且已排队的任务。 */
+  promote(blocker: number): number[] {
+    if (!completed(this.github.issue(blocker))) return [];
+    const promoted: number[] = [];
+    for (const root of this.github.dependents(blocker).sort((a, b) => a.number - b.number)) {
+      if (!hasLabel(root, 'agent:queued') || paused(root) || hasLabel(root, 'agent:in-progress')
+        || hasLabel(root, 'agent:implement')) continue;
       const parent = this.github.parent(root.number);
       if (parent !== null) {
-        if (roots.has(parent)) continue;
         const ancestor = this.github.issue(parent);
-        if (paused(ancestor) || !this.dependenciesDone(parent)) continue;
+        if (hasLabel(ancestor, 'agent:queued') || paused(ancestor) || !this.dependenciesDone(parent)) continue;
         if (this.github.children(parent).some((sibling) => sibling.number !== root.number
           && (this.hasPull(sibling.number, parent) || hasLabel(sibling, 'agent:in-progress')))) continue;
       }
-      const children = this.github.children(root.number);
-      if (children.length && this.dependenciesDone(root.number) && children.every((child) => completed(child) && !this.hasPull(child.number, root.number))) {
-        const shared = this.pulls.find((pull) => pull.head?.ref === `agent/parent-${root.number}`
-          && pull.head.repo?.full_name === this.github.repo && pull.base.ref === 'main');
-        if (shared?.draft && !shared.labels?.some((label) => label.name === 'agent:blocked')) {
-          const writer = this.dispatch ?? this.github;
-          if (this.dispatch && shared.labels?.some((label) => label.name === 'agent:review')) {
-            writer.removeLabel({ ...root, number: shared.number, labels: shared.labels }, 'agent:review');
-          }
-          writer.addLabels(shared.number, ['agent:review']);
-          if (!this.dispatch) {
-            this.github.api('POST', 'actions/workflows/check.yml/dispatches', { ref: shared.head!.ref });
-            this.github.api('POST', 'actions/workflows/agent-review.yml/dispatches', {
-              ref: 'main', inputs: { pr_number: String(shared.number) },
-            });
-          }
-        }
-        this.github.removeLabel(root, 'agent:queued');
-        const marker = '<!-- agent-queue-complete -->';
-        if (!this.github.comments(root.number).some((comment) => comment.body.startsWith(marker) && comment.user.login === 'github-actions[bot]')) {
-          this.github.comment(root.number, `${marker}\n所有子任务已完成，父 Issue 保持开放，等待维护者验收。`);
-        }
-        continue;
+      if (!(parent !== null ? this.eligible(root, parent) : this.select(root))) continue;
+      const writer = this.dispatch ?? this.github;
+      writer.addLabels(root.number, ['agent:implement']);
+      if (!this.dispatch) {
+        this.github.api('POST', 'actions/workflows/agent-implement.yml/dispatches', {
+          ref: 'main', inputs: { issue_number: String(root.number) },
+        });
       }
-      if (parent !== null ? this.eligible(root, parent) : this.select(root)) {
-        // 对被 GitHub 单待运行槽替换掉的事件，重新贴标恢复执行。
-        const writer = this.dispatch ?? this.github;
-        writer.removeLabel(root, 'agent:implement');
-        writer.addLabels(root.number, ['agent:implement']);
-        if (!this.dispatch) {
-          this.github.api('POST', 'actions/workflows/agent-implement.yml/dispatches', {
-            ref: 'main', inputs: { issue_number: String(root.number) },
-          });
-        }
-        return root.number;
-      }
+      promoted.push(root.number);
     }
-    return undefined;
+    return promoted;
   }
 
   verify(number: number): void {
@@ -164,13 +134,4 @@ export class Queue {
       }
     }
   }
-}
-
-export function hasModelRun(github: GitHub): boolean {
-  const paths = new Set(['agent-implement.yml', 'agent-review.yml', 'agent-implement-pr.yml', 'agent-update-branch.yml', 'agent-explore.yml', 'agent-to-issues.yml']);
-  for (const status of ['in_progress', 'queued', 'pending', 'waiting']) {
-    const runs = github.api<{ workflow_runs: { path: string }[] }>('GET', `actions/runs?status=${status}&per_page=100`).workflow_runs;
-    if (runs.some((run) => paths.has(run.path.split('/').at(-1) ?? ''))) return true;
-  }
-  return false;
 }
