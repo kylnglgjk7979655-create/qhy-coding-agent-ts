@@ -16,4 +16,4 @@
 
 执行时先读取 [项目适配](../../docs/agents/skill-execution.md)。更新上游时按固定 commit 复制完整目录，包括参考文档、脚本、agents 配置及 credits；更新来源和文件校验值，通过 PR 审核。项目特有规则集中在项目适配和任务入口，避免直接改动上游原文。
 
-`implement` 按用户要求移除了完成后自动调用 `code-review` 的步骤，来源校验值及本地差异记录在 `UPSTREAM.json` 的 `localSnapshots.implement`。其他固定上游文件保持原文。云端 PRD 调度、拆票发布和定时架构审查已退出执行链路。
+`implement` 按用户要求移除了完成后自动调用 `code-review` 的步骤，并补充了关键决策、约束和变通方案的注释要求。来源校验值及本地差异记录在 `UPSTREAM.json` 的 `localSnapshots.implement`。其他固定上游文件保持原文。云端拆票审批和依赖调度的执行约定见 [项目适配](../../docs/agents/skill-execution.md)。

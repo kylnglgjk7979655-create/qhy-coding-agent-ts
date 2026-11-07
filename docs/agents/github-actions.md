@@ -23,13 +23,15 @@ gh secret set CODEX_AUTH_JSON --repo kylnglgjk7979655-create/qhy-coding-agent-ts
 
 Settings → Actions → General 中启用 **Allow GitHub Actions to create and approve pull requests**。实际审查发布 COMMENT，PR 仍由人决定合并。
 
-沿用官方的 `AGENT_PAT` 标签接续方式。为实现后自动启动审查、Explore 后自动启动实现配置此 Secret，权限至少为本仓库 **Contents、Issues、Pull requests → Read and write**。允许推送 workflow 修改时另需 **Workflows → Read and write**。没有 PAT 时回退 `GITHUB_TOKEN` 能完成部分写入，但它添加的标签不会启动下一条 workflow；需由维护者重新添加对应标签。代码推送是否触发 `Check` 同样受 GitHub Token 事件限制，本项目不再使用自定义 dispatch 接续。
+默认不需要额外配置 `AGENT_PAT`：依赖队列使用内置 `GITHUB_TOKEN` 的 `workflow_dispatch` 接续；实现后显式调度分支的 `Check` 和同仓库 PR 的 `Agent Review`，审查产生新提交时再对新版本调度 `Check`，避免机器人推送或贴标签不触发下一条 workflow。GitHub 官方将 dispatch 列为该限制的例外，来源见[调查记录](../notes/course-video-manager-ticket-workflows.md#无-agent_pat-时的内部接续)。
+
+保留可选的 `AGENT_PAT` 标签接续方式：权限至少为本仓库 **Contents、Issues、Pull requests → Read and write**，推送 workflow 修改时另需 **Workflows → Read and write**。配置后使用该 Token 推送、创建 PR 和贴标签，不再为同一次转交重复 dispatch。没有 PAT 时，Explore 转交的实现标签也可由定时队列扫描拾取。
 
 | Secret / Variable | 用途 |
 | --- | --- |
 | Secret `CODEX_AUTH_JSON` | 必需，CI 专用订阅登录文件 |
 | Secret `CODEX_AUTH_STORE_PAT` | 必需，认证版本检查和刷新后回存 |
-| Secret `AGENT_PAT` | 自动接续需要；代码推送、PR 创建、标签转交按官方流程使用 |
+| Secret `AGENT_PAT` | 可选；使用 PAT 推送、创建 PR 和贴标签接续；未配置时内置 Token 通过 dispatch 接续 |
 | Variable `CODEX_MODEL` | 可选；优先使用该值，未配置时从 `codex debug models` 选择首个可用模型，探测失败回退 `gpt-6-luna` |
 
 ## 日常入口
@@ -37,22 +39,46 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 | workflow | 触发 | 行为 |
 | --- | --- | --- |
 | Agent Explore | Issue 添加 `agent:explore`；或 Actions 手动运行 | 一次调查所有开放的 explore Issue，识别重复、给出结论，独立 apply job 校验后发布 |
-| Agent Implement | 独立 Issue 添加 `agent:implement` | 从 main 创建 `agent/issue-*` 分支，Agent 提交，workflow 推送并创建草稿 PR，再请求审查 |
+| Agent To Issues | 父 Issue 添加 `agent:to-issues` | 从 GitHub 读取 spec 和评论，结合代码生成待审批计划评论 |
+| Agent Publish Tickets | 父 Issue 添加 `agent:publish-tickets` | 批准计划并创建原生子任务和依赖，不启动实现 |
+| Agent Implement | Issue／父 Issue 添加 `agent:implement` | 校验依赖；父需求选择就绪子票；从 main 创建独立分支和草稿 PR，再请求审查 |
+| Agent Promote Queued | 添加 `agent:queued`；Issue 关闭或重开；同仓库 PR 合并；每 5 分钟扫描；Actions 手动运行 | 一次转交一个就绪需求；不运行模型，保留队列以补偿遗漏事件 |
 | Agent Review | PR 添加 `agent:review` | 按关联 Issue 和 diff 审查；允许修复并提交，发布评论和回复，标记 Ready |
 | Agent Implement PR | PR 留下反馈后添加 `agent:implement` | 修改代码或回复反馈；若既无提交也无评论则失败 |
 | Agent Update Branch | 同仓库 PR 添加 `agent:update-branch` | 合并基准分支，发生冲突时才调用 Codex；推送并评论 |
 
 Explore 的手动入口默认 `dry_run=true`，只展示计划；取消勾选才实际发布。添加 `agent:explore` 会直接应用结果：`easy-call` 转 `agent:implement`，`needs-a-human` 转 `ready-for-human`，`blocked` 转 `agent:blocked`；重复 Issue 被评论并关闭。这三个 verdict 是输出字段，不是 GitHub 标签。
 
-`ready-for-agent` 仅表示准备完成，不触发执行。普通实现按官方 MVP 拒绝有父 Issue 或子 Issue 的需求。原有 `agent:to-issues`、`agent:publish-tickets`、`agent:queued` 和定时架构审查已退出执行链路；历史 Issue、子 Issue 和旧标签不自动删除。
+`ready-for-agent` 仅表示准备完成，不触发执行。拆票审批与依赖队列是参考 course-video-manager 的项目扩展，详细差异见[调查记录](../notes/course-video-manager-ticket-workflows.md)。定时架构审查仍未启用；历史 Issue 和子 Issue 不自动删除。
 
-除 Explore 外，官方入口没有手动 `issue_number` / `pr_number` 参数。失败后查看 Actions 链接，解决原因，再重新添加对应标签。Review 和 Implement PR 使用 `pull_request` 事件；分支有冲突时先使用 `agent:update-branch`。
+## 从 spec 到按依赖实现
+
+1. 将 spec 上传到一个 GitHub 父 Issue 正文，补充要求写在评论。拆票 prompt 直接执行 `gh issue view <编号> --comments`；不依赖本地 spec 副本。
+2. 添加 `agent:to-issues`。只读 Agent 调查代码并输出 slices；来源快照在 Agent 运行前保存，认证回存成功后，由独立 job 校验并发布完整计划评论。此时没有子任务，也不执行实现。
+3. 在父 Issue 评论中检查每票行为、验收标准和阻塞关系。需要修改时留言，再重新添加 `agent:to-issues`。认可后添加 `agent:publish-tickets`：它批准贴标时已存在的最新有效机器人计划。
+4. 发布脚本创建真正的 GitHub 子 Issue，添加 `ready-for-agent`，设置原生父子及 blocked-by 关系，返回带真实票号的评论。发布阶段不调用模型，也不启动实现。
+5. 给父 Issue 添加 `agent:implement`。父需求保留 `agent:queued`，每次选择一个依赖已完成的开放子票。子票在最新 main 上独立实现，草稿 PR 只 `Closes` 当前子票，父需求只作背景引用。
+6. 人工审查并合并子票 PR 后，队列扫描下一张就绪票；原生依赖而不是标题编号或正文文字决定能否执行。为减少共享工作区代码冲突，每个父需求最多一个活动子任务或未合并 PR。全部子票完成后，移除父需求的排队标签并评论，由维护者验收父需求，脚本不自动关闭它。
+
+独立 Issue 或单个子 Issue 也可以添加 `agent:queued` 预约执行，或直接添加 `agent:implement`；直接执行仍检查本票、父需求的原生依赖和兄弟活动任务。前置票必须以 `completed` 关闭且没有仍开放的实现 PR；`not_planned` 不算完成。明确以 completed 关闭人工交付票同样可解锁依赖，创建 PR、审查完成或仅提交代码不会解锁。
+
+### 重新规划、失败与暂停
+
+- 规格正文、标题或人工评论变化会使旧计划失效，必须重新生成再批准。审批后改写的计划也不能发布；人工仿造的计划评论不被接受。只支持一层父子关系，已有其他子任务的父需求不能混入新计划。
+- 发布中途失败时，修复原因后重新添加 `agent:publish-tickets`。稳定发布标记能找回已创建但尚未挂接的票，补齐挂接和依赖，避免重复创建。父需求正文不改写、不关闭。
+- 实现失败标记当前票 `agent:blocked`，不会自动重试。处理原因后给该票重新添加 `agent:implement`；父需求中其他满足依赖的任务仍可推进。已有开放 PR 时继续用 PR 反馈入口，不另建重复 PR。
+- 暂停父需求时添加 `agent:blocked`；暂停独立任务可移除 `agent:queued`。已开始的 Actions 另行取消，恢复时重新添加 `agent:implement`。子票执行后、推送前还会复查票状态和依赖。
+- 定时扫描会补偿丢失的接续事件以及仍保留执行标签但尚未启动的请求。它发现模型工作流仍在运行或排队时保留队列，空闲后最多发出一个请求。有 PAT 时使用标签事件，没有时贴标签并内部 dispatch；两条路径不会重复启动同一任务。
+
+这些扩展不恢复旧的同分支累积总 PR 模式，不自动合并 PR。
+
+日常仍使用标签。Implement 和 Review 的 `workflow_dispatch` 输入分别为 `issue_number`、`pr_number`，供内部接续；Implement 必须仍携带执行标签，Review 必须为开放、同仓库且仍携带审查标签的 PR，输入编号本身不能绕过授权。队列也提供无参数手动扫描入口。失败后查看 Actions 链接，解决原因，再重新添加对应标签。分支有冲突时先使用 `agent:update-branch`。
 
 ## 执行与订阅维护
 
 每条核心流程保留官方独立 job：标签和上下文准备 → 检出与构建 → Agent → 推送、PR、评论。Agent 使用 `noSandbox()` 在临时 Runner 当前分支执行并提交。运行 job 具有官方所声明的 GitHub 权限；仓库维护者需信任任务和所检出的代码。
 
-普通实现使用普通 `run()`，不同时要求 JSON。审查、反馈修改、冲突处理及 Explore 先执行工作，再恢复同一会话提取结构化结果；格式修复按官方次数重试，不重做整个任务。prompt 要求提交前 typecheck 和相关聚焦测试；`Check` 独立执行 `pnpm check`、`pnpm demo:test`，普通实施脚本本身只检查产生提交。审查不再拆成 Standards/Spec 两个固定会话，也不固定加载项目 skills。
+普通实现使用普通 `run()`，不同时要求 JSON。审查、反馈修改、冲突处理及 Explore 先执行工作，再恢复同一会话提取结构化结果；格式修复按官方次数重试，不重做整个任务。拆票 prompt 与参考仓库对齐，直接输出 slices，由同会话格式修复处理无效输出，来源指纹由包装脚本维护。prompt 要求提交前 typecheck 和相关聚焦测试；`Check` 独立执行 `pnpm check`、`pnpm demo:test`，普通实施脚本本身只检查产生提交。审查不拆成 Standards/Spec 两个固定会话，也不固定加载项目 skills。
 
 [OpenAI 官方 CI/CD 认证说明](https://learn.chatgpt.com/docs/auth/ci-cd-auth) 要求让 Codex 正常刷新登录文件、保存更新结果，并避免并行刷新同一份登录。本项目仅为此保留以下适配：
 
@@ -64,10 +90,13 @@ Explore 的手动入口默认 `dry_run=true`，只展示计划；取消勾选才
 
 ## 标签准备和本地调试
 
-保留既有五种 triage 标签和官方执行标签，完整列表见 [triage-labels.md](triage-labels.md)。新仓库需先在 GitHub Labels 创建这些标签；本仓库已有核心标签，可补充：
+保留既有五种 triage 标签和执行标签，完整列表见 [triage-labels.md](triage-labels.md)。新仓库需先在 GitHub Labels 创建这些标签；本仓库已有核心标签，扩展标签可用以下命令准备：
 
 ```bash
 gh label create 'agent:explore' --color 5319E7 --description '批量调查 Issue，识别重复并转交'
+gh label create 'agent:to-issues' --color 5319E7 --description '父 Issue：生成待审批的拆票计划' --force
+gh label create 'agent:publish-tickets' --color 0E8A16 --description '父 Issue：批准计划，创建子任务和原生依赖' --force
+gh label create 'agent:queued' --color FEF2C0 --description 'Issue／父 Issue：等待前置依赖完成后自动启动' --force
 ```
 
 本地调试使用官方各阶段所需的环境变量，例如在独立 Git 副本、已创建工作分支且 `gh` 可读该仓库时：

@@ -2,7 +2,9 @@
 
 ## GitHub Actions 入口
 
-通过 GitHub Actions 启动的 Codex 任务，以对应 GitHub Issue、PR 和评论为需求来源，由官方阶段脚本通过 `gh` 读取；Explore 的批次由 workflow 保存为 JSON 后交给调查脚本。`.scratch/` 只提供补充背景。本文件其余约定适用于本地 Markdown 需求。配置、标签和重试方式见 [GitHub Actions 与 Codex](./github-actions.md)。
+通过 GitHub Actions 启动的 Codex 任务，以对应 GitHub Issue、PR 和评论为需求来源，由阶段脚本通过 `gh` 读取。上传的 spec 应放在父 Issue 正文，补充要求写在评论；拆票 prompt 使用 `gh issue view <编号> --comments` 直接获取，不要求仓库中存在本地 spec。`.scratch/` 只提供补充背景，本文件其余约定适用于本地 Markdown 需求。
+
+云端拆票计划先保存为父 Issue 的机器人评论，添加 `agent:publish-tickets` 表示人工批准。发布脚本创建真正的 GitHub 子 Issue，通过原生 blocked-by 关系记录依赖，给子票添加 `ready-for-agent`；随后给父 Issue 添加 `agent:implement` 启动。完整流程与重试方式见 [GitHub Actions 与 Codex](./github-actions.md)。
 
 Issues and specs for this repo live as markdown files in `.scratch/`.
 

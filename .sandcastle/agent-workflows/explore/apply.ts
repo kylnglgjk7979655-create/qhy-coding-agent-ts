@@ -113,7 +113,7 @@ const apply = (effect: GitHubEffect): void => {
     case "swap-label": {
       if (effect.to === "agent:implement" && !AGENT_PAT) {
         console.log(
-          `::warning::AGENT_PAT is not set; adding agent:implement to #${issue} with GITHUB_TOKEN will not trigger Agent Implement.`,
+          `::notice::AGENT_PAT is not set; the scheduled queue scan will pick up agent:implement on #${issue} and dispatch Agent Implement.`,
         );
       }
       ghWith(
