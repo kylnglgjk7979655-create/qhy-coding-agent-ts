@@ -4,6 +4,9 @@ on:
     types: [labeled, closed, reopened]
   pull_request:
     types: [closed]
+  workflow_run:
+    workflows: [Agent Implement, Agent Review, Agent Implement PR, Agent Update Branch, Agent Explore, Agent To Issues]
+    types: [completed]
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
@@ -16,6 +19,7 @@ jobs:
     if: >-
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'skipped') ||
       (github.event_name == 'issues' && (github.event.action != 'labeled' || github.event.label.name == 'agent:queued')) ||
       (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
