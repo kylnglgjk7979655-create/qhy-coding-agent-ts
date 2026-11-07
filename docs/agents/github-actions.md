@@ -42,7 +42,7 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 | Agent To Issues | 父 Issue 添加 `agent:to-issues` | 从 GitHub 读取 spec 和评论，结合代码生成待审批计划评论 |
 | Agent Publish Tickets | 父 Issue 添加 `agent:publish-tickets` | 批准计划并创建原生子任务和依赖，不启动实现 |
 | Agent Implement | Issue／父 Issue 添加 `agent:implement` | 校验依赖；父需求选择就绪子票；父需求复用共享分支和草稿 PR，全部子票完成后请求整体审查；独立 Issue 单独创建 PR |
-| Agent Promote Queued | 添加 `agent:queued`；Issue 关闭或重开；同仓库 PR 合并；每 5 分钟扫描；Actions 手动运行 | 一次转交一个就绪需求；不运行模型，保留队列以补偿遗漏事件 |
+| Agent Promote Queued | 添加 `agent:queued`；Issue 关闭或重开；同仓库 PR 合并；模型工作流结束；每 5 分钟扫描；Actions 手动运行 | 一次转交一个就绪需求；不运行模型，保留队列以补偿遗漏事件 |
 | Agent Review | PR 添加 `agent:review` | 按关联 Issue 和 diff 审查；允许修复并提交，发布评论和回复，标记 Ready |
 | Agent Implement PR | PR 留下反馈后添加 `agent:implement` | 修改代码或回复反馈；若既无提交也无评论则失败 |
 | Agent Update Branch | 同仓库 PR 添加 `agent:update-branch` | 合并基准分支，发生冲突时才调用 Codex；推送并评论 |
@@ -68,7 +68,7 @@ Explore 的手动入口默认 `dry_run=true`，只展示计划；取消勾选才
 - 发布中途失败时，修复原因后重新添加 `agent:publish-tickets`。稳定发布标记能找回已创建但尚未挂接的票，补齐挂接和依赖，避免重复创建。父需求正文不改写、不关闭。
 - 实现失败标记当前票 `agent:blocked`，不会自动重试。处理原因后给该票重新添加 `agent:implement`；父需求中其他满足依赖的任务仍可推进。共享 PR 已存在时重试会继续使用原分支和 PR。
 - 暂停父需求时添加 `agent:blocked`；暂停独立任务可移除 `agent:queued`。已开始的 Actions 另行取消，恢复时重新添加 `agent:implement`。子票执行后、推送前还会复查票状态和依赖。
-- 定时扫描会补偿丢失的接续事件以及仍保留执行标签但尚未启动的请求。它发现模型工作流仍在运行或排队时保留队列，空闲后最多发出一个请求。有 PAT 时使用标签事件，没有时贴标签并内部 dispatch；两条路径不会重复启动同一任务。
+- 模型工作流结束后自动唤醒队列，机器人关闭子票也能接续；定时扫描补偿丢失的接续事件以及仍保留执行标签但尚未启动的请求。它发现模型工作流仍在运行或排队时保留队列，空闲后最多发出一个请求。有 PAT 时使用标签事件，没有时贴标签并内部 dispatch；两条路径不会重复启动同一任务。
 
 共享 PR 不会自动合并。
 

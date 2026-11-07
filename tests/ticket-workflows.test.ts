@@ -160,6 +160,13 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(h.read().issues[23]!.state).toBe('open');
   }, 30_000);
 
+  it('模型工作流结束后唤醒队列，机器人完成子票也能接续', () => {
+    const workflow = readFileSync(fileURLToPath(new URL('../.github/workflows/agent-promote-queued.yml', import.meta.url)), 'utf8');
+    expect(workflow).toMatch(/workflow_run:\s*\n\s*workflows:.*Agent Implement/u);
+    expect(workflow).toMatch(/workflow_run:[\s\S]*?types:\s*\[completed\]/u);
+    expect(workflow).toContain("github.event_name == 'workflow_run'");
+  });
+
   it('共享 PR 未合并时，已完成的前置子票允许下一张开始', () => {
     const h = harness(); h.publish();
     h.update((state) => {
