@@ -460,6 +460,29 @@ describe('compiled CLI process driver', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('prefers an existing user-level session over a stale workspace history with the same ID', async () => {
+    const cwd = await directory('resume-stale-history-cwd');
+    const userDir = await directory('resume-stale-history-user');
+    const model = await startLocalOpenAIModel(() => ({ content: '继续完成' }));
+    try {
+      await configure(cwd, model.baseURL);
+      const first = startCLI({ cwd, userDir, conversationId: 'durable-session', env: { TEST_MODEL_API_KEY: secret }, input: '用户级会话中的原始消息\n/exit\n' });
+      expect((await first.done).code).toBe(0);
+
+      await writeFile(join(cwd, '.agent', 'conversations', 'durable-session.json'), JSON.stringify([
+        { role: 'user', content: '过期工作区历史' },
+      ]));
+      const resumed = startCLI({ cwd, userDir, conversationId: 'durable-session', env: { TEST_MODEL_API_KEY: secret }, input: '继续用户级会话\n/exit\n' });
+      expect((await resumed.done).code).toBe(0);
+
+      const request = model.requests.at(-1)!;
+      expect(JSON.stringify(request)).toContain('用户级会话中的原始消息');
+      expect(JSON.stringify(request)).not.toContain('过期工作区历史');
+    } finally {
+      await model.close();
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('lists current workspace sessions by default and allows selecting from all sessions', async () => {
     const firstCwd = await directory('list-first-cwd');
     const secondCwd = await directory('list-second-cwd');

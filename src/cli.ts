@@ -115,9 +115,6 @@ async function main(): Promise<void> {
     }
     if (session) releaseSession = await acquireSessionLock(userHome, conversationId);
     const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
-    // Read older workspace histories during migration; the user-level session remains the durable record.
-    legacyHistory ??= smokeTool || args.values['conversation-id'] === undefined
-      ? undefined : await loadLegacyConversation(legacyDirectory, conversationId);
     let recoveredRoundIds: string[] = [];
     let history: ModelMessage[];
     if (legacyHistory) history = legacyHistory;
@@ -286,7 +283,9 @@ async function main(): Promise<void> {
         activeRound = new AbortController();
         const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
         history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds);
-        recoveredRoundIds = [];
+        const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
+        history = recovered.history;
+        recoveredRoundIds = recovered.recoveredRoundIds;
       } catch (error) {
         if (cancellation.signal.aborted) throw error;
         const failure = publicError(error);
@@ -418,7 +417,7 @@ async function runTurn(
       await finishSessionRound(userHome, conversationId, roundId, {
         status: 'cancelled', error: { code: 'CANCELLED', message: 'Interrupt by user' },
       }).catch(() => undefined);
-      process.stdout.write('\nInterrupt by user\n');
+      process.stdout.write('\n用户中断：Interrupt by user\n');
       log({ event: 'run.finished', runId: lastRunId, status: 'cancelled', durationMs: Math.round(performance.now() - lastRunStartedAt), conversationId });
       return history;
     }
