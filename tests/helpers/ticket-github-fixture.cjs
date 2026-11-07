@@ -63,7 +63,9 @@ if (parts[0] === 'actions') {
   if (!child) fail('sub_issue_id must be a REST integer ID');
   state.parents[child.number] = issue.number; send(child);
 } else if (parts[2] === 'dependencies' && method === 'GET') {
-  list((state.blockers[issue.number] || []).map((number) => state.issues[number]));
+  list(parts[3] === 'blocking'
+    ? Object.entries(state.blockers).filter(([, blockers]) => blockers.includes(issue.number)).map(([number]) => state.issues[number])
+    : (state.blockers[issue.number] || []).map((number) => state.issues[number]));
 } else if (parts[2] === 'dependencies' && method === 'POST') {
   const blocker = Object.values(state.issues).find((entry) => entry.id === body.issue_id);
   if (!blocker) fail('issue_id must be a REST integer ID');

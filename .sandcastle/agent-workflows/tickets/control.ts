@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { GitHub, hasLabel } from './github.js';
 import { approvedPlan, parsePlan, renderPlan, sourceHash } from './plan.js';
 import { publishTickets } from './publish.js';
-import { Queue, hasModelRun } from './queue.js';
+import { Queue } from './queue.js';
 import { fail, required, writeJson } from '../shared/common.js';
 
 const github = new GitHub(required('GH_REPO'));
@@ -92,12 +92,8 @@ try {
       break;
     }
     case 'promote': {
-      if (hasModelRun(github)) {
-        console.log('模型工作流仍在运行或排队，保留 queued 任务等待下一次扫描。');
-        break;
-      }
-      const selected = new Queue(github, process.env.AGENT_PAT ? new GitHub(github.repo, process.env.AGENT_PAT) : undefined).promote();
-      console.log(selected ? `已转交 #${selected} 的 agent:implement。` : '暂无可执行任务。');
+      const selected = new Queue(github, process.env.AGENT_PAT ? new GitHub(github.repo, process.env.AGENT_PAT) : undefined).promote(number());
+      console.log(selected.length ? `已转交：${selected.map((issue) => `#${issue}`).join('、')}。` : '没有可执行的直接依赖任务。');
       break;
     }
     case 'review': {
