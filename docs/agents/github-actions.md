@@ -1,140 +1,79 @@
 # GitHub Actions 与 Codex 订阅
 
-工作流使用私有仓库的 GitHub Ubuntu Runner，通过 Sandcastle 的 `codex()` 运行订阅账号，不需要 OpenAI API Key。已迁移 course-video-manager 的 Issue 实现、PR 审查与反馈修改、分支更新、PRD 拆分及逐轮实现、依赖排队和架构审查；所有模型任务共用订阅登录态。
+仓库采用 [Sandcastle 官方 GitHub workflows](https://github.com/mattpocock/sandcastle/tree/ed8e7164e0a5d65a0a98c6917508b45cd2de89a8/.github/workflows)，固定提交 `ed8e7164e0a5d65a0a98c6917508b45cd2de89a8`。官方任务脚本和 prompt 放在 `.sandcastle/agent-workflows/`，以 `codex()` 替换官方 Claude provider，继续使用 ChatGPT 订阅，不需要 OpenAI API Key。
 
 ## 首次配置
 
-### 1. 把工作流合入默认分支
+将迁移后的配置合入默认分支 `main`，标签事件才会使用新 workflow。已有 PR 先更新到包含新脚本的版本，再使用 PR 标签入口。
 
-提交本地配置并合入 GitHub 的 `main`。Issue 标签事件使用默认分支上的 workflow；只有本地文件不会启动云端任务。合并后手动运行一次 `Setup Agent Labels`，补齐所有标签。准备执行任务时也会自动补齐缺失标签。
+### 订阅认证
 
-### 2. 配置订阅登录文件
-
-在项目目录为 CI 单独登录一次，跟随浏览器提示使用你的订阅账号：
+为 CI 单独登录一次，跟随浏览器使用订阅账号：
 
 ```bash
 CODEX_HOME="$HOME/.codex-qhy-ci" pnpm exec codex -c 'cli_auth_credentials_store="file"' login
+gh secret set CODEX_AUTH_JSON --repo kylnglgjk7979655-create/qhy-coding-agent-ts < "$HOME/.codex-qhy-ci/auth.json"
 ```
 
-将专用登录文件通过标准输入保存为仓库 Secret：
+也可以在仓库 Settings → Secrets and variables → Actions 保存完整 `auth.json`。CI 使用这份专用登录后，不再用该目录并行运行本机 Codex；平时的登录目录保持独立。不要把认证文件提交到 git、Issue 或聊天。
 
-```bash
-gh secret set CODEX_AUTH_JSON \
-  --repo kylnglgjk7979655-create/qhy-coding-agent-ts \
-  < "$HOME/.codex-qhy-ci/auth.json"
-```
+创建只限本仓库的 fine-grained PAT，授予 **Secrets → Read and write**，保存为 `CODEX_AUTH_STORE_PAT`。它用于读取 Secret 版本与加密公钥、回存刷新后的 `CODEX_AUTH_JSON`，不会作为 Agent 的环境变量。
 
-`gh` 需要先登录 GitHub。也可在仓库 Settings → Secrets and variables → Actions 中添加 `CODEX_AUTH_JSON`，值为这个专用 `auth.json` 的完整内容。文件需要 `auth_mode: "chatgpt"` 及 access token、refresh token。
+### 发布和自动接续
 
-上传后，这份专用登录交给 CI 使用；不要再用这个专用目录并行运行本机 Codex。你平时的 Codex 登录保持独立。文件不提交到 git、不粘贴到 Issue 或聊天。
+Settings → Actions → General 中启用 **Allow GitHub Actions to create and approve pull requests**。实际审查发布 COMMENT，PR 仍由人决定合并。
 
-### 3. 配置登录态回存 Token
+沿用官方的 `AGENT_PAT` 标签接续方式。为实现后自动启动审查、Explore 后自动启动实现配置此 Secret，权限至少为本仓库 **Contents、Issues、Pull requests → Read and write**。允许推送 workflow 修改时另需 **Workflows → Read and write**。没有 PAT 时回退 `GITHUB_TOKEN` 能完成部分写入，但它添加的标签不会启动下一条 workflow；需由维护者重新添加对应标签。代码推送是否触发 `Check` 同样受 GitHub Token 事件限制，本项目不再使用自定义 dispatch 接续。
 
-打开 [GitHub Fine-grained PAT 创建页面](https://github.com/settings/personal-access-tokens/new)：
+| Secret / Variable | 用途 |
+| --- | --- |
+| Secret `CODEX_AUTH_JSON` | 必需，CI 专用订阅登录文件 |
+| Secret `CODEX_AUTH_STORE_PAT` | 必需，认证版本检查和刷新后回存 |
+| Secret `AGENT_PAT` | 自动接续需要；代码推送、PR 创建、标签转交按官方流程使用 |
+| Variable `CODEX_MODEL` | 可选；优先使用该值，未配置时从 `codex debug models` 选择首个可用模型，探测失败回退 `gpt-6-luna` |
 
-1. Repository access 选择 Only select repositories，仅选择本仓库。
-2. Repository permissions 中设置 **Secrets → Read and write**。
-3. 创建 Token 后，在仓库 Actions Secrets 新增 **`CODEX_AUTH_STORE_PAT`**，值为该 Token。
+## 日常入口
 
-这个 Token 用于获取 GitHub 的 Secret 加密公钥、检查版本、保存刷新后的 `CODEX_AUTH_JSON`。它不授予代码推送权限，也不会传给运行 Codex 的 job。Token 到期后更新此 Secret。
-
-### 4. 配置 PR 发布权限
-
-在 Settings → Actions → General → Workflow permissions 勾选 **Allow GitHub Actions to create and approve pull requests**。各 job 已声明需要的权限，默认工作流权限可保持只读。除用 `AGENT_PAT` 创建 PR 外，发布 API 使用 job 的 `GITHUB_TOKEN`；审查只发布 COMMENT，不自动批准或合并。
-
-可选配置 **`AGENT_PAT`**：fine-grained PAT 限制到本仓库，授予 Contents 读写和 Pull requests 读写；允许 Agent 修改 workflow 文件时另需 Workflows 写权限。该 PAT 用于推送代码和创建 PR，使 PR 检查由仓库成员触发；它不参与订阅认证回存。未配置时仍可通过 `GITHUB_TOKEN` 推送普通代码、创建 PR 和接续工作流，但 GitHub 可能要求先批准 Bot 创建的 PR 工作流；修改 workflow 文件会被 GitHub 拒绝。
-
-代码变更发布后会通过 `workflow_dispatch` 显式启动 PR 分支的 `Check`，因此普通任务不必为了 CI 触发而额外配置 PAT。
-
-## 日常使用
-
-创建 GitHub Issue，写清复现步骤或需求、期望结果、验收条件。添加 **`agent:implement`** 标签启动。`ready-for-agent` 仅表示准备完成，不触发执行。
-
-然后在 Actions → Codex Implement Issue 查看进度。也可在该 workflow 的 Run workflow 中填写 Issue 编号手动启动。成功后 Issue 会出现草稿 PR 链接，并自动接续 Codex 审查。审查使用两个独立新会话分别检查规范与需求，再修复并发布 COMMENT；完成后将草稿标记为 Ready，由人决定合并。普通 Issue 的 `Closes #编号` 在合并时关闭；含人工 QA 的父规格只关联，由人确认关闭。
-
-| Secret / Variable | 是否必需 | 用途 |
+| workflow | 触发 | 行为 |
 | --- | --- | --- |
-| Secret `CODEX_AUTH_JSON` | 是 | CI 专用的 Codex 订阅登录文件 |
-| Secret `CODEX_AUTH_STORE_PAT` | 是 | 自动回存刷新后的登录态，Secrets 读写权限 |
-| Secret `AGENT_PAT` | 可选 | 代码推送和 PR 创建；需要 Contents、Pull requests 读写权限，允许修改 workflow 时另需 Workflows 写权限 |
-| Variable `CODEX_MODEL` | 可选 | 显式指定模型；未设置时会自动选择 `codex debug models` 返回的首个可用模型（探测失败回退 `gpt-6-luna`） |
+| Agent Explore | Issue 添加 `agent:explore`；或 Actions 手动运行 | 一次调查所有开放的 explore Issue，识别重复、给出结论，独立 apply job 校验后发布 |
+| Agent Implement | 独立 Issue 添加 `agent:implement` | 从 main 创建 `agent/issue-*` 分支，Agent 提交，workflow 推送并创建草稿 PR，再请求审查 |
+| Agent Review | PR 添加 `agent:review` | 按关联 Issue 和 diff 审查；允许修复并提交，发布评论和回复，标记 Ready |
+| Agent Implement PR | PR 留下反馈后添加 `agent:implement` | 修改代码或回复反馈；若既无提交也无评论则失败 |
+| Agent Update Branch | 同仓库 PR 添加 `agent:update-branch` | 合并基准分支，发生冲突时才调用 Codex；推送并评论 |
 
-云端工作流不读取 `OPENAI_API_KEY`。演示 CLI 的 `agent.config.json`、第三方 baseURL 和 `.env` 与此订阅认证分开。
+Explore 的手动入口默认 `dry_run=true`，只展示计划；取消勾选才实际发布。添加 `agent:explore` 会直接应用结果：`easy-call` 转 `agent:implement`，`needs-a-human` 转 `ready-for-human`，`blocked` 转 `agent:blocked`；重复 Issue 被评论并关闭。这三个 verdict 是输出字段，不是 GitHub 标签。
 
-## 任务入口与使用顺序
+`ready-for-agent` 仅表示准备完成，不触发执行。普通实现按官方 MVP 拒绝有父 Issue 或子 Issue 的需求。原有 `agent:to-issues`、`agent:publish-tickets`、`agent:queued` 和定时架构审查已退出执行链路；历史 Issue、子 Issue 和旧标签不自动删除。
 
-| 操作 | 入口 | 行为 |
-| --- | --- | --- |
-| 实现普通需求 | Issue 添加 `agent:implement` | 从默认分支实现，验证后创建草稿 PR，自动接续审查 |
-| 审查 PR | PR 添加 `agent:review` | 按仓库规范、关联 Issue 与已关闭子任务审查；可修复明确问题，发布行内评论及摘要 |
-| 根据反馈修改 | PR 留下反馈后添加 `agent:implement` | 读取顶层评论、review 摘要和未解决 threads，修改并回复有关 thread |
-| 更新 PR 分支 | PR 添加 `agent:update-branch` | 合并 PR 基准分支，必要时让 Codex 解决冲突；创建保留两个父提交的 merge commit |
-| 生成拆票计划 | 父 Issue 添加 `agent:to-issues` | 加载 to-tickets，只读生成实现切片和依赖，写入待审批评论 |
-| 确认发布工单 | 父 Issue 添加 `agent:publish-tickets` | 按已保存计划创建原生子 Issue、执行角色及依赖；不调用模型或启动实现 |
-| 逐轮实现 PRD | 含子 Issue 的父 Issue 添加 `agent:implement` | 自动选择 PRD 模式，每轮实现一个依赖已完成的 Agent 子任务，共用 `codex/prd-编号` 分支及一个草稿 PR |
-| 等待依赖 | 根 Issue 配置原生 GitHub `blocked by` 关系并添加 `agent:queued` | 依赖完成后每次只派发一个符合条件的任务 |
-| 架构审查 | Actions → Codex Architecture Review，或工作日 UTC 09:00（北京时间 17:00） | 只读代码及历史提案，最多提出一个新 PRD，标记 `source:architecture-review`；10个开放提案时暂停 |
+除 Explore 外，官方入口没有手动 `issue_number` / `pr_number` 参数。失败后查看 Actions 链接，解决原因，再重新添加对应标签。Review 和 Implement PR 使用 `pull_request` 事件；分支有冲突时先使用 `agent:update-branch`。
 
-各模型任务都有手动入口：在 Actions 选对应工作流，填写 `issue_number` 或 `pr_number`。`Codex Implement PRD` 是逐轮实现的接续与恢复入口；Issue 标签仍由 `Codex Implement Issue` 自动识别。`Codex Subscription Task` 是内部复用流程，不直接手动运行。
+## 执行与订阅维护
 
-PRD 建议顺序：写父 Issue → `agent:to-issues` → 检查评论中的完整计划 → `agent:publish-tickets` → 检查生成的子任务 → 给父 Issue 添加 `agent:implement` → 按真实依赖串行实现 → 自动审查同一个 PR → 人工合并。实现子 Issue 在代码推送、检查和 PR 发布成功后关闭；已有 Human QA 任务保持开放，由人执行并记录测试版本和结果。有 QA 的 PR 使用 `Refs #父规格`，父规格由人确认关闭。只支持扁平子任务，不直接给子 Issue 添加实现标签。
+每条核心流程保留官方独立 job：标签和上下文准备 → 检出与构建 → Agent → 推送、PR、评论。Agent 使用 `noSandbox()` 在临时 Runner 当前分支执行并提交。运行 job 具有官方所声明的 GitHub 权限；仓库维护者需信任任务和所检出的代码。
 
-手动生成或发布计划使用 Actions → Codex Plan and Publish Tickets：填写父 Issue 编号，生成计划时保持 `publish_approved=false`；检查计划后再勾选该选项启动新的运行。发布阶段不需要恢复订阅登录；失败时重新添加 `agent:publish-tickets` 可复用原计划和已创建的 Issue、挂接及依赖。不要通过重跑旧规划来覆盖发布中的计划。
+普通实现使用普通 `run()`，不同时要求 JSON。审查、反馈修改、冲突处理及 Explore 先执行工作，再恢复同一会话提取结构化结果；格式修复按官方次数重试，不重做整个任务。prompt 要求提交前 typecheck 和相关聚焦测试；`Check` 独立执行 `pnpm check`、`pnpm demo:test`，普通实施脚本本身只检查产生提交。审查不再拆成 Standards/Spec 两个固定会话，也不固定加载项目 skills。
 
-反馈不会因为新评论自动运行；由维护者通过标签决定何时启动。审查可不修改代码，反馈修改可只回复；普通 Issue 实现没有代码变更则失败。PRD 子任务已经满足验收条件时允许无新增修改，但必须明确确认完成，外层仍会验证。
+[OpenAI 官方 CI/CD 认证说明](https://learn.chatgpt.com/docs/auth/ci-cd-auth) 要求让 Codex 正常刷新登录文件、保存更新结果，并避免并行刷新同一份登录。本项目仅为此保留以下适配：
 
-依赖队列使用 GitHub 原生关系，不解析正文的“依赖 #N”。所有阻塞项都必须以完成状态关闭；`not_planned` 不视为完成。只调度根 Issue，跳过人工任务、进行中及失败阻塞项；一次只派发一个，结束后继续检查队列。添加排队标签后，可手动运行 `Codex Promote Queued` 启动调度；Issue 完成关闭也会触发。自动链路失败会停止推进，修复后重新触发对应任务。
+1. workflow 级 `codex-subscription-仓库名` 并发组覆盖认证、运行、回存和发布。
+2. `codex-auth-restore` 验证凭据版本、恢复订阅文件并注册日志遮罩；排队后 Secret 已更新的运行拒绝使用旧快照。
+3. `codex-auth-save` 在 Agent 返回后（包括失败）加密刷新文件，比较版本并回存 Secret，始终清理临时登录。成功路径必须回存完成，才推送或触发下一轮。
 
-## 登录态怎样维护
+认证 Secret 写入 Token 仅用于恢复和回存步骤；不通过 artifact 传递明文认证。回存与执行在同一 job，不再使用旧的五阶段发布框架。GitHub 并发组只有一个待运行槽，不是 FIFO 队列；不要同时启动多个订阅任务。取消、超时或回存失败后，可能需要重新登录并更新 `CODEX_AUTH_JSON`；不要重跑使用旧凭据的运行。
 
-GitHub 临时 Runner 每轮结束都会销毁，因此每轮需要恢复、运行、保存。[OpenAI 官方说明](https://learn.chatgpt.com/docs/auth/ci-cd-auth) 要求保存 Codex 自己刷新后的登录文件，并串行使用同一份认证。
+## 标签准备和本地调试
 
-所有模型入口调用 `codex-task.yml`，共用五阶段流程：
-
-1. `prepare` 验证私有仓库及触发者写权限，读取需求、PR 反馈及关系，锁定工作 SHA 和控制脚本 SHA，获取 Secret 公钥和版本。PR 任务拒绝 fork、关闭及已合并的 PR。
-2. `generate` 从可信控制脚本创建独立 worktree，在其中运行 Sandcastle/Codex。随后加密刷新后的登录态并删除明文，再独立运行 `pnpm check` 与 `pnpm demo:test`、校验结构化结果并导出补丁。拆分与架构任务只校验未改代码。
-3. `persist-auth` 在独立 Runner 上把加密登录态写回 `CODEX_AUTH_JSON`，不执行 Agent 生成的代码、不解密认证包。生成失败后若已有认证包，仍尝试保存刷新结果。
-4. `publish` 只有在生成验证及认证回存成功后执行，重新检查 PR/Issue 状态、按原 SHA 应用补丁，提交并普通推送。分支前进则拒绝覆盖。再发布 PR、评论、子 Issue 或架构提案。
-5. `finish` 清理进行中标签，发布结果；失败标记 `agent:blocked`。成功后通过 `workflow_dispatch` 接续下个子任务或审查，链路结束后检查依赖队列。
-
-运行 Codex 的 job 没有仓库写入 Token 或 Secret 写入 Token。跨 job 只传递公钥加密后的认证包，明文 `auth.json` 不进入 artifacts。恢复步骤注册凭据日志遮罩。Sandcastle 使用 `noSandbox()` 在临时 Runner 执行，独立 worktree 是代码目录分离，不提供进程隔离；仓库维护者必须信任任务及仓库代码。
-
-自动接续及代码变更后的 `Check` 使用带 `actions: write` 权限的 job `GITHUB_TOKEN` 发起 `workflow_dispatch`，无需额外 PAT 来触发标签事件或 CI。Agent 执行 job 自身也始终先验证代码。
-
-所有任务及队列调度共用 `codex-subscription-仓库名` 并发组，避免并发刷新同一登录。GitHub 并发组只有一个待运行槽，不是完整 FIFO 队列；请不要同时手动启动多个模型任务。批量需求使用 `agent:queued`，必要时手动运行队列工作流恢复调度。排队后凭据更新、或运行期间凭据被替换时，工作流拒绝使用或覆盖旧版本；重新触发新的运行，不要重跑旧运行。
-
-## 失败和限制
-
-查看 Issue / PR 评论的 Actions 链接。处理原因后重新添加对应标签，或手动启动新的运行。认证回存失败、工作流被取消时，可能需要重新登录并更新 `CODEX_AUTH_JSON`。仓库重新公开后工作流拒绝运行。准备阶段在完成权限检查与任务校验前失败时，只在 Actions 中报告，不修改 Issue 或 PR 状态。
-
-若出现 `model is not supported when using Codex with a ChatGPT account`，设置仓库 Variable `CODEX_MODEL` 为该订阅可用的模型；错误中的模型名才是排查线索。Codex 的 stdout 错误现在会额外输出，避免仅看到 `Reading prompt from stdin...`。
-
-每次启动 Codex 时日志显示选用的模型，结束时显示该会话最后一次模型调用的输入 token 数及可用时的上下文上限。审查的三个独立会话分别报告；若会话记录没有用量，日志会显示不可用。
-
-Agent 最长运行 45 分钟，连续无输出 5 分钟失败；生成 job 超时 60 分钟。没有自动批准、自动合并。架构审查每个工作日运行一次，会消耗 Actions 时间与 Codex 订阅用量；不需要时可在 Actions 中禁用该 workflow。
-
-任务显式读取仓库 `.agents/skills/` 的固定版本：implement-spec、tdd、diagnosing-bugs、codebase-design、code-review、pr 和 to-tickets。to-spec 供本地规格编写使用。原文及引用文件完整提交，来源与文件校验值见 `.agents/skills/UPSTREAM.json`；本地和云端不自动下载或更新。implement-spec 的云端执行按任务依赖串行推进，由 workflow 管理分支及发布。
-
-具体适配见 [skill-execution.md](skill-execution.md)。结构化结果不合法时本轮失败，不自动重复有副作用的任务。
-
-## 本地运行
-
-本机默认复用 `codex login` 的 ChatGPT 登录。先准备 Issue JSON：
-
-```json
-{"number":42,"title":"修复空输入错误","body":"复现步骤和验收条件","url":"https://github.com/owner/repo/issues/42","comments":[]}
-```
-
-预览提示词，不调用模型：
+保留既有五种 triage 标签和官方执行标签，完整列表见 [triage-labels.md](triage-labels.md)。新仓库需先在 GitHub Labels 创建这些标签；本仓库已有核心标签，可补充：
 
 ```bash
-ISSUE_CONTEXT_PATH=/tmp/issue.json pnpm agent:implement --dry-run
+gh label create 'agent:explore' --color 5319E7 --description '批量调查 Issue，识别重复并转交'
 ```
 
-在独立副本中实际运行：
+本地调试使用官方各阶段所需的环境变量，例如在独立 Git 副本、已创建工作分支且 `gh` 可读该仓库时：
 
 ```bash
-ALLOW_HOST_EXECUTION=1 ISSUE_CONTEXT_PATH=/tmp/issue.json pnpm agent:implement
+ISSUE_NUMBER=42 ISSUE_TITLE='修复空输入' BRANCH='agent/issue-42-fix' GH_REPO='owner/repo' pnpm agent:implement
 ```
 
-本地运行不会自动推送或创建 PR。只有显式设置 `CODEX_AUTH_MODE=api-key` 和 `CODEX_API_KEY` 才使用 API 认证。
+本地命令会修改代码并提交，推送和 PR 操作由 GitHub workflow 负责。旧的 `ISSUE_CONTEXT_PATH`、`agent:task` 和 prompt dry-run 入口已移除。来源及全部适配项见 [.sandcastle/README.md](../../.sandcastle/README.md)。

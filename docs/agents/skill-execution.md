@@ -1,24 +1,22 @@
-# 仓库 skill 的项目适配
+# 仓库 skill 与官方 workflow 的执行约定
 
-`.agents/skills/UPSTREAM.json` 固定来源和版本；上游原文完整保存。本文件是执行适配，优先于上游对 tracker、工具名、交互和提交方式的环境假设。领域词汇仍来自 GLOSSARY.md 和相关 ADR。
+`.agents/skills/UPSTREAM.json` 固定 skill 来源和版本，上游原文完整保存；本地快照的用户定制单独记录在 `localSnapshots`。用户选择以 Sandcastle 官方 GitHub workflow 为准，继续使用 Codex 订阅；本文件据此替代旧的项目调度约定。
 
-## 规划与执行
+## 本地 skills
 
-- 本地使用 `.scratch/`，布局见 [issue-tracker.md](issue-tracker.md)。云端以父 Issue、子 Issue、评论和原生依赖为准。
-- `ready-for-agent` 表示需求已准备，不触发实现；`agent:implement` 或显式手动运行才授权执行。人工任务使用 `ready-for-human`，即使被误加执行或排队标签，也不交给模型。
-- to-spec 从已有讨论产生规格，保留准备状态，先确定公共测试入口。大型需求交给 to-tickets 拆分，父规格在拆分及检查前不会自动执行。
-- to-tickets 按真实依赖拆分实现任务。云端 `agent:to-issues` 只输出计划评论；人检查具体计划后添加 `agent:publish-tickets`，才创建子 Issue 及原生阻塞关系。发布过程失败后重新确认可恢复，不重复创建。已保存的含人工 QA 计划仍可发布。
-- 发布完成后，人给父规格添加 `agent:implement`。每轮从依赖已完成的 Agent 子任务中选择一张，列表顺序只作为同优先级排序。人工 QA 保持开放，由人执行并记录版本、环境、结果和缺陷；不能把代码检查或审查结果当作 QA 已通过。
-- 有人工 QA 的 PR 以 `Refs #父规格` 关联，父规格由人确认关闭，合并不会提前关闭它。没有人工 QA 的普通 Issue 保持 `Closes #编号`。
+本地需求仍放在 `.scratch/`，布局见 [issue-tracker.md](issue-tracker.md)。手动调用 skills 时使用仓库固定版本，不在 CI 临时下载；领域词汇来自 `GLOSSARY.md`，相关决策来自 `docs/adr/`。
 
-## 云端执行
+`ready-for-agent` 表示准备完成，不触发 GitHub 实现。`ready-for-human` 表示需要人工处理。本地规格编写、拆票和人工 QA 可以继续使用 skills，但不再对应自动发布工单或 PRD 逐票执行的云端入口。
 
-- 入口显式加载控制脚本同版本的 skill 正文，提供其引用文件绝对路径。工作区即使来自旧 PR，也不会悄悄改用 PR 分支中未经审查的 skill。源码、规范和需求仍从本轮工作区与上下文读取。
-- 当前任务已有明确需求和测试入口时直接执行；需要人决定的歧义在本轮报告阻塞并结束。上游对 Skill/Agent 工具的称呼按实际能力适配，不能声称执行了不可用工具。
-- 实现使用 implement-spec、tdd；普通 Issue 按单个任务实现，PRD 的任务图由外层逐票调度。云端共用认证，串行执行而不启动并行实现子 Agent；分支、合并、关闭工单和审查由外层负责。真正的 bug 按 diagnosing-bugs 建反馈循环。参考文档按指针读取。单个测试应覆盖公共行为，完整验证由外层 job 执行。
-- 对不明显的决策、约束和变通方案编写简洁注释；行为改变时更新相关注释。
-- code-review 的 Standards、Spec 两个视角由外层用新会话依次运行，保持只读和上下文独立；随后才运行修复阶段。串行调用共用认证，三阶段合计受45分钟上限控制。缺少 spec 时明确报告，不伪造审查结论。
-- Agent 保留工作区修改与结构化结果。提交、推送、创建/更新 PR、回复及关闭实现票由可信发布 job 负责。pr skill 决定正文质量；关闭引用由发布端追加。
-- 定时架构审查复用 codebase-design，从近期热点选一个候选，过滤历史重复；10个开放提案时暂停。输出一个结构化 PRD 或跳过，维护者后续评估。交互式架构访谈不在定时 Runner 中执行。
+## GitHub workflow
 
-配置及日常操作见 [github-actions.md](github-actions.md)。
+云端使用 `.sandcastle/agent-workflows/` 内固定版本的官方阶段脚本和 prompt，不固定拼接 skills，不添加自定义的 Standards/Spec 独立审查会话。各阶段 prompt 明确当前任务、项目上下文、验证和交付方式。
+
+- 普通实现只接受独立 Issue；有父 Issue 或子 Issue 时按官方 MVP 拒绝。
+- 实现、审查、反馈修改由 Agent 在当前分支提交；workflow 负责推送、PR、标签和评论。
+- 普通实现不要求结构化 JSON；其他阶段先完成工作，再恢复会话提取结果。
+- Explore 批量只读调查，独立 apply job 校验并发布评论、转交标签和关闭重复 Issue；添加 `agent:explore` 即授权这一完整流程。手动入口默认 dry-run。
+- 提交前按官方 prompt 运行 `pnpm typecheck` 和相关聚焦测试；完整项目验证由 `Check` 执行。人工 QA 仍需人实际执行，代码检查不代表人工 QA 已通过。
+- PR 审查发布 COMMENT 并标记 Ready，由人决定是否合并。普通实现 PR 的 `Closes #编号` 在合并时关闭 Issue。
+
+Codex 订阅的认证恢复、刷新回存和串行使用是模型适配，具体配置见 [github-actions.md](github-actions.md)。旧的统一任务协议、外层提交发布、PRD 调度、云端拆票确认、依赖队列和定时架构提案均已移除。

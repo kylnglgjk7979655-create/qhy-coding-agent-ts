@@ -3,11 +3,7 @@ export function codexAuthEnvironment(
   loginStatus: (childEnv: NodeJS.ProcessEnv) => string,
 ): Record<string, string> {
   const mode = env.CODEX_AUTH_MODE || 'chatgpt';
-  if (mode === 'api-key') {
-    if (!env.CODEX_API_KEY) throw new Error('API 模式需要 CODEX_API_KEY；订阅用户使用默认 chatgpt 模式。');
-    return { CODEX_API_KEY: env.CODEX_API_KEY };
-  }
-  if (mode !== 'chatgpt') throw new Error('CODEX_AUTH_MODE 只支持 chatgpt 或 api-key。');
+  if (mode !== 'chatgpt') throw new Error('GitHub Agent 只支持 chatgpt 订阅认证。');
 
   // 显式清空继承的 API 凭据，避免订阅模式意外使用 API 计费。
   const credentials = { CODEX_API_KEY: '', OPENAI_API_KEY: '' };
