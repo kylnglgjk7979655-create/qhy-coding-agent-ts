@@ -26,6 +26,7 @@ export interface RunResult {
   responseMessages: ModelMessage[];
   /** 本轮成功使用的完整有效历史，可直接用于保存及下一轮输入。 */
   effectiveHistory: ModelMessage[];
+  summaries: Array<{ text: string; coversThrough: number }>;
   steps: number;
   toolCalls: number;
   finishReason: string;
@@ -179,6 +180,7 @@ export async function runAgent(
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
+    summaryCoverageBase?: number;
   },
 ): Promise<RunResult> {
   if (options.smokeTool && config.maxSteps < 2) {
@@ -303,6 +305,9 @@ export async function runAgent(
     const tools = registry.tools();
     let preparedHistory: ModelMessage[] = [];
     let preparedResponseCount = 0;
+    const summaries: RunResult['summaries'] = [];
+    let summaryCoverageBase = options.summaryCoverageBase ?? 0;
+    let hasSummary = summaryCoverageBase > 0;
     const agent = new ToolLoopAgent({
       model,
       instructions,
@@ -319,7 +324,13 @@ export async function runAgent(
       maxRetries: 0,
       prepareStep: async ({ stepNumber, messages, responseMessages }) => {
         signal.throwIfAborted();
-        preparedHistory = await prepareConversation(config, instructions, messages, tools, signal);
+        preparedHistory = await prepareConversation(config, instructions, messages, tools, signal, (summary) => {
+          // 已有摘要在有效历史中占一个消息槽位，不代表一条新的 transcript 原文。
+          const coversThrough = summaryCoverageBase + summary.coveredMessages - (hasSummary ? 1 : 0);
+          summaries.push({ text: summary.text, coversThrough });
+          summaryCoverageBase = coversThrough;
+          hasSummary = true;
+        });
         preparedResponseCount = responseMessages.length;
         signal.throwIfAborted();
         return {
@@ -414,6 +425,7 @@ export async function runAgent(
       responseMessages,
       // 最后一次请求的历史已包含此前工具往返，只追加该请求之后的新响应。
       effectiveHistory: [...preparedHistory, ...responseMessages.slice(preparedResponseCount)],
+      summaries,
       steps: steps.length,
       toolCalls: steps.reduce((count, step) => count + step.toolCalls.length, 0),
       finishReason,

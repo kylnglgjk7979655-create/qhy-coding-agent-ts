@@ -86,7 +86,12 @@ async function main(): Promise<void> {
         const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
         legacyHistory = await loadLegacyConversation(legacyDirectory, conversationId);
         const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
-        session = await createSession(userHome, { id: conversationId, workspace: config.workspace, config: persistedConfig });
+        session = await createSession(userHome, {
+          id: conversationId,
+          workspace: config.workspace,
+          config: persistedConfig,
+          ...(legacyHistory === undefined ? {} : { transcript: legacyHistory, effectiveHistory: legacyHistory }),
+        });
       }
     } else {
       config = await loadCurrentConfig();
@@ -216,6 +221,7 @@ async function runTurn(
   recoveredRoundIds: string[] = [],
 ): Promise<ModelMessage[]> {
   let roundId: string | undefined;
+  let summaryCoverageBase = 0;
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
   log({
@@ -226,10 +232,12 @@ async function runTurn(
     if (!smokeTool) {
       const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
       roundId = await startSessionRound(userHome, conversationId, prompt, persistedConfig);
+      summaryCoverageBase = (await loadSession(userHome, conversationId)).summaries.at(-1)?.coversThrough ?? 0;
     }
     const result = await runAgent(config, prompt, {
       smokeTool,
       history,
+      summaryCoverageBase,
       onText: async (chunk) => {
         if (!smokeTool && roundId) await appendRoundText(userHome, conversationId, roundId, chunk);
         process.stdout.write(chunk);
@@ -263,7 +271,8 @@ async function runTurn(
     if (!smokeTool) {
       if (!roundId) throw new AgentError('PROVIDER_ERROR', '当前轮次未能建立持久化记录。');
       await finishSessionRound(userHome, conversationId, roundId, {
-        status: 'succeeded', response: result.responseMessages, effectiveHistory: nextHistory, recoveredRoundIds,
+        status: 'succeeded', response: result.responseMessages, effectiveHistory: nextHistory,
+        summaries: result.summaries, recoveredRoundIds,
       });
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }

@@ -46,6 +46,8 @@ export async function createSession(home: string, options: {
   id: string;
   workspace: string;
   config: ModelConfig;
+  transcript?: ModelMessage[];
+  effectiveHistory?: ModelMessage[];
 }): Promise<SessionRecord> {
   try {
     await loadSession(home, options.id);
@@ -61,8 +63,8 @@ export async function createSession(home: string, options: {
     createdAt: now,
     updatedAt: now,
     config: { ...options.config, workspace: resolve(options.workspace) },
-    transcript: [],
-    effectiveHistory: [],
+    transcript: options.transcript ?? [],
+    effectiveHistory: options.effectiveHistory ?? [],
     rounds: [],
     summaries: [],
     checkpoints: [],
@@ -219,6 +221,7 @@ export async function finishSessionRound(home: string, conversationId: string, r
   status: 'succeeded' | 'failed' | 'cancelled';
   response?: ModelMessage[];
   effectiveHistory?: ModelMessage[];
+  summaries?: SessionRecord['summaries'];
   recoveredRoundIds?: string[];
   error?: { code: string; message: string };
 }): Promise<void> {
@@ -228,7 +231,7 @@ export async function finishSessionRound(home: string, conversationId: string, r
     finishedAt: new Date().toISOString(),
     ...(outcome.error ? { error: outcome.error } : {}),
     ...(outcome.status === 'succeeded' ? { messages: outcome.response ?? round.messages ?? [], partialText: '' } : {}),
-  }), outcome.effectiveHistory, outcome.recoveredRoundIds);
+  }), outcome.effectiveHistory, outcome.recoveredRoundIds, outcome.summaries);
 }
 
 async function updateRound(
@@ -238,6 +241,7 @@ async function updateRound(
   update: (round: SessionRecord['rounds'][number]) => SessionRecord['rounds'][number],
   effectiveHistory?: ModelMessage[],
   recoveredRoundIds: string[] = [],
+  summaries: SessionRecord['summaries'] = [],
 ): Promise<void> {
   const session = await loadSession(home, conversationId);
   const index = session.rounds.findIndex((round) => round.id === roundId);
@@ -254,6 +258,7 @@ async function updateRound(
       ? round
       : recoveredRoundIds.includes(item.id) ? { ...item, recovered: true } : item),
     ...(effectiveHistory ? { effectiveHistory } : {}),
+    ...(effectiveHistory ? { summaries: [...session.summaries, ...summaries] } : {}),
   });
 }
 
@@ -341,6 +346,8 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     && Array.isArray(session.effectiveHistory) && session.effectiveHistory.every(isModelMessage)
     && Array.isArray(session.rounds) && session.rounds.every(isRoundRecord)
     && Array.isArray(session.summaries) && session.summaries.every(isSummaryRecord)
+    && session.summaries.every((summary, index) => summary.coversThrough <= session.transcript!.length
+      && (index === 0 || summary.coversThrough >= session.summaries![index - 1]!.coversThrough))
     && Array.isArray(session.checkpoints) && session.checkpoints.every(isCheckpointRecord)
     && Array.isArray(session.backups) && session.backups.every(isBackupRecord);
 }
@@ -378,7 +385,9 @@ function isRoundRecord(value: unknown): value is SessionRecord['rounds'][number]
 function isSummaryRecord(value: unknown): value is SessionRecord['summaries'][number] {
   return typeof value === 'object' && value !== null
     && typeof (value as SessionRecord['summaries'][number]).text === 'string'
-    && typeof (value as SessionRecord['summaries'][number]).coversThrough === 'number';
+    && (value as SessionRecord['summaries'][number]).text.trim().length > 0
+    && Number.isSafeInteger((value as SessionRecord['summaries'][number]).coversThrough)
+    && (value as SessionRecord['summaries'][number]).coversThrough >= 0;
 }
 
 function isCheckpointRecord(value: unknown): value is SessionRecord['checkpoints'][number] {
