@@ -13,12 +13,12 @@
 云端使用 `.sandcastle/agent-workflows/` 内固定版本的官方阶段脚本和 prompt，不固定拼接 skills，不添加自定义的 Standards/Spec 独立审查会话。各阶段 prompt 明确当前任务、项目上下文、验证和交付方式。
 
 - 父 spec 放在 GitHub Issue 正文和评论。`agent:to-issues` 读取 GitHub 需求与代码，只生成待审批评论；`agent:publish-tickets` 是人工批准，确定性创建子任务和原生阻塞关系。
-- `agent:implement` 支持独立 Issue、子 Issue 及父需求。父需求选择依赖已完成的子票，每票从最新 main 创建独立 PR；有未合并子票 PR 时等待，不将整份父需求交给普通实现。
-- `agent:queued` 持久化实现授权，任务完成事件、PR 合并事件和定时扫描推进；前置票须以 completed 关闭且没有开放的实现 PR。失败票留待人工重试，not_planned 不算完成，父需求不自动关闭。
+- `agent:implement` 支持独立 Issue、子 Issue 及父需求。父需求选择依赖已完成的子票，子票依次提交到同一分支和草稿 PR；全部完成后整体审查，不将整份父需求交给普通实现。
+- `agent:queued` 持久化实现授权，任务完成事件、PR 合并事件和定时扫描推进；前置票须以 completed 关闭；同一父需求的共享草稿 PR 不阻塞后续子票，其他开放实现 PR 仍阻塞。失败票留待人工重试，not_planned 不算完成，父需求不自动关闭。
 - 实现、审查、反馈修改由 Agent 在当前分支提交；workflow 负责推送、PR、标签和评论。
 - 普通实现不要求结构化 JSON；审查、反馈修改、冲突处理及 Explore 先完成工作，再恢复会话提取结果。拆票按参考仓库直接输出 slices，校验失败在同会话修正；计划来源指纹由包装脚本维护，不交给模型生成。
 - Explore 批量只读调查，独立 apply job 校验并发布评论、转交标签和关闭重复 Issue；添加 `agent:explore` 即授权这一完整流程。手动入口默认 dry-run。
 - 提交前按官方 prompt 运行 `pnpm typecheck` 和相关聚焦测试；完整项目验证由 `Check` 执行。人工 QA 仍需人实际执行，代码检查不代表人工 QA 已通过。
 - PR 审查发布 COMMENT 并标记 Ready，由人决定是否合并。普通实现 PR 的 `Closes #编号` 在合并时关闭 Issue。
 
-Codex 订阅的认证恢复、刷新回存和串行使用保持现有适配，具体配置见 [github-actions.md](github-actions.md)。拆票与队列是在官方流程上恢复的有限扩展；旧的统一任务协议、外层提交发布、同分支累积 PRD 实现和定时架构提案没有恢复。
+Codex 订阅的认证恢复、刷新回存和串行使用保持现有适配，具体配置见 [github-actions.md](github-actions.md)。拆票与队列是在官方流程上恢复的有限扩展；旧的统一任务协议、外层提交发布、定时架构提案没有恢复。

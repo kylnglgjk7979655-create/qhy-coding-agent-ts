@@ -15,13 +15,15 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      issues: read
+      issues: write
       actions: read
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
       ISSUE_NUMBER: ${{ github.event.issue.number }}
       CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+    outputs:
+      started: ${{ steps.prepare.outputs.started }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,6 +31,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - name: Capture source before agent runs
+        id: prepare
         env:
           OUTPUT_DIR: ${{ runner.temp }}/tickets
         run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts snapshot
@@ -59,6 +62,7 @@ jobs:
           path: ${{ runner.temp }}/tickets/plan.json
   record:
     needs: plan
+    if: always() && needs.plan.outputs.started == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -78,15 +82,21 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - uses: actions/download-artifact@v4
+        if: needs.plan.result == 'success'
         with:
           name: ticket-source
           path: ${{ runner.temp }}/source
       - uses: actions/download-artifact@v4
+        if: needs.plan.result == 'success'
         with:
           name: ticket-plan
           path: ${{ runner.temp }}/plan
       - name: Validate and post reviewable plan
+        if: needs.plan.result == 'success'
         env:
           SOURCE_FILE: ${{ runner.temp }}/source/source.json
           PLAN_FILE: ${{ runner.temp }}/plan/plan.json
         run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts record
+      - name: Always remove in-progress
+        if: always()
+        run: gh issue edit "$ISSUE_NUMBER" --remove-label "agent:in-progress"

@@ -31,6 +31,14 @@ try {
       }
       const comments = github.comments(issue.number);
       writeJson('source.json', { issue, comments, source_hash: sourceHash(issue, comments) });
+      github.addLabels(issue.number, ['agent:in-progress']);
+      try {
+        github.removeLabel(issue, 'agent:to-issues');
+      } catch (error) {
+        github.removeLabel(github.issue(issue.number), 'agent:in-progress');
+        throw error;
+      }
+      if (process.env.GITHUB_OUTPUT) output('started', 'true');
       break;
     }
     case 'record': {
@@ -39,9 +47,12 @@ try {
       const issue = github.issue(number());
       if (plan.parent !== issue.number || snapshot.issue.number !== issue.number || plan.source_hash !== snapshot.source_hash
         || sourceHash(issue, github.comments(issue.number)) !== snapshot.source_hash) throw new Error('拆票期间需求发生变化或输出来源不匹配，请重新拆票。');
-      if (issue.state !== 'open' || !hasLabel(issue, 'agent:to-issues') || github.children(issue.number).length) throw new Error('来源状态已变化，拒绝保存计划。');
+      if (issue.state !== 'open' || !hasLabel(issue, 'agent:in-progress') || github.children(issue.number).length) throw new Error('来源状态已变化，拒绝保存计划。');
       github.comment(issue.number, renderPlan(plan));
-      github.removeLabel(issue, 'agent:to-issues');
+      break;
+    }
+    case 'finish-plan': {
+      github.removeLabel(github.issue(number()), 'agent:in-progress');
       break;
     }
     case 'publish': {
