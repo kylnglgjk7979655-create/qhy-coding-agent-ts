@@ -30,6 +30,7 @@ export interface SessionRecord {
     transcriptStart?: number;
     messages?: ModelMessage[];
     partialText?: string;
+    recovered?: boolean;
     error?: { code: string; message: string };
   }>;
   summaries: Array<{ text: string; coversThrough: number }>;
@@ -87,6 +88,68 @@ export async function loadSession(home: string, conversationId: string): Promise
   } catch {
     throw new AgentError('PROVIDER_ERROR', '会话记录格式无效或已损坏，未覆盖原记录。');
   }
+}
+
+export function reconstructSessionHistory(session: SessionRecord): { history: ModelMessage[]; recoveredRoundIds: string[] } {
+  const pendingRounds = session.rounds
+    .filter((round) => round.status === 'running' && !round.recovered && round.transcriptStart !== undefined)
+    .sort((left, right) => left.transcriptStart! - right.transcriptStart!);
+  const history = [...session.effectiveHistory];
+  for (const [index, round] of pendingRounds.entries()) {
+    const start = round.transcriptStart!;
+    const nextStart = pendingRounds[index + 1]?.transcriptStart;
+    const observed = session.transcript.slice(start, nextStart);
+    history.push(...recoverObservedRound(observed));
+  }
+  return { history, recoveredRoundIds: pendingRounds.map(({ id }) => id) };
+}
+
+function recoverObservedRound(messages: ModelMessage[]): ModelMessage[] {
+  const calls = new Set<string>();
+  const results = new Set<string>();
+  for (const message of messages) {
+    const parts = message.content;
+    if (!Array.isArray(parts)) continue;
+    for (const part of parts) {
+      if (!part || typeof part !== 'object') continue;
+      const value = part as Record<string, unknown>;
+      if (value.type === 'tool-call' && typeof value.toolCallId === 'string') calls.add(value.toolCallId);
+      if (value.type === 'tool-result' && typeof value.toolCallId === 'string') results.add(value.toolCallId);
+    }
+  }
+  const paired = new Set([...calls].filter((id) => results.has(id)));
+  const recovered: ModelMessage[] = [];
+  for (const message of messages) {
+    if (message.role === 'assistant' && Array.isArray(message.content)) {
+      const content = message.content.filter((part) => {
+        if (!part || typeof part !== 'object' || (part as { type?: unknown }).type !== 'tool-call') return true;
+        const callId = (part as { toolCallId?: unknown }).toolCallId;
+        return typeof callId === 'string' && paired.has(callId);
+      });
+      if (content.length > 0) recovered.push({ ...message, content } as ModelMessage);
+      continue;
+    }
+    if (message.role === 'tool') {
+      if (!Array.isArray(message.content)) continue;
+      const content = message.content.flatMap((part) => {
+        if (!part || typeof part !== 'object' || (part as { type?: unknown }).type !== 'tool-result') return [];
+        const result = part as Record<string, unknown>;
+        if (typeof result.toolCallId !== 'string' || !paired.has(result.toolCallId)) return [];
+        // Transcript stores the observed tool output verbatim; ModelMessage expects an output envelope.
+        return [{ ...result, output: { type: 'json', value: result.output } }];
+      });
+      if (content.length > 0) recovered.push({ ...message, content } as ModelMessage);
+      continue;
+    }
+    recovered.push(message);
+  }
+  if (paired.size > 0) {
+    recovered.push({
+      role: 'assistant',
+      content: '恢复说明：以上仅包含已保存且调用 ID 配对的真实工具结果；进程在本轮最终答复生成前中断，未观察到该轮最终结果。',
+    });
+  }
+  return recovered;
 }
 
 export async function listSessions(home: string, workspace?: string): Promise<SessionRecord[]> {
@@ -156,6 +219,7 @@ export async function finishSessionRound(home: string, conversationId: string, r
   status: 'succeeded' | 'failed' | 'cancelled';
   response?: ModelMessage[];
   effectiveHistory?: ModelMessage[];
+  recoveredRoundIds?: string[];
   error?: { code: string; message: string };
 }): Promise<void> {
   await updateRound(home, conversationId, roundId, (round) => ({
@@ -164,7 +228,7 @@ export async function finishSessionRound(home: string, conversationId: string, r
     finishedAt: new Date().toISOString(),
     ...(outcome.error ? { error: outcome.error } : {}),
     ...(outcome.status === 'succeeded' ? { messages: outcome.response ?? round.messages ?? [], partialText: '' } : {}),
-  }), outcome.effectiveHistory);
+  }), outcome.effectiveHistory, outcome.recoveredRoundIds);
 }
 
 async function updateRound(
@@ -173,6 +237,7 @@ async function updateRound(
   roundId: string,
   update: (round: SessionRecord['rounds'][number]) => SessionRecord['rounds'][number],
   effectiveHistory?: ModelMessage[],
+  recoveredRoundIds: string[] = [],
 ): Promise<void> {
   const session = await loadSession(home, conversationId);
   const index = session.rounds.findIndex((round) => round.id === roundId);
@@ -185,7 +250,9 @@ async function updateRound(
   await saveSession(home, {
     ...session,
     transcript,
-    rounds: session.rounds.map((item, itemIndex) => itemIndex === index ? round : item),
+    rounds: session.rounds.map((item, itemIndex) => itemIndex === index
+      ? round
+      : recoveredRoundIds.includes(item.id) ? { ...item, recovered: true } : item),
     ...(effectiveHistory ? { effectiveHistory } : {}),
   });
 }
@@ -303,6 +370,7 @@ function isRoundRecord(value: unknown): value is SessionRecord['rounds'][number]
     && (round.transcriptStart === undefined || typeof round.transcriptStart === 'number')
     && (round.messages === undefined || (Array.isArray(round.messages) && round.messages.every(isModelMessage)))
     && (round.partialText === undefined || typeof round.partialText === 'string')
+    && (round.recovered === undefined || typeof round.recovered === 'boolean')
     && (round.error === undefined || (typeof round.error === 'object' && round.error !== null
       && typeof round.error.code === 'string' && typeof round.error.message === 'string'));
 }

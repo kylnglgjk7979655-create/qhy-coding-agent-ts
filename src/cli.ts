@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { runAgent } from './agent.js';
 import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './config.js';
-import { appendRoundMessages, appendRoundText, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, saveLegacyConversation, startSessionRound } from './conversations.js';
+import { appendRoundMessages, appendRoundText, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, reconstructSessionHistory, saveLegacyConversation, startSessionRound } from './conversations.js';
 import { AgentError, publicError } from './errors.js';
 import { CliInput } from './cli-input.js';
 import type { ApprovalControl } from './tool-approval.js';
@@ -100,7 +100,14 @@ async function main(): Promise<void> {
     // Read older workspace histories during migration; the user-level session remains the durable record.
     legacyHistory ??= smokeTool || args.values['conversation-id'] === undefined
       ? undefined : await loadLegacyConversation(legacyDirectory, conversationId);
-    let history: ModelMessage[] = legacyHistory ?? session?.effectiveHistory ?? [];
+    let recoveredRoundIds: string[] = [];
+    let history: ModelMessage[];
+    if (legacyHistory) history = legacyHistory;
+    else if (session) {
+      const recovered = reconstructSessionHistory(session);
+      history = recovered.history;
+      recoveredRoundIds = recovered.recoveredRoundIds;
+    } else history = [];
     if (smokeTool) {
       await runTurn('smoke', config, history, userHome, conversationId, cancellation.signal, true);
       return;
@@ -127,7 +134,7 @@ async function main(): Promise<void> {
           continue;
         }
         try {
-          ({ config, conversationId, history } = await resumeSession(userHome, chosen.id));
+          ({ config, conversationId, history, recoveredRoundIds } = await resumeSession(userHome, chosen.id));
           selection = undefined;
         } catch (error) {
           process.stdout.write(`\n错误：${publicError(error).message}\n`);
@@ -141,6 +148,7 @@ async function main(): Promise<void> {
         await createSession(userHome, { id, workspace: config.workspace, config: persistedConfig });
         conversationId = id;
         history = [];
+        recoveredRoundIds = [];
         process.stdout.write(`已新建会话：${id}\n`);
         if (process.stdin.isTTY) input.prompt();
         continue;
@@ -155,7 +163,7 @@ async function main(): Promise<void> {
       if (prompt.startsWith('/resume ')) {
         const id = prompt.slice('/resume '.length).trim();
         try {
-          ({ config, conversationId, history } = await resumeSession(userHome, id));
+          ({ config, conversationId, history, recoveredRoundIds } = await resumeSession(userHome, id));
         } catch (error) {
           process.stdout.write(`\n错误：${publicError(error).message}\n`);
         }
@@ -167,7 +175,8 @@ async function main(): Promise<void> {
         continue;
       }
       try {
-        history = await runTurn(prompt, config, history, userHome, conversationId, cancellation.signal, false, input.approve, legacyDirectory);
+        history = await runTurn(prompt, config, history, userHome, conversationId, cancellation.signal, false, input.approve, legacyDirectory, recoveredRoundIds);
+        recoveredRoundIds = [];
       } catch (error) {
         if (cancellation.signal.aborted) throw error;
         const failure = publicError(error);
@@ -204,6 +213,7 @@ async function runTurn(
   smokeTool: boolean,
   approvalControl?: ApprovalControl,
   legacyDirectory?: string,
+  recoveredRoundIds: string[] = [],
 ): Promise<ModelMessage[]> {
   let roundId: string | undefined;
   lastRunId = randomUUID();
@@ -252,7 +262,9 @@ async function runTurn(
     const nextHistory = smokeTool ? history : result.effectiveHistory;
     if (!smokeTool) {
       if (!roundId) throw new AgentError('PROVIDER_ERROR', '当前轮次未能建立持久化记录。');
-      await finishSessionRound(userHome, conversationId, roundId, { status: 'succeeded', response: result.responseMessages, effectiveHistory: nextHistory });
+      await finishSessionRound(userHome, conversationId, roundId, {
+        status: 'succeeded', response: result.responseMessages, effectiveHistory: nextHistory, recoveredRoundIds,
+      });
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }
     process.stdout.write('\n');
@@ -304,11 +316,13 @@ async function resumeSession(userHome: string, id: string): Promise<{
   config: Awaited<ReturnType<typeof loadConfig>>;
   conversationId: string;
   history: ModelMessage[];
+  recoveredRoundIds: string[];
 }> {
   const session = await loadSession(userHome, id);
   const config = await restoreSessionConfig(session.config, process.env);
+  const recovered = reconstructSessionHistory(session);
   process.stdout.write(`已继续会话：${id}（工作区：${config.workspace}）\n`);
-  return { config, conversationId: id, history: session.effectiveHistory };
+  return { config, conversationId: id, ...recovered };
 }
 
 function printSessionChoices(sessions: Awaited<ReturnType<typeof listSessions>>, all: boolean): void {

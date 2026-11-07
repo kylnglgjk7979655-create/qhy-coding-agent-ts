@@ -309,6 +309,94 @@ describe('compiled CLI process driver', () => {
       await model.close();
     }
   });
+
+  it.skipIf(process.platform === 'win32')('drops an interrupted tool call with no saved result when resuming', async () => {
+    const cwd = await directory('recovery-orphan-cwd');
+    const userDir = await directory('recovery-orphan-user');
+    const model = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'never-finished-call', type: 'function', function: {
+        name: 'Bash', arguments: JSON.stringify({ command: 'sleep 1' }),
+      } }] }
+      : { content: '已从中断会话继续。' });
+    try {
+      await configure(cwd, model.baseURL);
+      let output = '';
+      const interrupted = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      interrupted.send('运行慢工具\n');
+      await waitForOutput(() => output, '[工具] Bash：开始', 1);
+      const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!id) throw new Error('中断会话尚未持久化');
+      interrupted.child.kill('SIGKILL');
+      await interrupted.done;
+
+      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
+      const interruptedRecord = await readFile(recordPath, 'utf8');
+      expect(interruptedRecord).toContain('never-finished-call');
+
+      const resumed = startCLI({ cwd, userDir, conversationId: id, env: { TEST_MODEL_API_KEY: secret } });
+      resumed.end('继续\n/exit\n');
+      expect((await resumed.done).code).toBe(0);
+      const request = model.requests.at(-1)!;
+      expect(JSON.stringify(request.messages)).not.toContain('never-finished-call');
+      expect(request.messages.some(({ role }) => role === 'tool')).toBe(false);
+      expect(await readFile(recordPath, 'utf8')).toContain('never-finished-call');
+    } finally {
+      await model.close();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('reuses a saved tool result with its call ID and marks the final answer as unobserved', async () => {
+    const cwd = await directory('recovery-partial-cwd');
+    const userDir = await directory('recovery-partial-user');
+    let releaseSecondRequest!: () => void;
+    const secondRequestGate = new Promise<void>((resolve) => { releaseSecondRequest = resolve; });
+    const model = await startLocalOpenAIModel(async (_request, index) => {
+      if (index === 1) return { calls: [{ id: 'saved-result-call', type: 'function', function: {
+        name: 'runtimeInfo', arguments: '{}',
+      } }] };
+      if (index === 2) await secondRequestGate;
+      return { content: '恢复后回答。' };
+    });
+    try {
+      await configure(cwd, model.baseURL);
+      const interrupted = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } });
+      interrupted.send('获取运行信息\n');
+      await waitForRequests(model.requests, 2);
+      const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!id) throw new Error('中断会话尚未持久化');
+      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
+      const saved = await readFile(recordPath, 'utf8');
+      expect(saved).toContain('"toolCallId":"saved-result-call"');
+      interrupted.child.kill('SIGKILL');
+      await interrupted.done;
+
+      const resumed = startCLI({ cwd, userDir, conversationId: id, env: { TEST_MODEL_API_KEY: secret } });
+      resumed.end('继续未完成任务\n/exit\n');
+      expect((await resumed.done).code).toBe(0);
+      const recovered = model.requests.at(-1)!.messages;
+      const assistantCall = recovered.find(({ role, ...message }) => role === 'assistant' && JSON.stringify(message).includes('saved-result-call'));
+      const toolResult = recovered.find(({ role }) => role === 'tool');
+      expect(assistantCall).toBeDefined();
+      expect(toolResult).toBeDefined();
+      expect(JSON.stringify(toolResult)).toContain('saved-result-call');
+      expect(JSON.stringify(toolResult)).toContain('probe');
+      expect(JSON.stringify(recovered)).toContain('未观察到该轮最终结果');
+      expect(recovered.filter(({ role, ...message }) => role === 'assistant' && JSON.stringify(message).includes('saved-result-call'))).toHaveLength(1);
+      expect(recovered.filter(({ role }) => role === 'tool')).toHaveLength(1);
+
+      const afterRecovery = JSON.parse(await readFile(recordPath, 'utf8')) as { rounds: Array<{ recovered?: boolean }> };
+      expect(afterRecovery.rounds[0]?.recovered).toBe(true);
+      const resumedAgain = startCLI({ cwd, userDir, conversationId: id, env: { TEST_MODEL_API_KEY: secret } });
+      resumedAgain.end('再确认一次\n/exit\n');
+      expect((await resumedAgain.done).code).toBe(0);
+      const nextRequest = model.requests.at(-1)!.messages;
+      expect(nextRequest.filter(({ role, ...message }) => role === 'assistant' && JSON.stringify(message).includes('saved-result-call'))).toHaveLength(1);
+      expect(nextRequest.filter(({ role }) => role === 'tool')).toHaveLength(1);
+    } finally {
+      releaseSecondRequest();
+      await model.close();
+    }
+  });
 });
 
 async function waitForRequests(requests: unknown[], count: number): Promise<void> {
