@@ -5,13 +5,21 @@ const cli = resolve('dist/cli.js');
 
 export function startCLI(options: {
   cwd: string;
-  conversationId: string;
-  input: string;
+  conversationId?: string;
+  args?: string[];
+  input?: string;
+  userDir?: string;
   env: NodeJS.ProcessEnv;
 }, onOutput?: (stdout: string) => void) {
-  const child = spawn(process.execPath, [cli, '--conversation-id', options.conversationId], {
+  const args = [...(options.conversationId === undefined ? [] : ['--conversation-id', options.conversationId]), ...(options.args ?? [])];
+  const child = spawn(process.execPath, [cli, ...args], {
     cwd: options.cwd,
-    env: { ...process.env, ...options.env },
+    env: {
+      ...process.env,
+      ...options.env,
+      HOME: options.userDir ?? options.cwd,
+      USERPROFILE: options.userDir ?? options.cwd,
+    },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -23,6 +31,15 @@ export function startCLI(options: {
     child.once('error', (error) => { clearTimeout(timer); reject(error); });
     child.once('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
   });
-  child.stdin.end(options.input);
-  return { child, done };
+  if (options.input !== undefined) child.stdin.end(options.input);
+  return {
+    child,
+    done,
+    send(input: string) {
+      child.stdin.write(input);
+    },
+    end(input?: string) {
+      child.stdin.end(input);
+    },
+  };
 }

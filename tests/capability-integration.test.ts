@@ -21,7 +21,7 @@ async function setup(scenario: Parameters<typeof startLocalQA>[0] = 'normal') {
 }
 function run(input?: string) {
   const child = spawn(process.execPath, [cli, '--conversation-id', 'combined'], {
-    cwd, env: { ...process.env, TEST_MODEL_API_KEY: 'fake-qa-model', QA_MCP_HEADER: 'fake-qa-header' },
+    cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_MODEL_API_KEY: 'fake-qa-model', QA_MCP_HEADER: 'fake-qa-header' },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   children.push(child);

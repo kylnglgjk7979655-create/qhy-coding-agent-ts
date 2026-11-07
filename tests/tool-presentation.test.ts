@@ -31,7 +31,7 @@ describe('CLI 工具状态、历史与冒烟', () => {
   function run(input: string, args: string[] = [], onStdout?: (stdout: string) => void) {
     return new Promise<{ code: number; stdout: string; stderr: string }>((done) => {
       const child = spawn(process.execPath, [cli, ...args], {
-        cwd, env: { ...process.env, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'],
+        cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'],
       });
       let stdout = '';
       let stderr = '';

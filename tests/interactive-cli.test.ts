@@ -89,7 +89,7 @@ describe('interactive compiled CLI', () => {
 
   function run(input: string, args: string[] = []) {
     return new Promise<{ code: number; stdout: string; stderr: string }>((done) => {
-      const child = spawn(process.execPath, [cli, ...args], { cwd, env: { ...process.env, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, [cli, ...args], { cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
       const timer = setTimeout(() => child.kill('SIGKILL'), 8000);
@@ -447,7 +447,7 @@ describe('interactive compiled CLI', () => {
     expect(history.filter(({ role }) => role === 'user').map(({ content }) => content)).toEqual(['下一轮']);
   });
 
-  it.skipIf(process.platform === 'win32').each([false, true])('真实终端 Ctrl+C 取消并退出（请求进行中：%s）', async (requestInProgress) => {
+  it.skipIf(process.platform === 'win32').each([false, true])('真实终端 Ctrl+C 停止当前轮次并正常退出空闲终端（请求进行中：%s）', async (requestInProgress) => {
     const historyPath = join(cwd, '.agent', 'conversations', 'terminal-cancel.json');
     expect((await run('已完成的轮次\n/exit\n', ['--conversation-id', 'terminal-cancel'])).code).toBe(0);
     const previous = await readFile(historyPath, 'utf8');
@@ -459,7 +459,7 @@ describe('interactive compiled CLI', () => {
       : ['-q', '-e', '-c', command.map((part) => `'${part.replaceAll("'", "'\\''")}'`).join(' '), '/dev/null'];
     // macOS script 不接受 Node 的 socket 类型 stdin，cat 将其转换为普通管道。
     const child = spawn('/bin/sh', ['-c', 'cat | script "$@"', 'terminal-test', ...args], {
-      cwd, env: { ...process.env, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'],
+      cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'],
     });
     let output = '';
     let ready: () => void;
@@ -485,8 +485,8 @@ describe('interactive compiled CLI', () => {
         await requestStarted;
       }
       child.stdin.end('\x03');
-      expect(await exited).toBe(130);
-      expect(output).toContain('CANCELLED');
+      expect(await exited).toBe(0);
+      if (requestInProgress) expect(output).toContain('Interrupt by user');
       expect(requests).toHaveLength(requestInProgress ? 2 : 1);
       expect(await readFile(historyPath, 'utf8')).toBe(previous);
     } finally {
@@ -510,15 +510,25 @@ describe('interactive compiled CLI', () => {
 
     const requestStarted = new Promise<void>((done) => { onRequest = done; });
     const child = spawn(process.execPath, [cli], {
-      cwd, env: { ...process.env, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'],
+      cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stderr = '';
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-    const exited = new Promise<number | null>((done) => child.once('exit', done));
+    const exited = new Promise<number | null>((done) => child.once('close', done));
+    let stdout = '';
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
     child.stdin.write('cancel this request\n');
     await requestStarted;
     child.kill('SIGINT');
-    expect(await exited).toBe(130);
-    expect(stderr).toContain('CANCELLED');
+    child.stdin.write('continue after interrupt\n');
+    await new Promise<void>((resolve, reject) => {
+      const deadline = setTimeout(() => reject(new Error(`下一轮未完成：${stdout}\n${stderr}`)), 3000);
+      const poll = setInterval(() => {
+        if (stdout.includes('超时后仍可继续。')) { clearInterval(poll); clearTimeout(deadline); resolve(); }
+      }, 10);
+    });
+    child.stdin.end('/exit\n');
+    expect(await exited).toBe(0);
+    expect(stdout + stderr).toContain('Interrupt by user');
   });
 });

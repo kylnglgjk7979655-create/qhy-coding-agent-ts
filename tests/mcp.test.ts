@@ -294,8 +294,8 @@ it.each(['deadline', 'SIGINT'] as const)('发现期间遵守公共 %s 停止入�
     running.child.kill('SIGINT');
   }
   const result = await running.done;
-  expect(result.code).toBe(stop === 'deadline' ? 0 : 130);
-  expect(result.stderr).toContain(stop === 'deadline' ? 'TIMEOUT' : 'CANCELLED');
+  expect(result.code).toBe(stop === 'deadline' || stop === 'SIGINT' ? 0 : 130);
+  expect(result.stdout + result.stderr).toContain(stop === 'deadline' ? 'TIMEOUT' : stop === 'SIGINT' ? 'Interrupt by user' : 'CANCELLED');
   expect(model.requests).toEqual([]);
   expect(model.approvalRequests).toEqual([]);
   expect(later.requests).toEqual([]);

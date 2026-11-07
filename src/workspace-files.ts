@@ -1,5 +1,11 @@
-import { lstat, readFile, realpath, writeFile } from 'node:fs/promises';
+import { lstat, readFile, realpath, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+
+export interface WorkspaceFileSnapshot {
+  path: string;
+  existed: boolean;
+  content?: string;
+}
 
 export function isWithinWorkspace(workspace: string, target: string): boolean {
   const pathFromWorkspace = relative(workspace, target);
@@ -42,11 +48,52 @@ export async function readWorkspaceFile(workspace: string, requestedPath: string
   }
 }
 
-export async function writeWorkspaceFile(workspace: string, requestedPath: string, content: string): Promise<void> {
+export async function snapshotWorkspaceFile(workspace: string, requestedPath: string): Promise<WorkspaceFileSnapshot> {
+  const target = await resolveWriteTarget(workspace, requestedPath);
+  const path = relative(workspace, target);
+  try {
+    return { path, existed: true, content: await readFile(target, 'utf8') };
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return { path, existed: false };
+    throw new Error('无法读取文件检查点：目标必须位于工作区内且可访问。');
+  }
+}
+
+export async function writeWorkspaceFile(
+  workspace: string,
+  requestedPath: string,
+  content: string,
+  beforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>,
+  onBackupFailure?: (path: string) => void,
+): Promise<void> {
   try {
     const target = await resolveWriteTarget(workspace, requestedPath);
+    if (beforeWrite) {
+      const path = relative(workspace, target);
+      try {
+        let snapshot: WorkspaceFileSnapshot;
+        try {
+          snapshot = { path, existed: true, content: await readFile(target, 'utf8') };
+        } catch (error) {
+          if (error instanceof Error && 'code' in error && error.code === 'ENOENT') snapshot = { path, existed: false };
+          else throw error;
+        }
+        await beforeWrite(snapshot);
+      } catch {
+        onBackupFailure?.(path);
+      }
+    }
     await writeFile(target, content, 'utf8');
   } catch {
     throw new Error('无法写入文件：父目录必须存在且目标必须位于工作区内。');
+  }
+}
+
+export async function deleteWorkspaceFile(workspace: string, requestedPath: string): Promise<void> {
+  try {
+    const target = await resolveWriteTarget(workspace, requestedPath);
+    await unlink(target);
+  } catch {
+    throw new Error('无法删除文件：目标必须位于工作区内且可访问。');
   }
 }

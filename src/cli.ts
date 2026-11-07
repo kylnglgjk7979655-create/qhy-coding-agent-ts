@@ -1,19 +1,27 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
 import { loadEnvFile } from 'node:process';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { runAgent } from './agent.js';
-import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig } from './config.js';
-import { loadConversation, newConversationId, saveConversation } from './conversations.js';
+import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './config.js';
+import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveLegacyConversation, startSessionRound } from './conversations.js';
+import type { WorkspaceFileSnapshot } from './workspace-files.js';
+import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './file-checkpoints.js';
+import type { FileRewindPlan } from './file-checkpoints.js';
 import { AgentError, publicError } from './errors.js';
 import { CliInput } from './cli-input.js';
 import type { ApprovalControl } from './tool-approval.js';
+import { acquireSessionLock } from './session-lock.js';
 
 const help = `用法：node dist/cli.js [选项]
 
 启动后直接进入交互式对话，输入 /exit 结束。
+  /new                 在当前工作区新建会话
+  /resume [ID]         继续会话；省略 ID 时选择会话，输入 all 查看全部
+  /rewind              预览并确认恢复到消息级文件检查点
 
 选项：
   --workspace <目录>  覆盖配置的工作区（相对当前目录）
@@ -23,7 +31,7 @@ const help = `用法：node dist/cli.js [选项]
   --help              显示帮助
 
 从当前目录 .env 或环境变量读取配置中 apiKeyEnv 指定的凭据。
-回答流式输出到 stdout；会话历史保存在当前目录 .agent/conversations/；运行 JSON 日志及错误输出到 stderr。
+回答流式输出到 stdout；会话记录保存在用户目录 ~/.qhy-coding-agents/；运行 JSON 日志及错误输出到 stderr。
 `;
 
 function log(event: Record<string, unknown>): void {
@@ -32,10 +40,17 @@ function log(event: Record<string, unknown>): void {
 
 async function main(): Promise<void> {
   const cancellation = new AbortController();
-  const cancel = (): void => cancellation.abort(new AgentError('CANCELLED', '请求已取消。'));
-  process.once('SIGINT', cancel);
-  process.once('SIGTERM', cancel);
+  let activeRound: AbortController | undefined;
   let input: CliInput | undefined;
+  const cancel = (): void => {
+    if (activeRound) activeRound.abort(new AgentError('CANCELLED', 'Interrupt by user'));
+    else if (input) input.close();
+    else cancellation.abort(new AgentError('CANCELLED', 'Interrupt by user'));
+  };
+  process.on('SIGINT', cancel);
+  const terminate = (): void => cancellation.abort(new AgentError('CANCELLED', '进程收到终止信号。'));
+  process.once('SIGTERM', terminate);
+  let releaseSession: (() => Promise<void>) | undefined;
   try {
     if (process.versions.node.split('.')[0] !== '24') {
       throw new AgentError('CONFIG_ERROR', '请使用项目锁定的 Node.js 24.22.2（见 .nvmrc）。');
@@ -61,36 +76,222 @@ async function main(): Promise<void> {
     } catch (error) {
       if (!isMissing(error)) throw new AgentError('CONFIG_ERROR', '无法读取当前目录 .env 文件。');
     }
-    const config = await loadConfig({
+    const smokeTool = args.values['smoke-tool'] ?? false;
+    let conversationId = args.values['conversation-id'] ?? newConversationId();
+    const userHome = homedir();
+    const loadCurrentConfig = () => loadConfig({
       cwd: process.cwd(),
       env: process.env,
       ...(args.values.config === undefined ? {} : { configPath: args.values.config }),
       ...(args.values.workspace === undefined ? {} : { workspace: args.values.workspace }),
     });
-    const smokeTool = args.values['smoke-tool'] ?? false;
-    const conversationId = args.values['conversation-id'] ?? newConversationId();
-    const conversationDirectory = join(process.cwd(), '.agent', 'conversations');
-    let history: ModelMessage[] = smokeTool ? [] : await loadConversation(conversationDirectory, conversationId);
+    let config: Awaited<ReturnType<typeof loadConfig>>;
+    let session: Awaited<ReturnType<typeof loadSession>> | undefined;
+    let legacyHistory: ModelMessage[] | undefined;
+    if (!smokeTool && args.values['conversation-id'] !== undefined) {
+      try {
+        session = await loadSession(userHome, conversationId);
+        config = await restoreSessionConfig(session.config, process.env);
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.startsWith('会话记录不存在：')) throw error;
+        config = await loadCurrentConfig();
+        const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
+        legacyHistory = await loadLegacyConversation(legacyDirectory, conversationId);
+        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+        session = await createSession(userHome, {
+          id: conversationId,
+          workspace: config.workspace,
+          config: persistedConfig,
+          ...(legacyHistory === undefined ? {} : { transcript: legacyHistory, effectiveHistory: legacyHistory }),
+        });
+      }
+    } else {
+      config = await loadCurrentConfig();
+      if (smokeTool) session = undefined;
+      else {
+        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+        session = await createSession(userHome, { id: conversationId, workspace: config.workspace, config: persistedConfig });
+      }
+    }
+    if (session) releaseSession = await acquireSessionLock(userHome, conversationId);
+    const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
+    let recoveredRoundIds: string[] = [];
+    let history: ModelMessage[];
+    if (legacyHistory) history = legacyHistory;
+    else if (session) {
+      const recovered = reconstructSessionHistory(session);
+      history = recovered.history;
+      recoveredRoundIds = recovered.recoveredRoundIds;
+    } else history = [];
     if (smokeTool) {
-      await runTurn('smoke', config, history, conversationDirectory, conversationId, cancellation.signal, true);
+      activeRound = new AbortController();
+      await runTurn('smoke', config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), true);
       return;
     }
 
     input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
+    const switchSession = async (id: string) => {
+      const resumed = await resumeSession(userHome, id);
+      if (id !== conversationId) {
+        const nextRelease = await acquireSessionLock(userHome, id);
+        await releaseSession?.();
+        releaseSession = nextRelease;
+      }
+      process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
+      return resumed;
+    };
+    let selection: { sessions: Awaited<ReturnType<typeof listSessions>>; all: boolean } | undefined;
+    let rewindSelection: { checkpoints: Awaited<ReturnType<typeof loadSession>>['checkpoints']; plan?: FileRewindPlan } | undefined;
     if (process.stdin.isTTY) input.prompt();
     for await (const line of input) {
       const prompt = line.trim();
+      if (rewindSelection) {
+        if (prompt === '/exit') {
+          rewindSelection = undefined;
+          break;
+        }
+        if (prompt === '/cancel' || prompt.toLowerCase() === 'no' || prompt.toLowerCase() === 'n') {
+          rewindSelection = undefined;
+          process.stdout.write('已取消文件检查点恢复，文件保持不变。\n');
+          if (process.stdin.isTTY) input.prompt();
+          continue;
+        }
+        if (!rewindSelection.plan) {
+          const chosen = /^\d+$/.test(prompt)
+            ? rewindSelection.checkpoints[Number(prompt) - 1]
+            : rewindSelection.checkpoints.find(({ id }) => id === prompt);
+          if (!chosen) {
+            process.stdout.write('无效的检查点选择；请输入列表编号或检查点 ID，输入 /cancel 取消。\n');
+            if (process.stdin.isTTY) input.prompt();
+            continue;
+          }
+          try {
+            const plan = await prepareFileRewind(await loadSession(userHome, conversationId), chosen.id);
+            rewindSelection.plan = plan;
+            process.stdout.write(`${formatFileRewindPreview(plan)}\n确认恢复请输入 yes，输入 no 或 /cancel 取消：\n`);
+          } catch (error) {
+            process.stdout.write(`无法开始恢复：${error instanceof Error ? error.message : '检查点无效。'}\n`);
+            rewindSelection = undefined;
+          }
+          if (process.stdin.isTTY) input.prompt();
+          continue;
+        }
+        if (prompt.toLowerCase() !== 'yes' && prompt.toLowerCase() !== 'y') {
+          process.stdout.write('请输入 yes 确认，或 no /cancel 取消。\n');
+          if (process.stdin.isTTY) input.prompt();
+          continue;
+        }
+        try {
+          const refreshed = await prepareFileRewind(await loadSession(userHome, conversationId), rewindSelection.plan.checkpoint.id);
+          if (fileRewindPlanChanged(rewindSelection.plan, refreshed)) {
+            rewindSelection.plan = refreshed;
+            process.stdout.write(`文件状态已变化，预览已刷新。\n${formatFileRewindPreview(refreshed)}\n请再次确认恢复请输入 yes，输入 no 或 /cancel 取消：\n`);
+            if (process.stdin.isTTY) input.prompt();
+            continue;
+          }
+          const results = await applyFileRewind(refreshed);
+          const targetSummary = refreshed.items.map(({ path, target }) => `- ${path}：${target.existed ? '检查点中存在' : '检查点中不存在'}`).join('\n') || '- 检查点不包含已追踪文件';
+          const resultSummary = results.map(({ path, status, message }) => `- ${path}：${status === 'succeeded' ? '成功' : '失败'}（${message}）`).join('\n') || '- 无文件需要处理';
+          const eventMessages: ModelMessage[] = [
+            { role: 'user', content: `恢复文件检查点请求：目标消息 ${refreshed.checkpoint.messageId}，检查点 ${refreshed.checkpoint.id}。目标文件状态：\n${targetSummary}` },
+            { role: 'assistant', content: `恢复文件检查点结果：\n${resultSummary}` },
+          ];
+          process.stdout.write(`恢复结果：\n${resultSummary}\n`);
+          await appendSessionEvent(userHome, conversationId, eventMessages);
+          history = [...history, ...eventMessages];
+          rewindSelection = undefined;
+        } catch (error) {
+          process.stdout.write(`文件检查点恢复失败：${error instanceof Error ? error.message : '无法保存恢复结果。'}\n`);
+          rewindSelection = undefined;
+        }
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
       if (prompt === '/exit') break;
+      if (selection) {
+        if (prompt.toLowerCase() === 'all' && !selection.all) {
+          selection = { sessions: await listSessions(userHome), all: true };
+          printSessionChoices(selection.sessions, true);
+          if (process.stdin.isTTY) input.prompt();
+          continue;
+        }
+        const chosen = /^\d+$/.test(prompt) ? selection.sessions[Number(prompt) - 1] : selection.sessions.find(({ id }) => id === prompt);
+        if (!chosen) {
+          if (prompt === '/cancel') selection = undefined;
+          else process.stdout.write('无效的会话选择；请输入列表编号或会话 ID，输入 /cancel 取消。\n');
+          if (process.stdin.isTTY) input.prompt();
+          continue;
+        }
+        try {
+          ({ config, conversationId, history, recoveredRoundIds } = await switchSession(chosen.id));
+          selection = undefined;
+        } catch (error) {
+          process.stdout.write(`\n错误：${publicError(error).message}\n`);
+        }
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
+      if (prompt === '/new') {
+        const id = newConversationId();
+        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+        await createSession(userHome, { id, workspace: config.workspace, config: persistedConfig });
+        const nextRelease = await acquireSessionLock(userHome, id);
+        await releaseSession?.();
+        releaseSession = nextRelease;
+        conversationId = id;
+        history = [];
+        recoveredRoundIds = [];
+        process.stdout.write(`已新建会话：${id}\n`);
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
+      if (prompt === '/rewind') {
+        const currentSession = await loadSession(userHome, conversationId);
+        const checkpoints = [...currentSession.checkpoints].reverse();
+        if (checkpoints.length === 0) process.stdout.write('当前会话没有可用的消息检查点。\n');
+        else {
+          rewindSelection = { checkpoints };
+          process.stdout.write('消息检查点：\n');
+          checkpoints.forEach((checkpoint, index) => process.stdout.write(`${index + 1}. 消息 ${checkpoint.messageId}  ${checkpoint.createdAt}  [${checkpoint.id}]\n`));
+          process.stdout.write('输入编号或检查点 ID 预览，输入 /cancel 取消。\n');
+        }
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
+      if (prompt === '/resume' || prompt === '/resume all') {
+        const all = prompt.endsWith(' all');
+        selection = { sessions: await listSessions(userHome, all ? undefined : config.workspace), all };
+        printSessionChoices(selection.sessions, all);
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
+      if (prompt.startsWith('/resume ')) {
+        const id = prompt.slice('/resume '.length).trim();
+        try {
+          ({ config, conversationId, history, recoveredRoundIds } = await switchSession(id));
+        } catch (error) {
+          process.stdout.write(`\n错误：${publicError(error).message}\n`);
+        }
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
       if (!prompt) {
         if (process.stdin.isTTY) input.prompt();
         continue;
       }
       try {
-        history = await runTurn(prompt, config, history, conversationDirectory, conversationId, cancellation.signal, false, input.approve);
+        activeRound = new AbortController();
+        const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
+        history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds);
+        const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
+        history = recovered.history;
+        recoveredRoundIds = recovered.recoveredRoundIds;
       } catch (error) {
         if (cancellation.signal.aborted) throw error;
         const failure = publicError(error);
         process.stdout.write(`\n错误：${failure.message}\n`);
+      } finally {
+        activeRound = undefined;
       }
       if (process.stdin.isTTY) input.prompt();
     }
@@ -105,8 +306,9 @@ async function main(): Promise<void> {
     process.exitCode = failure.exitCode;
   } finally {
     input?.close();
+    await releaseSession?.().catch(() => undefined);
     process.removeListener('SIGINT', cancel);
-    process.removeListener('SIGTERM', cancel);
+    process.removeListener('SIGTERM', terminate);
   }
 }
 
@@ -117,12 +319,17 @@ async function runTurn(
   prompt: string,
   config: Awaited<ReturnType<typeof loadConfig>>,
   history: ModelMessage[],
-  conversationDirectory: string,
+  userHome: string,
   conversationId: string,
   signal: AbortSignal,
   smokeTool: boolean,
   approvalControl?: ApprovalControl,
+  legacyDirectory?: string,
+  recoveredRoundIds: string[] = [],
 ): Promise<ModelMessage[]> {
+  let roundId: string | undefined;
+  let summaryCoverageBase = 0;
+  const pendingToolCalls = new Map<string, { toolName: string; input: unknown }>();
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
   log({
@@ -130,10 +337,42 @@ async function runTurn(
     ...(smokeTool ? {} : { conversationId }),
   });
   try {
+    if (!smokeTool) {
+      const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+      roundId = await startSessionRound(userHome, conversationId, prompt, persistedConfig, () => {
+        log({ event: 'checkpoint.snapshot_failed', conversationId, message: '消息检查点文件快照失败，继续处理。' });
+      });
+      summaryCoverageBase = (await loadSession(userHome, conversationId)).summaries.at(-1)?.coversThrough ?? 0;
+    }
     const result = await runAgent(config, prompt, {
       smokeTool,
       history,
-      onText: (chunk) => process.stdout.write(chunk),
+      summaryCoverageBase,
+      onText: async (chunk) => {
+        if (!smokeTool && roundId) await appendRoundText(userHome, conversationId, roundId, chunk);
+        process.stdout.write(chunk);
+      },
+      onToolCallStart: async ({ callId, toolName, input }) => {
+        pendingToolCalls.set(callId, { toolName, input });
+        if (!smokeTool && roundId) {
+          await appendRoundMessages(userHome, conversationId, roundId, [{
+            role: 'assistant', content: [{ type: 'tool-call', toolCallId: callId, toolName, input }],
+          } as unknown as ModelMessage]);
+        }
+      },
+      onStepMessages: async (content) => {
+        if (smokeTool || !roundId) return;
+        const results = content.filter((part): part is Record<string, unknown> => typeof part === 'object' && part !== null && (part as { type?: string }).type === 'tool-result');
+        for (const result of results) if (typeof result.toolCallId === 'string') pendingToolCalls.delete(result.toolCallId);
+        if (results.length > 0) await appendRoundMessages(userHome, conversationId, roundId, [{ role: 'tool', content: results } as unknown as ModelMessage]);
+      },
+      onBeforeWrite: async (snapshot: WorkspaceFileSnapshot) => {
+        if (!roundId) return;
+        await recordFileBackup(userHome, conversationId, roundId, snapshot);
+      },
+      onCheckpointError: () => {
+        log({ event: 'checkpoint.backup_failed', conversationId, message: 'write_file 原状态备份失败，继续写入。' });
+      },
       onToolEvent: ({ toolName, status }) => {
         const label = {
           started: '开始',
@@ -148,7 +387,14 @@ async function runTurn(
     });
     signal.throwIfAborted();
     const nextHistory = smokeTool ? history : result.effectiveHistory;
-    if (!smokeTool) await saveConversation(conversationDirectory, conversationId, nextHistory);
+    if (!smokeTool) {
+      if (!roundId) throw new AgentError('PROVIDER_ERROR', '当前轮次未能建立持久化记录。');
+      await finishSessionRound(userHome, conversationId, roundId, {
+        status: 'succeeded', response: result.responseMessages, effectiveHistory: nextHistory,
+        summaries: result.summaries, recoveredRoundIds,
+      });
+      if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
+    }
     process.stdout.write('\n');
     log({
       event: 'run.finished', runId: lastRunId, status: 'succeeded',
@@ -161,6 +407,26 @@ async function runTurn(
     return nextHistory;
   } catch (error) {
     const failure = publicError(error);
+    const interrupted = failure.code === 'CANCELLED' && failure.message === 'Interrupt by user';
+    if (interrupted && !smokeTool && roundId) {
+      const results = [...pendingToolCalls].map(([toolCallId, call]) => ({
+        type: 'tool-result', toolCallId, toolName: call.toolName, input: call.input,
+        output: 'Interrupt by user',
+      }));
+      if (results.length > 0) await appendRoundMessages(userHome, conversationId, roundId, [{ role: 'tool', content: results } as unknown as ModelMessage]);
+      await finishSessionRound(userHome, conversationId, roundId, {
+        status: 'cancelled', error: { code: 'CANCELLED', message: 'Interrupt by user' },
+      }).catch(() => undefined);
+      process.stdout.write('\n用户中断：Interrupt by user\n');
+      log({ event: 'run.finished', runId: lastRunId, status: 'cancelled', durationMs: Math.round(performance.now() - lastRunStartedAt), conversationId });
+      return history;
+    }
+    if (!smokeTool && roundId) {
+      await finishSessionRound(userHome, conversationId, roundId, {
+        status: failure.code === 'CANCELLED' ? 'cancelled' : 'failed',
+        error: { code: failure.code, message: failure.message },
+      }).catch(() => undefined);
+    }
     if (!smokeTool) {
       log({
         event: 'run.finished', runId: lastRunId, status: 'failed',
@@ -187,3 +453,26 @@ function parseCliArgs() {
 }
 
 await main();
+
+async function resumeSession(userHome: string, id: string): Promise<{
+  config: Awaited<ReturnType<typeof loadConfig>>;
+  conversationId: string;
+  history: ModelMessage[];
+  recoveredRoundIds: string[];
+}> {
+  const session = await loadSession(userHome, id);
+  const config = await restoreSessionConfig(session.config, process.env);
+  const recovered = reconstructSessionHistory(session);
+  return { config, conversationId: id, ...recovered };
+}
+
+function printSessionChoices(sessions: Awaited<ReturnType<typeof listSessions>>, all: boolean): void {
+  if (sessions.length === 0) process.stdout.write('没有可用会话。\n');
+  else {
+    process.stdout.write(`${all ? '全部会话' : '当前工作区会话'}：\n`);
+    sessions.forEach((session, index) => {
+      process.stdout.write(`${index + 1}. ${session.id}  ${session.updatedAt}${all ? `  ${session.workspace}` : ''}\n`);
+    });
+  }
+  process.stdout.write(all ? '输入编号或会话 ID 选择，输入 /cancel 取消。\n' : '输入编号或会话 ID 选择，输入 all 查看全部会话，输入 /cancel 取消。\n');
+}

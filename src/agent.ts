@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { ResolvedConfig } from './config.js';
 import { AgentError, publicError } from './errors.js';
 import { readWorkspaceFile, writeWorkspaceFile } from './workspace-files.js';
+import type { WorkspaceFileSnapshot } from './workspace-files.js';
 import { approveToolCall } from './tool-approval.js';
 import type { ApprovalControl } from './tool-approval.js';
 import { ToolRegistry } from './tool-registry.js';
@@ -26,6 +27,7 @@ export interface RunResult {
   responseMessages: ModelMessage[];
   /** 本轮成功使用的完整有效历史，可直接用于保存及下一轮输入。 */
   effectiveHistory: ModelMessage[];
+  summaries: Array<{ text: string; coversThrough: number }>;
   steps: number;
   toolCalls: number;
   finishReason: string;
@@ -172,11 +174,16 @@ export async function runAgent(
   options: {
     smokeTool: boolean;
     history?: ModelMessage[];
-    onText?: (chunk: string) => void;
+    onText?: (chunk: string) => Promise<void> | void;
+    onToolCallStart?: (call: { callId: string; toolName: string; input: unknown }) => Promise<void> | void;
+    onStepMessages?: (content: unknown[]) => Promise<void> | void;
+    onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
+    onCheckpointError?: (path: string) => void;
     onToolCall?: (name: string) => void;
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
+    summaryCoverageBase?: number;
   },
 ): Promise<RunResult> {
   if (options.smokeTool && config.maxSteps < 2) {
@@ -216,7 +223,8 @@ export async function runAgent(
     timer = setTimeout(() => deadline.abort(), remainingMs);
   }
   const registry = new ToolRegistry({
-    ...options,
+    ...(options.onToolEvent ? { onToolEvent: options.onToolEvent } : {}),
+    ...(options.onToolCallStart ? { beforeTool: options.onToolCallStart } : {}),
     approve: async (call) => {
       signal.throwIfAborted();
       try {
@@ -247,7 +255,13 @@ export async function runAgent(
     description: '将工作区内文件完整替换为指定内容；目标不存在时创建文件，不会创建父目录。',
     inputSchema: z.strictObject({ path: z.string().min(1), content: z.string() }),
     execute: async ({ path, content }) => {
-      await writeWorkspaceFile(config.workspace, path, content);
+      await writeWorkspaceFile(
+        config.workspace,
+        path,
+        content,
+        options.onBeforeWrite,
+        options.onCheckpointError,
+      );
       return { success: true as const };
     },
   });
@@ -300,6 +314,9 @@ export async function runAgent(
     const tools = registry.tools();
     let preparedHistory: ModelMessage[] = [];
     let preparedResponseCount = 0;
+    const summaries: RunResult['summaries'] = [];
+    let summaryCoverageBase = options.summaryCoverageBase ?? 0;
+    let hasSummary = summaryCoverageBase > 0;
     const agent = new ToolLoopAgent({
       model,
       instructions,
@@ -316,7 +333,13 @@ export async function runAgent(
       maxRetries: 0,
       prepareStep: async ({ stepNumber, messages, responseMessages }) => {
         signal.throwIfAborted();
-        preparedHistory = await prepareConversation(config, instructions, messages, tools, signal);
+        preparedHistory = await prepareConversation(config, instructions, messages, tools, signal, (summary) => {
+          // 已有摘要在有效历史中占一个消息槽位，不代表一条新的 transcript 原文。
+          const coversThrough = summaryCoverageBase + summary.coveredMessages - (hasSummary ? 1 : 0);
+          summaries.push({ text: summary.text, coversThrough });
+          summaryCoverageBase = coversThrough;
+          hasSummary = true;
+        });
         preparedResponseCount = responseMessages.length;
         signal.throwIfAborted();
         return {
@@ -363,7 +386,7 @@ export async function runAgent(
           } as unknown as typeof part);
         },
       }),
-      onStepFinish: ({ toolCalls, toolResults }) => {
+      onStepFinish: async ({ toolCalls, toolResults, content }) => {
         if (signal.aborted) return;
         for (const call of toolCalls) options.onToolCall?.(call.toolName);
         // This callback is awaited by the SDK before it starts the next model request.
@@ -375,9 +398,10 @@ export async function runAgent(
           pairingError = new AgentError('PROVIDER_ERROR', '工具调用与结果无法一一配对，已终止当前对话轮次。');
           pairingAbort.abort(pairingError);
         }
+        await options.onStepMessages?.(content);
       },
     });
-    for await (const chunk of result.textStream) options.onText?.(chunk);
+    for await (const chunk of result.textStream) await options.onText?.(chunk);
     const [steps, responseMessages, text, finishReason, totalUsage] = await Promise.all([
       result.steps,
       result.responseMessages,
@@ -410,6 +434,7 @@ export async function runAgent(
       responseMessages,
       // 最后一次请求的历史已包含此前工具往返，只追加该请求之后的新响应。
       effectiveHistory: [...preparedHistory, ...responseMessages.slice(preparedResponseCount)],
+      summaries,
       steps: steps.length,
       toolCalls: steps.reduce((count, step) => count + step.toolCalls.length, 0),
       finishReason,
@@ -420,7 +445,10 @@ export async function runAgent(
       toolSmokePassed: options.smokeTool && toolSmokePassed,
     };
   } catch (error) {
-    if (options.signal?.aborted) throw new AgentError('CANCELLED', '请求已取消。');
+    if (options.signal?.aborted) {
+      const reason = options.signal.reason;
+      throw reason instanceof AgentError ? reason : new AgentError('CANCELLED', '请求已取消。');
+    }
     if (deadline.signal.aborted) {
       throw new AgentError('TIMEOUT', `请求超过 ${config.timeoutMs}ms，已终止。`);
     }

@@ -31,7 +31,7 @@ async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0], revie
 }
 function run(input = '运行受控命令\n/exit\n', env: NodeJS.ProcessEnv = {}) {
   const child = spawn(process.execPath, [cli, '--conversation-id', 'bash'], {
-    cwd, env: { ...process.env, TEST_BASH_KEY: 'fake-bash-key', TEST_BASH_ENV: 'inherited-marker', ...env },
+    cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_BASH_KEY: 'fake-bash-key', TEST_BASH_ENV: 'inherited-marker', ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -202,12 +202,12 @@ it.each(['SIGINT', 'SIGTERM'] as const)('%s 取消终止命令及子进程，保
   managedPids.push(shellPid, workerPid);
   running.child.kill(stop);
   const result = await running.done;
-  expect(result.code, result.stderr).toBe(130);
+  expect(result.code, result.stderr).toBe(stop === 'SIGINT' ? 0 : 130);
   expect(isRunning(shellPid)).toBe(false);
   expect(isRunning(workerPid)).toBe(false);
   expect(fixture.requests).toHaveLength(1);
   expect(fixture.approvalRequests).toHaveLength(1);
-  expect(result.stderr).toContain('CANCELLED');
+  expect(result.stdout + result.stderr).toContain(stop === 'SIGINT' ? 'Interrupt by user' : 'CANCELLED');
   expect(await readFile(join(cwd, 'kept.txt'), 'utf8')).toBe('kept');
   await new Promise((resolve) => setTimeout(resolve, 1600));
   for (const path of ['late.txt', 'later.txt', '.agent/conversations/bash.json']) {

@@ -30,6 +30,7 @@ export class ToolRegistry {
 
   constructor(private readonly options: {
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
+    beforeTool?: (event: { callId: string; toolName: string; input: unknown }) => Promise<void> | void;
     approve?: (call: ToolApprovalRequest, signal?: AbortSignal) => Promise<boolean>;
   }) {}
 
@@ -57,6 +58,8 @@ export class ToolRegistry {
           this.report({ callId: execution.toolCallId, toolName: name, status: 'rejected', errorCode: 'INVALID_TOOL_ARGUMENTS' });
           return { is_error: true as const, error: { code: 'INVALID_TOOL_ARGUMENTS' as const, message: '工具参数无效：操作目标不可用或越出工作区。' } };
         }
+        execution.abortSignal?.throwIfAborted();
+        await this.options.beforeTool?.({ callId: execution.toolCallId, toolName: name, input });
         execution.abortSignal?.throwIfAborted();
         if (this.options.approve && !await this.options.approve({ callId: execution.toolCallId, toolName: name, input, ...(prepared.details ? { details: prepared.details } : {}) }, execution.abortSignal)) {
           this.report({ callId: execution.toolCallId, toolName: name, status: 'rejected', errorCode: 'PERMISSION_DENIED' });
