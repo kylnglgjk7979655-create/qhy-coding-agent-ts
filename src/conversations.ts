@@ -190,6 +190,15 @@ export async function saveSession(home: string, record: SessionRecord): Promise<
   await writeSessionRecord(home, { ...record, updatedAt: new Date().toISOString() });
 }
 
+export async function appendSessionEvent(home: string, conversationId: string, messages: ModelMessage[]): Promise<void> {
+  const session = await loadSession(home, conversationId);
+  await saveSession(home, {
+    ...session,
+    transcript: [...session.transcript, ...messages],
+    effectiveHistory: [...session.effectiveHistory, ...messages],
+  });
+}
+
 export async function startSessionRound(
   home: string,
   conversationId: string,

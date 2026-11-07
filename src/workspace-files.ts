@@ -1,4 +1,4 @@
-import { lstat, readFile, realpath, writeFile } from 'node:fs/promises';
+import { lstat, readFile, realpath, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 export interface WorkspaceFileSnapshot {
@@ -86,5 +86,14 @@ export async function writeWorkspaceFile(
     await writeFile(target, content, 'utf8');
   } catch {
     throw new Error('无法写入文件：父目录必须存在且目标必须位于工作区内。');
+  }
+}
+
+export async function deleteWorkspaceFile(workspace: string, requestedPath: string): Promise<void> {
+  try {
+    const target = await resolveWriteTarget(workspace, requestedPath);
+    await unlink(target);
+  } catch {
+    throw new Error('无法删除文件：目标必须位于工作区内且可访问。');
   }
 }

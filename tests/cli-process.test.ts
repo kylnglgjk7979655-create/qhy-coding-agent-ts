@@ -164,6 +164,158 @@ describe('compiled CLI process driver', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('previews, refreshes, and confirms a rewind without changing untracked files', async () => {
+    const cwd = await directory('rewind-cwd');
+    const userDir = await directory('rewind-user');
+    await writeFile(join(cwd, 'note.txt'), 'before');
+    await writeFile(join(cwd, 'untracked.txt'), 'leave this alone');
+    const model = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [
+        { id: 'rewind-note', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'after' }) } },
+        { id: 'rewind-created', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'created.txt', content: 'remove me' }) } },
+      ] }
+      : index === 2 ? { content: '编辑已完成。' } : { content: '已收到恢复记录。' });
+    try {
+      await configure(cwd, model.baseURL);
+      let output = '';
+      const cli = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      cli.send('编辑文件\n');
+      await waitForRequests(model.requests, 2);
+      await waitForOutput(() => output, '编辑已完成。', 1);
+
+      cli.send('/rewind\n');
+      await waitForOutput(() => output, '消息检查点：', 1);
+      cli.send('1\n');
+      await waitForOutput(() => output, '改动统计', 1);
+      expect(output).toContain('note.txt');
+      expect(output).toContain('created.txt');
+      expect(output).toContain('删除');
+      expect(output).toContain('+');
+
+      cli.send('no\n');
+      await waitForOutput(() => output, '已取消文件检查点恢复', 1);
+      expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('after');
+      expect(await readFile(join(cwd, 'created.txt'), 'utf8')).toBe('remove me');
+
+      cli.send('/rewind\n');
+      await waitForOutput(() => output, '消息检查点：', 2);
+      cli.send('1\n');
+      await waitForOutput(() => output, '改动统计', 2);
+
+      await writeFile(join(cwd, 'note.txt'), 'external change');
+      cli.send('yes\n');
+      await waitForOutput(() => output, '文件状态已变化，预览已刷新', 1);
+      expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('external change');
+      expect(await readFile(join(cwd, 'created.txt'), 'utf8')).toBe('remove me');
+
+      cli.send('yes\n');
+      await waitForOutput(() => output, '恢复结果', 1);
+      expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('before');
+      await expect(readFile(join(cwd, 'created.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(join(cwd, 'untracked.txt'), 'utf8')).toBe('leave this alone');
+
+      cli.send('恢复后继续\n');
+      await waitForRequests(model.requests, 3);
+      expect(JSON.stringify(model.requests[2])).toContain('恢复文件检查点');
+      expect(JSON.stringify(model.requests[2])).toContain('note.txt');
+      expect(JSON.stringify(model.requests[2])).toContain('成功');
+      cli.end('/exit\n');
+      expect((await cli.done).code).toBe(0);
+
+      const id = findConversationId((await cli.done).stderr);
+      const record = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json'), 'utf8')) as {
+        transcript: unknown[];
+        effectiveHistory: unknown[];
+        checkpoints: Array<{ id: string }>;
+      };
+      expect(record.checkpoints).toHaveLength(2);
+      expect(JSON.stringify(record.transcript)).toContain('恢复文件检查点');
+      expect(JSON.stringify(record.transcript)).toContain('删除');
+      expect(JSON.stringify(record.effectiveHistory)).toContain('note.txt');
+      expect(JSON.stringify(record.effectiveHistory)).toContain('成功');
+    } finally {
+      await model.close();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses to start a rewind when a checkpoint backup is missing', async () => {
+    const cwd = await directory('rewind-missing-backup-cwd');
+    const userDir = await directory('rewind-missing-backup-user');
+    await writeFile(join(cwd, 'note.txt'), 'before');
+    const model = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'write-before-rewind', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'after' }) } }] }
+      : { content: '完成。' });
+    try {
+      await configure(cwd, model.baseURL);
+      const first = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '编辑文件\n/exit\n' });
+      expect((await first.done).code).toBe(0);
+      const id = findConversationId((await first.done).stderr);
+      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
+      const record = JSON.parse(await readFile(recordPath, 'utf8')) as { backups: unknown[] };
+      record.backups = [];
+      await writeFile(recordPath, JSON.stringify(record));
+
+      let output = '';
+      const resumed = startCLI({ cwd, userDir, conversationId: id, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      resumed.send('/rewind\n');
+      await waitForOutput(() => output, '消息检查点：', 1);
+      resumed.send('1\n');
+      await waitForOutput(() => output, '检查点备份不完整', 1);
+      expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('after');
+      expect(model.requests).toHaveLength(2);
+      resumed.end('/exit\n');
+      expect((await resumed.done).code).toBe(0);
+      const saved = JSON.parse(await readFile(recordPath, 'utf8')) as { transcript: unknown[] };
+      expect(JSON.stringify(saved.transcript)).not.toContain('恢复文件检查点请求');
+    } finally {
+      await model.close();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('continues restoring files after one target fails and records each result', async () => {
+    const cwd = await directory('rewind-partial-cwd');
+    const userDir = await directory('rewind-partial-user');
+    await writeFile(join(cwd, 'blocked.txt'), 'blocked-before');
+    await writeFile(join(cwd, 'good.txt'), 'good-before');
+    const model = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [
+        { id: 'write-blocked', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'blocked.txt', content: 'blocked-after' }) } },
+        { id: 'write-good', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'good.txt', content: 'good-after' }) } },
+      ] }
+      : { content: '完成。' });
+    try {
+      await configure(cwd, model.baseURL);
+      const first = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '编辑文件\n/exit\n' });
+      expect((await first.done).code).toBe(0);
+      const id = findConversationId((await first.done).stderr);
+      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
+      let output = '';
+      const resumed = startCLI({ cwd, userDir, conversationId: id, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      resumed.send('/rewind\n');
+      await waitForOutput(() => output, '消息检查点：', 1);
+      resumed.send('1\n');
+      await waitForOutput(() => output, '改动统计', 1);
+
+      await rm(join(cwd, 'blocked.txt'));
+      await mkdir(join(cwd, 'blocked.txt'));
+      resumed.send('yes\n');
+      await waitForOutput(() => output, '文件状态已变化，预览已刷新', 1);
+      resumed.send('yes\n');
+      await waitForOutput(() => output, '恢复结果', 1);
+      expect(output).toContain('blocked.txt：失败');
+      expect(output).toContain('good.txt：成功');
+      expect(await readFile(join(cwd, 'good.txt'), 'utf8')).toBe('good-before');
+
+      resumed.end('/exit\n');
+      expect((await resumed.done).code).toBe(0);
+      const saved = JSON.parse(await readFile(recordPath, 'utf8')) as { transcript: unknown[] };
+      expect(JSON.stringify(saved.transcript)).toContain('blocked.txt：失败');
+      expect(JSON.stringify(saved.transcript)).toContain('good.txt：成功');
+    } finally {
+      await model.close();
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('persists partial output while running and keeps failed round transcript', async () => {
     const cwd = await directory('transcript-cwd');
     const userDir = await directory('transcript-user');

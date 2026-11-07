@@ -7,8 +7,10 @@ import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { runAgent } from './agent.js';
 import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './config.js';
-import { appendRoundMessages, appendRoundText, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveLegacyConversation, startSessionRound } from './conversations.js';
+import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveLegacyConversation, startSessionRound } from './conversations.js';
 import type { WorkspaceFileSnapshot } from './workspace-files.js';
+import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './file-checkpoints.js';
+import type { FileRewindPlan } from './file-checkpoints.js';
 import { AgentError, publicError } from './errors.js';
 import { CliInput } from './cli-input.js';
 import type { ApprovalControl } from './tool-approval.js';
@@ -19,6 +21,7 @@ const help = `用法：node dist/cli.js [选项]
 启动后直接进入交互式对话，输入 /exit 结束。
   /new                 在当前工作区新建会话
   /resume [ID]         继续会话；省略 ID 时选择会话，输入 all 查看全部
+  /rewind              预览并确认恢复到消息级文件检查点
 
 选项：
   --workspace <目录>  覆盖配置的工作区（相对当前目录）
@@ -141,9 +144,72 @@ async function main(): Promise<void> {
       return resumed;
     };
     let selection: { sessions: Awaited<ReturnType<typeof listSessions>>; all: boolean } | undefined;
+    let rewindSelection: { checkpoints: Awaited<ReturnType<typeof loadSession>>['checkpoints']; plan?: FileRewindPlan } | undefined;
     if (process.stdin.isTTY) input.prompt();
     for await (const line of input) {
       const prompt = line.trim();
+      if (rewindSelection) {
+        if (prompt === '/exit') {
+          rewindSelection = undefined;
+          break;
+        }
+        if (prompt === '/cancel' || prompt.toLowerCase() === 'no' || prompt.toLowerCase() === 'n') {
+          rewindSelection = undefined;
+          process.stdout.write('已取消文件检查点恢复，文件保持不变。\n');
+          if (process.stdin.isTTY) input.prompt();
+          continue;
+        }
+        if (!rewindSelection.plan) {
+          const chosen = /^\d+$/.test(prompt)
+            ? rewindSelection.checkpoints[Number(prompt) - 1]
+            : rewindSelection.checkpoints.find(({ id }) => id === prompt);
+          if (!chosen) {
+            process.stdout.write('无效的检查点选择；请输入列表编号或检查点 ID，输入 /cancel 取消。\n');
+            if (process.stdin.isTTY) input.prompt();
+            continue;
+          }
+          try {
+            const plan = await prepareFileRewind(await loadSession(userHome, conversationId), chosen.id);
+            rewindSelection.plan = plan;
+            process.stdout.write(`${formatFileRewindPreview(plan)}\n确认恢复请输入 yes，输入 no 或 /cancel 取消：\n`);
+          } catch (error) {
+            process.stdout.write(`无法开始恢复：${error instanceof Error ? error.message : '检查点无效。'}\n`);
+            rewindSelection = undefined;
+          }
+          if (process.stdin.isTTY) input.prompt();
+          continue;
+        }
+        if (prompt.toLowerCase() !== 'yes' && prompt.toLowerCase() !== 'y') {
+          process.stdout.write('请输入 yes 确认，或 no /cancel 取消。\n');
+          if (process.stdin.isTTY) input.prompt();
+          continue;
+        }
+        try {
+          const refreshed = await prepareFileRewind(await loadSession(userHome, conversationId), rewindSelection.plan.checkpoint.id);
+          if (fileRewindPlanChanged(rewindSelection.plan, refreshed)) {
+            rewindSelection.plan = refreshed;
+            process.stdout.write(`文件状态已变化，预览已刷新。\n${formatFileRewindPreview(refreshed)}\n请再次确认恢复请输入 yes，输入 no 或 /cancel 取消：\n`);
+            if (process.stdin.isTTY) input.prompt();
+            continue;
+          }
+          const results = await applyFileRewind(refreshed);
+          const targetSummary = refreshed.items.map(({ path, target }) => `- ${path}：${target.existed ? '检查点中存在' : '检查点中不存在'}`).join('\n') || '- 检查点不包含已追踪文件';
+          const resultSummary = results.map(({ path, status, message }) => `- ${path}：${status === 'succeeded' ? '成功' : '失败'}（${message}）`).join('\n') || '- 无文件需要处理';
+          const eventMessages: ModelMessage[] = [
+            { role: 'user', content: `恢复文件检查点请求：目标消息 ${refreshed.checkpoint.messageId}，检查点 ${refreshed.checkpoint.id}。目标文件状态：\n${targetSummary}` },
+            { role: 'assistant', content: `恢复文件检查点结果：\n${resultSummary}` },
+          ];
+          process.stdout.write(`恢复结果：\n${resultSummary}\n`);
+          await appendSessionEvent(userHome, conversationId, eventMessages);
+          history = [...history, ...eventMessages];
+          rewindSelection = undefined;
+        } catch (error) {
+          process.stdout.write(`文件检查点恢复失败：${error instanceof Error ? error.message : '无法保存恢复结果。'}\n`);
+          rewindSelection = undefined;
+        }
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
       if (prompt === '/exit') break;
       if (selection) {
         if (prompt.toLowerCase() === 'all' && !selection.all) {
@@ -179,6 +245,19 @@ async function main(): Promise<void> {
         history = [];
         recoveredRoundIds = [];
         process.stdout.write(`已新建会话：${id}\n`);
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
+      if (prompt === '/rewind') {
+        const currentSession = await loadSession(userHome, conversationId);
+        const checkpoints = [...currentSession.checkpoints].reverse();
+        if (checkpoints.length === 0) process.stdout.write('当前会话没有可用的消息检查点。\n');
+        else {
+          rewindSelection = { checkpoints };
+          process.stdout.write('消息检查点：\n');
+          checkpoints.forEach((checkpoint, index) => process.stdout.write(`${index + 1}. 消息 ${checkpoint.messageId}  ${checkpoint.createdAt}  [${checkpoint.id}]\n`));
+          process.stdout.write('输入编号或检查点 ID 预览，输入 /cancel 取消。\n');
+        }
         if (process.stdin.isTTY) input.prompt();
         continue;
       }
