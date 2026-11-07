@@ -589,6 +589,36 @@ describe('compiled CLI process driver', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('does not invent a tool result when Ctrl+C interrupts a running tool', async () => {
+    const cwd = await directory('recovery-cancelled-tool-cwd');
+    const userDir = await directory('recovery-cancelled-tool-user');
+    const model = await startLocalOpenAIModel(() => ({ calls: [{ id: 'cancelled-tool-call', type: 'function', function: {
+      name: 'Bash', arguments: JSON.stringify({ command: 'sleep 5' }),
+    } }] }));
+    try {
+      await configure(cwd, model.baseURL);
+      let output = '';
+      const interrupted = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      interrupted.send('运行可取消工具\n');
+      await waitForOutput(() => output, '[工具] Bash：开始', 1);
+      const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!id) throw new Error('中断会话尚未持久化');
+      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
+      interrupted.child.kill('SIGINT');
+      await interrupted.done;
+
+      const record = JSON.parse(await readFile(recordPath, 'utf8')) as {
+        transcript: Array<{ role: string; content: unknown }>;
+        rounds: Array<{ status: string }>;
+      };
+      expect(record.rounds.map(({ status }) => status)).toEqual(['cancelled']);
+      expect(JSON.stringify(record.transcript)).toContain('cancelled-tool-call');
+      expect(record.transcript.some(({ role, content }) => role === 'tool' && JSON.stringify(content).includes('cancelled-tool-call'))).toBe(false);
+    } finally {
+      await model.close();
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('reuses a saved tool result with its call ID and marks the final answer as unobserved', async () => {
     const cwd = await directory('recovery-partial-cwd');
     const userDir = await directory('recovery-partial-user');

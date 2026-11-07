@@ -1,6 +1,6 @@
 # qhy-coding-agent-ts
 
-基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `read_file`、`write_file`、`runtimeInfo` 和 `Bash`，可读取工作区文件，并在工具策略允许或所选审批通过后修改文件、运行宿主命令。审批默认由独立模型完成，也可切换人工模式。会话历史保存在启动目录的 `.agent/conversations/`，支持用 conversation ID 跨进程继续对话。
+基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `read_file`、`write_file`、`runtimeInfo` 和 `Bash`，可读取工作区文件，并在工具策略允许或所选审批通过后修改文件、运行宿主命令。审批默认由独立模型完成，也可切换人工模式。会话记录保存在用户目录 `~/.qhy-coding-agents/sessions/`，支持用 conversation ID 跨进程继续对话。
 
 通过 `ToolLoopAgent.stream()` 运行工具循环，每个对话轮次使用独立的 `maxSteps` 限制，默认 20 步。Agent 可通过 Bash 运行项目测试，文件工具与 Bash 共用策略、审批、串行执行和结果路径。
 
@@ -39,9 +39,9 @@ pnpm exec node dist/cli.js --workspace ./demo
 pnpm exec node dist/cli.js --workspace ./demo --conversation-id "$CONVERSATION_ID"
 ```
 
-将 `CONVERSATION_ID` 设置为日志中的实际 ID。每个成功轮次保存用户消息、工具往返和 Agent 回复；失败或未完成的轮次不保存。普通单轮错误会显示原因并返回输入循环，已有成功历史保留。历史文件按 conversation ID 区分并原子更新，目录权限设为仅当前用户可访问。会话历史不随 `--workspace` 切换位置。
+将 `CONVERSATION_ID` 设置为日志中的实际 ID。用户消息在轮次开始时保存；流式回答、工具调用和已取得的工具结果会在运行中按序增量保存。失败、取消或进程中断后，transcript 保留已观察内容并标记轮次状态；未完成的工具调用不会伪造成工具结果。只有成功轮次更新供续聊使用的有效历史。会话记录按 conversation ID 区分并原子更新，目录权限设为仅当前用户可访问。会话历史不随 `--workspace` 切换位置。
 
-公共运行入口 `runAgent` 在成功时返回 `effectiveHistory`，包含本轮实际使用的历史、本轮用户消息及完整响应，CLI 直接使用它原子保存及继续下一轮。较早历史可能已被对话摘要替换，保存时不会重新拼接原文。原有 `responseMessages` 仍仅表示本轮响应，其他结果字段保持可用。失败或取消不交付新的成功历史，CLI 内存和磁盘都保留上次成功状态。
+公共运行入口 `runAgent` 在成功时返回 `effectiveHistory`，包含本轮实际使用的历史、本轮用户消息及完整响应，CLI 使用它更新有效历史并继续下一轮。较早历史可能已被对话摘要替换，保存时不会重新拼接原文。原有 `responseMessages` 仍仅表示本轮响应，其他结果字段保持可用。失败或取消不交付新的有效历史；此前成功的有效历史保持不变，但完整 transcript 仍保留本轮已观察到的进度。
 
 Ctrl+C 会取消当前请求并退出，退出码为 130；等待输入时也可直接按 Ctrl+C 退出。失败或取消不会回滚此前已经发生的文件、宿主或远端副作用。
 
@@ -110,7 +110,7 @@ pnpm dev --workspace ./demo
 
 摘要作为 `assistant` 历史资料进入后续请求，不改变内置系统提示或工具策略。产品不会自动加载工作区的开发用 `AGENTS.md`，也不发现其他项目规则文件。旧格式历史无需迁移，未触发压缩时保留原有内容，达到阈值后按同样规则处理。
 
-摘要校验成功后替换本轮内存有效历史，仅在本轮成功后原子替换 `.agent/conversations/<conversation ID>.json`，文件权限仍为 `0600`。不新增原文归档、独立摘要文件或其他历史状态；重启后直接加载摘要及保留轮次。**成功保存压缩历史后，被替换原文无法从产品历史完整恢复。** 摘要失败或摘要后本轮失败、取消时，磁盘和可续聊内存都保留上次成功历史，已经发生的文件、宿主或远端副作用不会回滚。
+摘要校验成功后替换本轮内存有效历史；只有轮次成功后才将其写入会话记录的 `effectiveHistory`。完整 transcript 始终保存在 `~/.qhy-coding-agents/sessions/<conversation ID>/record.json`，每次观察到新内容时通过临时文件和原子替换更新，摘要不会删除或压缩 transcript。重启后直接加载摘要及保留轮次。摘要失败或摘要后本轮失败、取消时，有效历史保持上次成功状态，transcript 保留本轮已观察内容；已经发生的文件、宿主或远端副作用不会回滚。
 
 独立审查请求按专用提示词与当前单次调用的名称、完整参数检查预算，不添加目标、历史或摘要；独立摘要请求按专用提示词与待压缩原文检查预算。两者超限时以 `CONTEXT_ERROR` 停止，不发送已知超限请求，也不分段摘要或自动删除历史。
 
