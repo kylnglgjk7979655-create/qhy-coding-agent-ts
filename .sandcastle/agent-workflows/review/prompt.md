@@ -2,6 +2,8 @@
 
 Review PR #{{PR_NUMBER}} on branch `{{BRANCH}}`.
 
+使用 $code-review skill 审查本 PR，比较基准为 `main`。
+
 PR title: {{PR_TITLE}}
 Linked issue: #{{ISSUE_NUMBER}} {{ISSUE_TITLE}}
 

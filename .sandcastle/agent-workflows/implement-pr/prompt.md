@@ -2,6 +2,8 @@
 
 Address unresolved review feedback on PR #{{PR_NUMBER}} on branch `{{BRANCH}}`.
 
+反馈需要修改代码时，使用 $implement skill。
+
 PR title: {{PR_TITLE}}
 Linked issue: #{{ISSUE_NUMBER}} {{ISSUE_TITLE}}
 
