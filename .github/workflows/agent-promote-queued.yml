@@ -1,22 +1,18 @@
 name: Codex Promote Queued
 on:
   issues:
-    types: [closed, labeled, reopened]
+    types: [closed]
   workflow_dispatch:
-  schedule:
-    - cron: "*/15 * * * *"
 permissions:
   contents: read
-  issues: write
+  issues: read
   actions: write
 concurrency:
-  group: agent-promote-${{ github.repository }}
+  group: codex-subscription-${{ github.repository }}
   cancel-in-progress: false
-env:
-  CODEX_AUTH_SLOTS: ${{ vars.CODEX_AUTH_SLOTS }}
 jobs:
   promote:
-    if: github.event_name != 'issues' || github.event.action == 'reopened' || (github.event.action == 'closed' && github.event.issue.state_reason != 'not_planned') || github.event.label.name == 'agent:queued'
+    if: github.event_name == 'workflow_dispatch' || github.event.issue.state_reason != 'not_planned'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

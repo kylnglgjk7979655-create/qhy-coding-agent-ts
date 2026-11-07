@@ -85,24 +85,4 @@ describe('临时 Runner 的订阅登录态持久化', () => {
     await subscription.persist({ github, context });
     expect(update).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', secret_name: 'CODEX_AUTH_JSON', key_id: 'key-1', encrypted_value: payload.encrypted_value });
   });
-  it('独立槽位只回存自己的认证，拒绝跨槽位认证包', async () => {
-    vi.stubEnv('CODEX_AUTH_SLOTS', '["CODEX_AUTH_JSON_A","CODEX_AUTH_JSON_B"]');
-    vi.stubEnv('CODEX_AUTH_SECRET_NAME', 'CODEX_AUTH_JSON_A');
-    vi.stubEnv('RUNNER_TEMP', directory);
-    const pair = sodium.crypto_box_keypair();
-    const payload = await subscription.sealAuth(fixture, {
-      key: sodium.to_base64(pair.publicKey, sodium.base64_variants.ORIGINAL), key_id: 'key-1', expected_updated_at: '2026-11-04T10:00:00Z',
-    });
-    await mkdir(join(directory, 'codex-auth-update'));
-    await writeFile(join(directory, 'codex-auth-update/encrypted.json'), JSON.stringify(payload));
-    const get = vi.fn().mockResolvedValue({ data: { updated_at: payload.expected_updated_at } });
-    const update = vi.fn();
-    const github = { rest: { actions: { getRepoSecret: get, createOrUpdateRepoSecret: update } } };
-    const context = { repo: { owner: 'owner', repo: 'repo' } };
-    await subscription.persist({ github, context });
-    expect(update).toHaveBeenCalledWith(expect.objectContaining({ secret_name: 'CODEX_AUTH_JSON_A' }));
-    vi.stubEnv('CODEX_AUTH_SECRET_NAME', 'CODEX_AUTH_JSON_B');
-    await expect(subscription.persist({ github, context })).rejects.toThrow('格式错误');
-    expect(update).toHaveBeenCalledTimes(1);
-  });
 });

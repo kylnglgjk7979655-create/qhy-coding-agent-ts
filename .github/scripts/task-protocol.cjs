@@ -1,6 +1,6 @@
 // Agent 的结构化输出在生成端和无依赖的发布端使用同一套校验。
-const MODES = ['implement', 'bugfix', 'code-design', 'implement-prd', 'review', 'implement-pr', 'update-branch', 'to-issues', 'architecture'];
-const MUTATING = ['implement', 'bugfix', 'review', 'implement-pr', 'update-branch'];
+const MODES = ['implement', 'implement-prd', 'review', 'implement-pr', 'update-branch', 'to-issues', 'architecture'];
+const MUTATING = ['implement', 'implement-prd', 'review', 'implement-pr', 'update-branch'];
 function text(value, name, max = 45000) {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${name} 格式错误。`);
   return value;
@@ -8,7 +8,6 @@ function text(value, name, max = 45000) {
 function validateResult(mode, value) {
   if (!MODES.includes(mode) || !value || typeof value !== 'object') throw new Error('任务结果格式错误。');
   if (JSON.stringify(value).length > 60000) throw new Error('结果超过 GitHub 评论长度限制。');
-  if (mode === 'implement-prd') throw new Error('父规格仅调度子任务，不接受 Agent 实施结果。');
   const summary = text(value.summary, 'summary');
   if (mode === 'to-issues') {
     if (!Array.isArray(value.slices) || value.slices.length < 1 || value.slices.length > 30) throw new Error('需要1至30项任务。');
@@ -30,10 +29,7 @@ function validateResult(mode, value) {
     if (value.status !== 'proposed') throw new Error('架构审查状态错误。');
     return { summary, status: 'proposed', title: text(value.title, 'title', 200), body: text(value.body, 'body') };
   }
-  if (MUTATING.includes(mode) || mode === 'code-design') {
-    if (value.completed !== true) throw new Error('任务未完成，停止发布和推进。');
-  }
-  if (mode === 'code-design') return { summary, completed: true, title: text(value.title, 'title', 200), body: text(value.body, 'body') };
+  if (mode === 'implement-prd' && value.completed !== true) throw new Error('子任务未完成，停止关闭和推进。');
   const comments = value.inlineComments ?? [];
   const replies = value.replies ?? [];
   if (!Array.isArray(comments) || comments.length > 50 || !Array.isArray(replies) || replies.length > 100) throw new Error('评论数量错误。');

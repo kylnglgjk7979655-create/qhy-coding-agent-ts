@@ -50,13 +50,12 @@ describe('任务授权与 PR 边界', () => {
 });
 
 describe('结构化结果与审查评论', () => {
-  it.each(['implement', 'bugfix', 'review', 'implement-pr', 'update-branch'])('%s 必须显式完成才能发布', (mode) => {
-    expect(() => validateResult(mode, { summary: '检查完成' })).toThrow('未完成');
-    expect(validateResult(mode, { summary: '检查完成', completed: true }).summary).toBe('检查完成');
+  it.each(['implement', 'review', 'implement-pr', 'update-branch'])('%s 允许没有额外字段的摘要', (mode) => {
+    expect(validateResult(mode, { summary: '检查完成' }).summary).toBe('检查完成');
   });
-  it('父规格仅调度，不再接受旧串行实施结果', () => {
-    expect(() => validateResult('implement-prd', { summary: '旧实施', completed: true })).toThrow('仅调度');
-    expect(() => validateResult('bugfix', { summary: '尚未完成', completed: false })).toThrow('未完成');
+  it('子任务必须明确确认完成，不能静默关闭未实现任务', () => {
+    expect(() => validateResult('implement-prd', { summary: '还没完成' })).toThrow('未完成');
+    expect(validateResult('implement-prd', { summary: '已验证', completed: true }).completed).toBe(true);
   });
   it('只接受合法架构提案或明确跳过', () => {
     expect(validateResult('architecture', { summary: '重复提案', status: 'skipped' }).status).toBe('skipped');
@@ -70,9 +69,9 @@ describe('结构化结果与审查评论', () => {
     expect(validateResult('to-issues', plan).slices).toHaveLength(2);
   });
   it('拒绝伪造行号和回复 ID，去掉未知输出字段', () => {
-    expect(() => validateResult('review', { summary: 'ok', completed: true, inlineComments: [{ path: 'x', line: -1, body: 'abc' }] })).toThrow();
-    expect(() => validateResult('review', { summary: 'ok', completed: true, replies: [{ commentId: '123', body: 'abc' }] })).toThrow();
-    expect(validateResult('implement', { summary: 'ok', completed: true, token: 'should-drop' })).not.toHaveProperty('token');
+    expect(() => validateResult('review', { summary: 'ok', inlineComments: [{ path: 'x', line: -1, body: 'abc' }] })).toThrow();
+    expect(() => validateResult('review', { summary: 'ok', replies: [{ commentId: '123', body: 'abc' }] })).toThrow();
+    expect(validateResult('implement', { summary: 'ok', token: 'should-drop' })).not.toHaveProperty('token');
   });
   it('行内评论只发布到最终 diff 的右侧行，失效行回落到摘要，不自动批准', () => {
     const patch = 'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,3 @@\n same\n-old\n+new\n+extra\n';
@@ -85,12 +84,12 @@ describe('结构化结果与审查评论', () => {
 });
 
 describe('依赖队列与自动接续', () => {
-  it('运行开放且全部依赖真正完成的 Issue，包括子任务', () => {
+  it('只运行开放且全部依赖真正完成的根 Issue', () => {
     const issue = { state: 'open', labels: [{ name: 'agent:queued' }] };
     expect(canPromote(issue, null, [{ state: 'CLOSED', stateReason: 'COMPLETED' }])).toBe(true);
     expect(canPromote(issue, null, [{ state: 'OPEN' }])).toBe(false);
     expect(canPromote(issue, null, [{ state: 'CLOSED', stateReason: 'NOT_PLANNED' }])).toBe(false);
-    expect(canPromote(issue, { number: 1 }, [])).toBe(true);
+    expect(canPromote(issue, { number: 1 }, [])).toBe(false);
     expect(canPromote({ ...issue, labels: ['agent:queued', 'agent:in-progress'] }, null, [])).toBe(false);
     expect(canPromote({ ...issue, labels: ['agent:queued', 'agent:blocked'] }, null, [])).toBe(false);
     expect(canPromote({ ...issue, state: 'closed' }, null, [])).toBe(false);
@@ -109,15 +108,6 @@ describe('依赖队列与自动接续', () => {
     const dispatch = vi.fn(); const issues = { removeLabel: vi.fn(), createComment: vi.fn() };
     await finish({ github: { rest: { actions: { createWorkflowDispatch: dispatch }, issues } }, context, core: core() });
     expect(dispatch).toHaveBeenCalledExactlyOnceWith({ ...repo, workflow_id: 'agent-review.yml', ref: 'main', inputs: { pr_number: '43' } });
-  });
-  it('发布后将认证槽位转交给 PR 审查，再释放原 Issue 的槽位', async () => {
-    vi.stubEnv('CODEX_AUTH_SECRET_NAME', 'CODEX_AUTH_JSON_A');
-    vi.stubEnv('TASK_SUBJECT', '42'); vi.stubEnv('PUBLISH_RESULT', 'success'); vi.stubEnv('NEXT_TASK', 'review'); vi.stubEnv('RESULT_PR', '43');
-    const dispatch = vi.fn(); const issues = { addLabels: vi.fn(), removeLabel: vi.fn(), createComment: vi.fn() };
-    await finish({ github: { rest: { actions: { createWorkflowDispatch: dispatch }, issues } }, context, core: core() });
-    expect(issues.addLabels).toHaveBeenCalledWith({ ...repo, issue_number: 43, labels: ['agent:dispatching', 'agent:auth-codex-auth-json-a'] });
-    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ inputs: { pr_number: '43', auth_secret: 'CODEX_AUTH_JSON_A' } }));
-    expect(issues.removeLabel).toHaveBeenCalledWith({ ...repo, issue_number: 42, name: 'agent:auth-codex-auth-json-a' });
   });
   it('接续失败给出手动恢复说明，仍然移除进行中状态', async () => {
     vi.stubEnv('TASK_SUBJECT', '42'); vi.stubEnv('PUBLISH_RESULT', 'success'); vi.stubEnv('NEXT_TASK', 'implement-prd');
@@ -200,8 +190,7 @@ describe('Issue 与 PRD 自动路由', () => {
         if (ref === 'heads/main') return { data: { object: { sha: 'main-sha' } } };
         throw Object.assign(new Error('not found'), { status: 404 });
       }) },
-      actions: { createWorkflowDispatch: vi.fn() },
-      issues: { createComment: vi.fn(), get: vi.fn().mockResolvedValue({ data: { number: 42, title: '需求', body: '验收条件', state: 'open' } }), listComments: 'comments', getLabel: vi.fn(), removeLabel: vi.fn(), addLabels: vi.fn() }, pulls: { list: 'prs' },
+      issues: { get: vi.fn().mockResolvedValue({ data: { number: 42, title: '需求', body: '验收条件', state: 'open' } }), listComments: 'comments', getLabel: vi.fn(), removeLabel: vi.fn(), addLabels: vi.fn() }, pulls: { list: 'prs' },
     }, graphql: vi.fn().mockImplementation(async (query) => query.includes('blockedBy')
       ? { repository: { issue: { blockedBy: { nodes: [], pageInfo: { hasNextPage: false } } } } }
       : { repository: { issue: { parent: null } } }),
@@ -209,24 +198,18 @@ describe('Issue 与 PRD 自动路由', () => {
     };
     return { dir, c, github };
   }
-  it('普通 Issue 使用独立分支；父规格授权全部开放子任务并启动晋级，不调用模型', async () => {
+  it('普通 Issue 使用唯一分支；含子 Issue 的父需求使用稳定 PRD 分支并选择第一个开放任务', async () => {
     const ordinary = await issueFixture([]); await prepare({ github: ordinary.github, context, core: ordinary.c });
     const single = JSON.parse(await readFile(join(ordinary.dir, 'codex-context/task.json'), 'utf8'));
     expect(single.mode).toBe('implement'); expect(single.branch).toMatch(/^codex\/issue-42-123-/);
     const f = await issueFixture([{ number: 50, state: 'closed' }, { number: 51, state: 'open' }, { number: 52, state: 'open' }]);
     await prepare({ github: f.github, context, core: f.c });
-    expect(f.c.setOutput).not.toHaveBeenCalledWith('proceed', 'true');
-    expect(f.github.rest.issues.addLabels.mock.calls.map(([args]) => args.issue_number)).toEqual([51, 52]);
-    expect(f.github.rest.actions.createWorkflowDispatch).toHaveBeenCalledWith(expect.objectContaining({ workflow_id: 'agent-promote-queued.yml' }));
+    const task = JSON.parse(await readFile(join(f.dir, 'codex-context/task.json'), 'utf8'));
+    expect(task.mode).toBe('implement-prd'); expect(task.branch).toBe('codex/prd-42'); expect(task.child.number).toBe(51);
   });
-  it('子 Issue 可独立执行并携带父规格；仍拒绝嵌套 PRD', async () => {
-    const child = await issueFixture([]);
-    child.github.graphql.mockImplementation(async (query) => query.includes('blockedBy')
-      ? { repository: { issue: { blockedBy: { nodes: [], pageInfo: { hasNextPage: false } } } } }
-      : { repository: { issue: { parent: { number: 1 } } } });
-    await prepare({ github: child.github, context, core: child.c });
-    const task = JSON.parse(await readFile(join(child.dir, 'codex-context/task.json'), 'utf8'));
-    expect(task.number).toBe(42); expect(task.parent).toBeDefined(); expect(task.branch).toMatch(/^codex\/issue-42-/);
+  it('拒绝直接启动子 Issue 或嵌套 PRD，不把它当普通任务', async () => {
+    const child = await issueFixture([]); child.github.graphql.mockResolvedValue({ repository: { issue: { parent: { number: 1 } } } });
+    await expect(prepare({ github: child.github, context, core: child.c })).rejects.toThrow('父 PRD');
     const nested = await issueFixture([{ number: 51, state: 'open' }]);
     nested.github.paginate.mockImplementation(async (route, args) => route.includes('sub_issues') ? [{ number: args.issue_number + 1, state: 'open' }] : []);
     await expect(prepare({ github: nested.github, context, core: nested.c })).rejects.toThrow('嵌套');
@@ -235,24 +218,6 @@ describe('Issue 与 PRD 自动路由', () => {
     const f = await issueFixture([{ number: 51, state: 'closed' }]);
     await prepare({ github: f.github, context, core: f.c });
     expect(f.c.setOutput).not.toHaveBeenCalledWith('proceed', 'true'); expect(f.github.rest.issues.addLabels).not.toHaveBeenCalled();
-  });
-  it('旧共用分支 PR 未合并时拒绝切换，避免信任旧流程提前关闭的子任务', async () => {
-    const f = await issueFixture([{ number: 51, state: 'open' }]);
-    const paginate = f.github.paginate.getMockImplementation()!;
-    f.github.paginate.mockImplementation(async (route, args) => route === 'prs' && args.state === 'closed'
-      ? [{ head: { ref: 'codex/prd-42' }, merged_at: null }] : paginate(route, args));
-    await expect(prepare({ github: f.github, context, core: f.c })).rejects.toThrow('未合并');
-    expect(f.github.rest.actions.createWorkflowDispatch).not.toHaveBeenCalled();
-    expect(f.github.rest.issues.addLabels).not.toHaveBeenCalled();
-  });
-  it('派发后的入口预检失败会释放预留槽位并标记阻塞', async () => {
-    const f = await issueFixture([]);
-    vi.stubEnv('CODEX_AUTH_SECRET_NAME', 'CODEX_AUTH_JSON_A');
-    f.github.rest.git.getRef.mockRejectedValue(new Error('preflight failure'));
-    f.github.rest.issues.get.mockResolvedValue({ data: { number: 42, title: '需求', body: '', state: 'open', labels: ['agent:dispatching', 'agent:auth-codex-auth-json-a'] } });
-    await expect(prepare({ github: f.github, context, core: f.c })).rejects.toThrow('preflight failure');
-    expect(f.github.rest.issues.addLabels).toHaveBeenCalledWith({ ...repo, issue_number: 42, labels: ['agent:blocked'] });
-    expect(f.github.rest.issues.removeLabel).toHaveBeenCalledWith({ ...repo, issue_number: 42, name: 'agent:auth-codex-auth-json-a' });
   });
 });
 

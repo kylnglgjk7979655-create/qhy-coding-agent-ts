@@ -1,6 +1,3 @@
-# TASK
-
-处理 feedback 中尚未解决的 PR 反馈。区分需要修改、需要解释和无须操作的评论；只处理有关范围。先复现可疑错误，再实施修复和回归验证。可依据证据拒绝建议并解释理由，没有修改需要时允许无变更。
-
-replies 使用输入提供的 thread 评论数字 id，不替审核者 resolve thread。
-输出 <output>{"summary":"修改、验证、未采纳建议及理由","completed":true,"replies":[]}</output>。
+根据 feedback 中尚未解决的 PR 反馈继续修改，区分需要改代码、需要解释和无须操作的评论。只处理相关反馈，必要时补充回归测试；允许有依据地拒绝建议，并解释原因。没有实际修改时不要制造空变更。
+对 inline thread 的回复使用其中评论的数字 id，不替审核者解决 thread。
+输出：{"summary":"修改、验证及未采纳建议的理由","replies":[{"commentId":123,"body":"说明"}]}。

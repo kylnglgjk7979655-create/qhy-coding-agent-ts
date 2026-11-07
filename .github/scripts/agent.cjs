@@ -9,14 +9,11 @@ const labels = [
   ['ready-for-human', 'FBCA04', '需要人工实现'],
   ['wontfix', 'FFFFFF', '不予实施'],
   ['agent:implement', '0E8A16', '启动 Codex 实现；ready-for-agent 仅表示准备完成'],
-  ['agent:bugfix', 'D73A4A', '复现、诊断并修复缺陷，验证通过后创建 PR'],
-  ['agent:code-design', '5319E7', '只读分析并交付设计方案，不修改代码'],
   ['agent:review', '5319E7', '启动 Codex 审查 PR'],
   ['agent:update-branch', '1D76DB', '合并基准分支并解决冲突'],
   ['agent:to-issues', '5319E7', '将 PRD 拆成原生子 Issue'],
   ['agent:publish-tickets', '5319E7', '确认已生成的拆票计划并发布子任务'],
-  ['agent:queued', 'FBCA04', '已授权执行，全部原生依赖完成后启动'],
-  ['agent:dispatching', '1D76DB', '就绪任务已领取并派发，等待执行入口接收'],
+  ['agent:queued', 'FBCA04', '依赖完成后串行启动'],
   ['source:architecture-review', '5319E7', '自动架构审查提出的 PRD'],
   ['agent:in-progress', '1D76DB', 'Codex 正在执行'],
   ['agent:blocked', 'B60205', 'Codex 执行失败，需要处理后重试'],
@@ -25,10 +22,7 @@ const labels = [
 async function setup({ github, context }) {
   for (const [name, color, description] of labels) {
     try {
-      const existing = await github.rest.issues.getLabel({ ...context.repo, name });
-      if (name === 'agent:queued' && existing?.data?.description === '依赖完成后串行启动') {
-        await github.rest.issues.updateLabel({ ...context.repo, name, description });
-      }
+      await github.rest.issues.getLabel({ ...context.repo, name });
     } catch (error) {
       if (error.status !== 404) throw error;
       await github.rest.issues.createLabel({ ...context.repo, name, color, description });
