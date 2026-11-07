@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { ResolvedConfig } from './config.js';
 import { AgentError, publicError } from './errors.js';
 import { readWorkspaceFile, writeWorkspaceFile } from './workspace-files.js';
+import type { WorkspaceFileSnapshot } from './workspace-files.js';
 import { approveToolCall } from './tool-approval.js';
 import type { ApprovalControl } from './tool-approval.js';
 import { ToolRegistry } from './tool-registry.js';
@@ -176,6 +177,8 @@ export async function runAgent(
     onText?: (chunk: string) => Promise<void> | void;
     onToolCallStart?: (call: { callId: string; toolName: string; input: unknown }) => Promise<void> | void;
     onStepMessages?: (content: unknown[]) => Promise<void> | void;
+    onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
+    onCheckpointError?: (path: string) => void;
     onToolCall?: (name: string) => void;
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
@@ -252,7 +255,13 @@ export async function runAgent(
     description: '将工作区内文件完整替换为指定内容；目标不存在时创建文件，不会创建父目录。',
     inputSchema: z.strictObject({ path: z.string().min(1), content: z.string() }),
     execute: async ({ path, content }) => {
-      await writeWorkspaceFile(config.workspace, path, content);
+      await writeWorkspaceFile(
+        config.workspace,
+        path,
+        content,
+        options.onBeforeWrite,
+        options.onCheckpointError,
+      );
       return { success: true as const };
     },
   });

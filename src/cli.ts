@@ -7,7 +7,8 @@ import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { runAgent } from './agent.js';
 import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './config.js';
-import { appendRoundMessages, appendRoundText, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, reconstructSessionHistory, saveLegacyConversation, startSessionRound } from './conversations.js';
+import { appendRoundMessages, appendRoundText, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveLegacyConversation, startSessionRound } from './conversations.js';
+import type { WorkspaceFileSnapshot } from './workspace-files.js';
 import { AgentError, publicError } from './errors.js';
 import { CliInput } from './cli-input.js';
 import type { ApprovalControl } from './tool-approval.js';
@@ -260,7 +261,9 @@ async function runTurn(
   try {
     if (!smokeTool) {
       const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
-      roundId = await startSessionRound(userHome, conversationId, prompt, persistedConfig);
+      roundId = await startSessionRound(userHome, conversationId, prompt, persistedConfig, () => {
+        log({ event: 'checkpoint.snapshot_failed', conversationId, message: '消息检查点文件快照失败，继续处理。' });
+      });
       summaryCoverageBase = (await loadSession(userHome, conversationId)).summaries.at(-1)?.coversThrough ?? 0;
     }
     const result = await runAgent(config, prompt, {
@@ -284,6 +287,13 @@ async function runTurn(
         const results = content.filter((part): part is Record<string, unknown> => typeof part === 'object' && part !== null && (part as { type?: string }).type === 'tool-result');
         for (const result of results) if (typeof result.toolCallId === 'string') pendingToolCalls.delete(result.toolCallId);
         if (results.length > 0) await appendRoundMessages(userHome, conversationId, roundId, [{ role: 'tool', content: results } as unknown as ModelMessage]);
+      },
+      onBeforeWrite: async (snapshot: WorkspaceFileSnapshot) => {
+        if (!roundId) return;
+        await recordFileBackup(userHome, conversationId, roundId, snapshot);
+      },
+      onCheckpointError: () => {
+        log({ event: 'checkpoint.backup_failed', conversationId, message: 'write_file 原状态备份失败，继续写入。' });
       },
       onToolEvent: ({ toolName, status }) => {
         const label = {

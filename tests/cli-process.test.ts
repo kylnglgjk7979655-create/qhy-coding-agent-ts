@@ -102,6 +102,68 @@ describe('compiled CLI process driver', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('tracks write_file baselines in per-message checkpoints, including ignored and newly created files', async () => {
+    const cwd = await directory('checkpoint-cwd');
+    const userDir = await directory('checkpoint-user');
+    await writeFile(join(cwd, '.gitignore'), 'ignored.txt\n');
+    await writeFile(join(cwd, 'note.txt'), 'before');
+    const model = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1) return { calls: [
+        { id: 'first-write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'first' }) } },
+        { id: 'repeat-write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'within-message' }) } },
+        { id: 'ignored-create', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'ignored.txt', content: 'ignored' }) } },
+      ] };
+      if (index === 2) return { content: '第一条已完成。' };
+      if (index === 3) return { calls: [{ id: 'second-write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'second' }) } }] };
+      if (index === 5) return { calls: [{ id: 'late-create', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'late.txt', content: 'late' }) } }] };
+      if (index === 7) return { calls: [{ id: 'other-session', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'other-session' }) } }] };
+      return { content: '第二条已完成。' };
+    });
+    try {
+      await configure(cwd, model.baseURL);
+      const child = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '第一条\n第二条\n第三条\n/exit\n' });
+      const result = await child.done;
+      expect(result.code).toBe(0);
+      const id = findConversationId(result.stderr);
+      const record = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json'), 'utf8')) as {
+        checkpoints: Array<{ messageId: string; files: Array<{ path: string; backupId: string }> }>;
+        backups: Array<{ id: string; path: string; existed: boolean; content?: string }>;
+      };
+      expect(record.checkpoints).toHaveLength(3);
+      const first = record.checkpoints[0]!.files;
+      expect(first.map(({ path }) => path).sort()).toEqual(['ignored.txt', 'late.txt', 'note.txt']);
+      const original = new Map(record.backups.map((backup) => [backup.id, backup]));
+      expect(original.get(first.find(({ path }) => path === 'note.txt')!.backupId)).toMatchObject({ path: 'note.txt', existed: true, content: 'before' });
+      expect(original.get(first.find(({ path }) => path === 'ignored.txt')!.backupId)).toMatchObject({ path: 'ignored.txt', existed: false });
+      const second = record.checkpoints[1]!.files.find(({ path }) => path === 'note.txt');
+      expect(original.get(second!.backupId)).toMatchObject({ path: 'note.txt', existed: true, content: 'within-message' });
+      for (const checkpoint of record.checkpoints) {
+        const late = checkpoint.files.find(({ path }) => path === 'late.txt');
+        expect(late).toBeDefined();
+        expect(original.get(late!.backupId)).toMatchObject({ path: 'late.txt', existed: false });
+      }
+      expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('second');
+      expect(await readFile(join(cwd, 'ignored.txt'), 'utf8')).toBe('ignored');
+      expect(await readFile(join(cwd, 'late.txt'), 'utf8')).toBe('late');
+
+      const other = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '独立会话\n/exit\n' });
+      const otherResult = await other.done;
+      expect(otherResult.code).toBe(0);
+      const otherId = findConversationId(otherResult.stderr);
+      expect(otherId).not.toBe(id);
+      const otherRecord = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', otherId, 'record.json'), 'utf8')) as {
+        checkpoints: Array<{ files: Array<{ path: string; backupId: string }> }>;
+        backups: Array<{ id: string; content?: string }>;
+      };
+      expect(otherRecord.checkpoints[0]!.files.map(({ path }) => path)).toEqual(['note.txt']);
+      expect(new Map(otherRecord.backups.map(({ id: backupId, content }) => [backupId, content]))
+        .get(otherRecord.checkpoints[0]!.files[0]!.backupId)).toBe('second');
+      expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('other-session');
+    } finally {
+      await model.close();
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('persists partial output while running and keeps failed round transcript', async () => {
     const cwd = await directory('transcript-cwd');
     const userDir = await directory('transcript-user');

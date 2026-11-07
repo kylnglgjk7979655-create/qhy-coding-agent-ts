@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import type { ModelMessage } from 'ai';
 import type { ModelConfig } from './config.js';
 import { AgentError } from './errors.js';
+import { snapshotWorkspaceFile } from './workspace-files.js';
 
 const conversationIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
 
@@ -34,8 +35,8 @@ export interface SessionRecord {
     error?: { code: string; message: string };
   }>;
   summaries: Array<{ text: string; coversThrough: number }>;
-  checkpoints: Array<{ id: string; messageId: string; createdAt: string }>;
-  backups: Array<{ path: string; content?: string; existed: boolean }>;
+  checkpoints: Array<{ id: string; messageId: string; createdAt: string; files?: Array<{ path: string; backupId: string }> }>;
+  backups: Array<{ id?: string; path: string; content?: string; existed: boolean }>;
 }
 
 export function sessionStorageRoot(home = homedir()): string {
@@ -189,16 +190,59 @@ export async function saveSession(home: string, record: SessionRecord): Promise<
   await writeSessionRecord(home, { ...record, updatedAt: new Date().toISOString() });
 }
 
-export async function startSessionRound(home: string, conversationId: string, prompt: string, config: ModelConfig): Promise<string> {
+export async function startSessionRound(
+  home: string,
+  conversationId: string,
+  prompt: string,
+  config: ModelConfig,
+  onCheckpointError?: (path: string) => void,
+): Promise<string> {
   const session = await loadSession(home, conversationId);
   const roundId = randomUUID();
   const transcriptStart = session.transcript.length;
+  const checkpointFiles: Array<{ path: string; backupId: string }> = [];
+  const backups = [...session.backups];
+  for (const path of new Set(backups.map((backup) => backup.path))) {
+    try {
+      const snapshot = await snapshotWorkspaceFile(session.workspace, path);
+      const backupId = randomUUID();
+      backups.push({ id: backupId, ...snapshot });
+      checkpointFiles.push({ path, backupId });
+    } catch {
+      // A checkpoint is best-effort; the message and its original tool work must still proceed.
+      onCheckpointError?.(path);
+    }
+  }
   await saveSession(home, {
     ...session,
     transcript: [...session.transcript, { role: 'user', content: prompt }],
     rounds: [...session.rounds, { id: roundId, status: 'running', startedAt: new Date().toISOString(), config, transcriptStart, messages: [], partialText: '' }],
+    checkpoints: [...session.checkpoints, { id: randomUUID(), messageId: roundId, createdAt: new Date().toISOString(), files: checkpointFiles }],
+    backups,
   });
   return roundId;
+}
+
+export async function recordFileBackup(
+  home: string,
+  conversationId: string,
+  roundId: string,
+  snapshot: { path: string; existed: boolean; content?: string },
+): Promise<void> {
+  const session = await loadSession(home, conversationId);
+  const backupId = randomUUID();
+  const checkpoints = session.checkpoints.map((checkpoint) => {
+    if (checkpoint.files?.some((file) => file.path === snapshot.path)) return checkpoint;
+    return { ...checkpoint, files: [...(checkpoint.files ?? []), { path: snapshot.path, backupId }] };
+  });
+  if (!checkpoints.some((checkpoint) => checkpoint.messageId === roundId)) {
+    throw new AgentError('PROVIDER_ERROR', '当前消息检查点不可用。');
+  }
+  await saveSession(home, {
+    ...session,
+    checkpoints,
+    backups: [...session.backups, { id: backupId, ...snapshot }],
+  });
 }
 
 export async function appendRoundMessages(home: string, conversationId: string, roundId: string, messages: ModelMessage[]): Promise<void> {
@@ -394,11 +438,15 @@ function isCheckpointRecord(value: unknown): value is SessionRecord['checkpoints
   return typeof value === 'object' && value !== null
     && typeof (value as SessionRecord['checkpoints'][number]).id === 'string'
     && typeof (value as SessionRecord['checkpoints'][number]).messageId === 'string'
-    && typeof (value as SessionRecord['checkpoints'][number]).createdAt === 'string';
+    && typeof (value as SessionRecord['checkpoints'][number]).createdAt === 'string'
+    && ((value as SessionRecord['checkpoints'][number]).files === undefined
+      || (Array.isArray((value as SessionRecord['checkpoints'][number]).files)
+        && (value as SessionRecord['checkpoints'][number]).files!.every((file) => typeof file.path === 'string' && typeof file.backupId === 'string')));
 }
 
 function isBackupRecord(value: unknown): value is SessionRecord['backups'][number] {
   return typeof value === 'object' && value !== null
+    && ((value as SessionRecord['backups'][number]).id === undefined || typeof (value as SessionRecord['backups'][number]).id === 'string')
     && typeof (value as SessionRecord['backups'][number]).path === 'string'
     && typeof (value as SessionRecord['backups'][number]).existed === 'boolean'
     && ((value as SessionRecord['backups'][number]).content === undefined || typeof (value as SessionRecord['backups'][number]).content === 'string');
