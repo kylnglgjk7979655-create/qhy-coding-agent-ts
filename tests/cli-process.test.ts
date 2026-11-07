@@ -277,10 +277,12 @@ describe('compiled CLI process driver', () => {
     const userDir = await directory('rewind-partial-user');
     await writeFile(join(cwd, 'blocked.txt'), 'blocked-before');
     await writeFile(join(cwd, 'good.txt'), 'good-before');
+    await writeFile(join(cwd, 'last.txt'), 'last-before');
     const model = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [
         { id: 'write-blocked', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'blocked.txt', content: 'blocked-after' }) } },
         { id: 'write-good', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'good.txt', content: 'good-after' }) } },
+        { id: 'write-last', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'last.txt', content: 'last-after' }) } },
       ] }
       : { content: '完成。' });
     try {
@@ -304,13 +306,16 @@ describe('compiled CLI process driver', () => {
       await waitForOutput(() => output, '恢复结果', 1);
       expect(output).toContain('blocked.txt：失败');
       expect(output).toContain('good.txt：成功');
+      expect(output).toContain('last.txt：成功');
       expect(await readFile(join(cwd, 'good.txt'), 'utf8')).toBe('good-before');
+      expect(await readFile(join(cwd, 'last.txt'), 'utf8')).toBe('last-before');
 
       resumed.end('/exit\n');
       expect((await resumed.done).code).toBe(0);
       const saved = JSON.parse(await readFile(recordPath, 'utf8')) as { transcript: unknown[] };
       expect(JSON.stringify(saved.transcript)).toContain('blocked.txt：失败');
       expect(JSON.stringify(saved.transcript)).toContain('good.txt：成功');
+      expect(JSON.stringify(saved.transcript)).toContain('last.txt：成功');
     } finally {
       await model.close();
     }
@@ -460,19 +465,21 @@ describe('compiled CLI process driver', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('prefers an existing user-level session over a stale workspace history with the same ID', async () => {
+  it.skipIf(process.platform === 'win32')('ignores stale workspace history when resuming a user-level session', async () => {
     const cwd = await directory('resume-stale-history-cwd');
     const userDir = await directory('resume-stale-history-user');
     const model = await startLocalOpenAIModel(() => ({ content: '继续完成' }));
     try {
       await configure(cwd, model.baseURL);
-      const first = startCLI({ cwd, userDir, conversationId: 'durable-session', env: { TEST_MODEL_API_KEY: secret }, input: '用户级会话中的原始消息\n/exit\n' });
+      const first = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '用户级会话中的原始消息\n/exit\n' });
       expect((await first.done).code).toBe(0);
+      const durableSessionId = findConversationId((await first.done).stderr);
 
-      await writeFile(join(cwd, '.agent', 'conversations', 'durable-session.json'), JSON.stringify([
+      await mkdir(join(cwd, '.agent', 'conversations'), { recursive: true });
+      await writeFile(join(cwd, '.agent', 'conversations', `${durableSessionId}.json`), JSON.stringify([
         { role: 'user', content: '过期工作区历史' },
       ]));
-      const resumed = startCLI({ cwd, userDir, conversationId: 'durable-session', env: { TEST_MODEL_API_KEY: secret }, input: '继续用户级会话\n/exit\n' });
+      const resumed = startCLI({ cwd, userDir, conversationId: durableSessionId, env: { TEST_MODEL_API_KEY: secret }, input: '继续用户级会话\n/exit\n' });
       expect((await resumed.done).code).toBe(0);
 
       const request = model.requests.at(-1)!;
