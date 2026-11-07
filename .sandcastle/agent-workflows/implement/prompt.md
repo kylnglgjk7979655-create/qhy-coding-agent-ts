@@ -31,7 +31,7 @@ Where a test seam already exists, or a new one is being proposed, do red-green-r
 
 Do not improvise new test seams, such as extracting out a function so that it can be tested in isolation. This creates spaghetti tests.
 
-Run `pnpm typecheck` before committing. Run focused tests where relevant.
+Before committing, run `pnpm typecheck` and `pnpm test` and ensure both pass.
 
 # COMMIT
 
