@@ -8,6 +8,12 @@ on:
   # the merge ref) — resolving those is agent-update-branch's job.
   pull_request:
     types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: '内部接续：同仓库、开放且携带 agent:review 标签的 PR 编号'
+        type: string
+        required: true
 
 # 同一份 Codex 订阅认证必须串行刷新，锁覆盖回存和发布。
 concurrency:
@@ -16,26 +22,43 @@ concurrency:
 
 jobs:
   review:
-    if: github.event.label.name == 'agent:review'
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:review'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: agent-mutate-pr-${{ github.event.pull_request.number }}
+      group: agent-mutate-pr-${{ github.event.pull_request.number || inputs.pr_number }}
       cancel-in-progress: false
     permissions:
-      actions: read
+      actions: write
       contents: write
+      issues: read
       pull-requests: write
 
     env:
       CODEX_MODEL: ${{ vars.CODEX_MODEL }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
       BRANCH: ${{ github.event.pull_request.head.ref }}
       BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
+      - name: Resolve dispatched PR snapshot
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            exit 1
+          fi
+          pr_file="$RUNNER_TEMP/dispatched-pr.json"
+          gh pr view "$PR_NUMBER" --json state,isCrossRepository,headRefName,headRefOid,labels > "$pr_file"
+          jq -e '.state == "OPEN" and .isCrossRepository == false and any(.labels[]; .name == "agent:review")' "$pr_file" > /dev/null
+          branch=$(jq -r '.headRefName' "$pr_file")
+          sha=$(jq -r '.headRefOid' "$pr_file")
+          git check-ref-format --branch "$branch" > /dev/null
+          [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+          printf 'BRANCH=%s\nBRANCH_HEAD_SHA=%s\n' "$branch" "$sha" >> "$GITHUB_ENV"
+
       - name: Transition labels
         run: |
           gh pr edit "$PR_NUMBER" --remove-label "agent:review" || true
@@ -45,8 +68,9 @@ jobs:
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ env.BRANCH_HEAD_SHA }}
           fetch-depth: 0
+          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Prepare branch
         run: |
@@ -94,6 +118,15 @@ jobs:
             fi
             cat push_err.txt
             exit $status
+          fi
+
+      - name: Check review changes without PAT
+        if: success()
+        env:
+          AGENT_PAT: ${{ secrets.AGENT_PAT }}
+        run: |
+          if [ -z "$AGENT_PAT" ] && [ "$(git rev-parse HEAD)" != "$BRANCH_HEAD_SHA" ]; then
+            gh api --method POST "repos/$GH_REPO/actions/workflows/check.yml/dispatches" -f ref="$BRANCH"
           fi
 
       - name: Post PR review

@@ -1,0 +1,93 @@
+name: Agent To Issues
+on:
+  issues:
+    types: [labeled]
+concurrency:
+  group: ${{ github.event.label.name == 'agent:to-issues' && format('codex-subscription-{0}', github.repository) || format('agent-ignored-{0}', github.run_id) }}
+  cancel-in-progress: false
+jobs:
+  plan:
+    if: github.event.label.name == 'agent:to-issues'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: agent-ticket-control-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Capture source before agent runs
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/tickets
+        run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts snapshot
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ticket-source
+          path: ${{ runner.temp }}/tickets/source.json
+      - name: Restore Codex subscription
+        id: auth
+        uses: ./.github/actions/codex-auth-restore
+        with:
+          auth-json: ${{ secrets.CODEX_AUTH_JSON }}
+          store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
+      - name: Draft ticket plan
+        env:
+          SOURCE_FILE: ${{ runner.temp }}/tickets/source.json
+          OUTPUT_DIR: ${{ runner.temp }}/tickets
+        run: pnpm exec tsx .sandcastle/agent-workflows/tickets/to-issues.ts
+      - name: Save refreshed Codex subscription
+        if: always() && steps.auth.outputs.restored == 'true'
+        uses: ./.github/actions/codex-auth-save
+        with:
+          store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
+      - name: Upload plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: ticket-plan
+          path: ${{ runner.temp }}/tickets/plan.json
+  record:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: agent-ticket-control-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: ticket-source
+          path: ${{ runner.temp }}/source
+      - uses: actions/download-artifact@v4
+        with:
+          name: ticket-plan
+          path: ${{ runner.temp }}/plan
+      - name: Validate and post reviewable plan
+        env:
+          SOURCE_FILE: ${{ runner.temp }}/source/source.json
+          PLAN_FILE: ${{ runner.temp }}/plan/plan.json
+        run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts record
+

@@ -1,0 +1,32 @@
+name: Agent Publish Tickets
+on:
+  issues:
+    types: [labeled]
+concurrency:
+  group: agent-publish-${{ github.repository }}-${{ github.event.issue.number }}-${{ github.event.label.name }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.event.label.name == 'agent:publish-tickets'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: agent-ticket-control-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      APPROVED_AT: ${{ github.event.issue.updated_at }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Publish approved plan with native dependencies
+        run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts publish
+

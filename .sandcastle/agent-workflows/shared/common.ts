@@ -6,7 +6,7 @@ import type { StandardSchemaV1 } from "@standard-schema/spec";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { codexAuthEnvironment, resolveCodexModel } from "../../codex-auth.js";
 
-export const outputDir = (): string => process.env.OUTPUT_DIR ?? "/tmp";
+export const outputDir = (): string => process.env.OUTPUT_DIR ?? process.env.RUNNER_TEMP ?? "/tmp";
 
 export const required = (name: string): string => {
   const value = process.env[name];
