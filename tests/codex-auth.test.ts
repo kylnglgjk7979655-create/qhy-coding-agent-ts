@@ -18,16 +18,9 @@ describe('Codex 订阅认证', () => {
     expect(() => codexAuthEnvironment({}, () => { throw new Error('sensitive-token'); })).not.toThrow('sensitive-token');
   });
 
-  it('只有明确指定 API 模式才传入 API Key，且无需订阅登录', () => {
-    const status = vi.fn();
-    expect(codexAuthEnvironment({ CODEX_AUTH_MODE: 'api-key', CODEX_API_KEY: 'api-secret' }, status))
-      .toEqual({ CODEX_API_KEY: 'api-secret' });
-    expect(status).not.toHaveBeenCalled();
-  });
-
   it('错误认证模式不会自动回退到付费 API', () => {
     expect(() => codexAuthEnvironment({ CODEX_AUTH_MODE: 'typo', CODEX_API_KEY: 'api-secret' }, vi.fn())).toThrow('只支持');
-    expect(() => codexAuthEnvironment({ CODEX_AUTH_MODE: 'api-key' }, vi.fn())).toThrow('需要 CODEX_API_KEY');
+    expect(() => codexAuthEnvironment({ CODEX_AUTH_MODE: 'api-key', CODEX_API_KEY: 'api-secret' }, vi.fn())).toThrow('只支持');
   });
 
   it('优先使用显式配置的模型名', () => {

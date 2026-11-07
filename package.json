@@ -19,8 +19,12 @@
     "demo:test": "tsx --test demo/src/*.test.ts",
     "demo:bug": "tsx --test demo/regression/*.test.ts",
     "demo:init": "node scripts/init-demo.mjs",
-    "agent:task": "tsx .sandcastle/task.ts",
-    "agent:implement": "tsx .sandcastle/implement.ts"
+    "agent:implement": "tsx .sandcastle/agent-workflows/implement/implement.ts",
+    "agent:review": "tsx .sandcastle/agent-workflows/review/review.ts",
+    "agent:implement-pr": "tsx .sandcastle/agent-workflows/implement-pr/implement-pr.ts",
+    "agent:update-branch": "tsx .sandcastle/agent-workflows/update-branch/update-branch.ts",
+    "agent:explore": "tsx .sandcastle/agent-workflows/explore/explore.ts",
+    "agent:explore:apply": "tsx .sandcastle/agent-workflows/explore/apply.ts"
   },
   "dependencies": {
     "@ai-sdk/mcp": "2.0.90",
@@ -32,6 +36,7 @@
   "devDependencies": {
     "@ai-hero/sandcastle": "0.14.0",
     "@openai/codex": "0.166.0",
+    "@standard-schema/spec": "1.1.0",
     "@types/node": "24.19.2",
     "libsodium-wrappers": "0.8.4",
     "tsx": "4.23.15",

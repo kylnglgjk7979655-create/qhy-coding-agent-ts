@@ -1,0 +1,24 @@
+name: Save Codex subscription
+description: 加密并回存 Codex 刷新后的登录，始终删除临时登录文件
+inputs:
+  store-token:
+    description: 只用于读取和回存仓库 Secret 的 Token
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Encrypt refreshed login
+      id: seal
+      if: always()
+      shell: bash
+      run: node .github/scripts/subscription.cjs seal
+    - name: Persist encrypted login
+      if: always() && steps.seal.outcome == 'success'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.store-token }}
+        script: await require('./.github/scripts/subscription.cjs').persist({ github, context })
+    - name: Remove temporary login
+      if: always()
+      shell: bash
+      run: rm -rf "$CODEX_HOME"

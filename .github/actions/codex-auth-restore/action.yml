@@ -1,0 +1,44 @@
+name: Restore Codex subscription
+description: 恢复 CI 专用订阅登录，记录回存版本
+inputs:
+  auth-json:
+    description: CODEX_AUTH_JSON
+    required: true
+  store-token:
+    description: 只用于读取和回存仓库 Secret 的 Token
+    required: true
+outputs:
+  restored:
+    description: 是否已经恢复登录文件
+    value: ${{ steps.restore.outputs.restored }}
+runs:
+  using: composite
+  steps:
+    - name: Read run creation time
+      id: run
+      uses: actions/github-script@v7
+      with:
+        script: |
+          core.exportVariable('CODEX_HOME', require('node:path').join(process.env.RUNNER_TEMP, 'codex-home'));
+          const { data } = await github.rest.actions.getWorkflowRun({ ...context.repo, run_id: context.runId });
+          core.setOutput('created_at', data.created_at);
+    - name: Read encryption key and restore login
+      id: restore
+      uses: actions/github-script@v7
+      env:
+        CODEX_AUTH_JSON: ${{ inputs.auth-json }}
+        AUTH_JSON_CONFIGURED: ${{ inputs.auth-json != '' }}
+        AUTH_STORE_CONFIGURED: ${{ inputs.store-token != '' }}
+        RUN_CREATED_AT: ${{ steps.run.outputs.created_at }}
+      with:
+        github-token: ${{ inputs.store-token }}
+        script: |
+          const auth = require('./.github/scripts/subscription.cjs');
+          try {
+            await auth.publicKey({ github, context });
+            await auth.restore(core.setSecret);
+            core.setOutput('restored', 'true');
+          } catch (error) {
+            await require('node:fs/promises').rm(process.env.CODEX_HOME, { recursive: true, force: true });
+            throw error;
+          }

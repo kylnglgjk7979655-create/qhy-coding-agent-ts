@@ -1,27 +1,26 @@
-# Triage Labels
+# Issue 分类与执行标签
 
-The skills speak in terms of five canonical triage roles. This file maps those roles to the actual label strings used in this repo's issue tracker.
-
-| Label in mattpocock/skills | Label in our tracker | Meaning |
-| --- | --- | --- |
-| `needs-triage` | `needs-triage` | Maintainer needs to evaluate this issue |
-| `needs-info` | `needs-info` | Waiting on reporter for more information |
-| `ready-for-agent` | `ready-for-agent` | Fully specified, ready for an AFK agent |
-| `ready-for-human` | `ready-for-human` | Requires human implementation |
-| `wontfix` | `wontfix` | Will not be actioned |
-
-When a skill mentions a role, use the corresponding label string from this table.
-
-## GitHub 自动实现
-
-`ready-for-agent` 仅表示需求准备完成，本地和 GitHub 都不会因此自动启动。给父 Issue 添加 `agent:implement` 或手动运行才开始；`ready-for-human` / Human QA 始终由人执行。
+仓库使用默认五种 triage 标签，与上游 skills 及 Sandcastle 官方领域文档保持同名：
 
 | 标签 | 含义 |
 | --- | --- |
-| `agent:implement` | 启动 Codex 实现 |
-| `agent:to-issues` | 生成待审批拆票计划 |
-| `agent:publish-tickets` | 确认计划并发布原生子任务和依赖 |
-| `agent:in-progress` | 本轮自动实现正在执行 |
-| `agent:blocked` | 本轮失败，查看运行日志后重试 |
+| `needs-triage` | 等待维护者判断 |
+| `needs-info` | 等待报告者补充信息 |
+| `ready-for-agent` | 需求明确，适合 Agent 实现；仅表示准备状态 |
+| `ready-for-human` | 需要人工判断或实现 |
+| `wontfix` | 不处理 |
 
-首次运行 `Setup Agent Labels` 可创建缺少的标签，保留已有标签的配置。详情见 [GitHub Actions 与 Codex](./github-actions.md)。
+## 官方 GitHub workflow 标签
+
+| 标签 | 行为 |
+| --- | --- |
+| `agent:explore` | 批量调查全部开放的 explore Issue；转交明确任务，关闭重复项 |
+| `agent:implement` | 独立 Issue 启动实现；PR 启动反馈修改 |
+| `agent:review` | PR 审查，可修复代码，发布 COMMENT 并标记 Ready |
+| `agent:update-branch` | 同仓库 PR 合并基准分支，处理冲突 |
+| `agent:in-progress` | 该轮任务执行中 |
+| `agent:blocked` | 运行失败，或 Explore 判断存在外部阻塞 |
+
+`ready-for-agent` 不自动执行。Explore 的 `easy-call` 结论会换成 `agent:implement`，自动接续需要配置 `AGENT_PAT`；`needs-a-human` 换成 `ready-for-human`，`blocked` 换成 `agent:blocked`。结论值本身不是 GitHub 标签。
+
+普通实现不接受父 Issue 或子 Issue。旧的 `agent:to-issues`、`agent:publish-tickets`、`agent:queued`、`source:architecture-review` 不再有 workflow 入口，历史标签保留但不会启动任务。配置和重试见 [GitHub Actions](github-actions.md)。

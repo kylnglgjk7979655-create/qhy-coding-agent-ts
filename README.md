@@ -341,7 +341,7 @@ pnpm exec node dist/cli.js --workspace ./demo 2> run.jsonl
 
 ## GitHub Actions 与 Codex
 
-仓库的 GitHub Actions 支持 Issue 实现、PR 审查与反馈修改、分支更新、带人工 QA 的拆票与逐轮实现、依赖排队及架构审查。维护者给父 Issue 添加 `agent:implement` 后，临时 Ubuntu Runner 通过 Sandcastle 的 `codex()` 实现并验证代码，创建草稿 PR 后自动审查，由人决定合并。`ready-for-agent` 仅表示准备状态；拆票经 `agent:publish-tickets` 确认才发布，人工 QA 不进入自动实现。方法来自仓库 `.agents/skills/` 的固定版本，CI 不临时下载。
+仓库的 GitHub Actions 采用 Sandcastle 官方仓库的 Explore、Issue 实现、PR 审查、反馈修改和分支更新流程，模型继续使用 Codex 订阅。给独立 Issue 添加 `agent:implement` 后，Agent 实现并提交，workflow 创建草稿 PR 并通过 `agent:review` 请求审查，由人决定合并。`agent:explore` 会批量调查，自动转交明确任务并关闭重复 Issue；`ready-for-agent` 仅表示准备状态。普通实现不支持父子 Issue；旧的 PRD、拆票发布、依赖队列与定时架构审查已移除。
 
 首次使用需把配置合入 GitHub 默认分支，并设置 `CODEX_AUTH_JSON`（CI 专用订阅登录）和 `CODEX_AUTH_STORE_PAT`（保存刷新结果）。工作流只在私有仓库运行，不需要 OpenAI API Key。完整配置与使用命令见 [GitHub Actions 与 Codex 订阅](docs/agents/github-actions.md)。
 
