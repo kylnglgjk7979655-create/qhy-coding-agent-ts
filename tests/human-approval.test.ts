@@ -39,10 +39,10 @@ function run(terminal = true) {
     : ['-q', '-e', '-c', command.map((part) => `'${part.replaceAll("'", "'\\''")}'`).join(' '), '/dev/null'];
   const child = terminal
     ? spawn('/bin/sh', ['-c', 'cat | script "$@"', 'human-test', ...scriptArgs], {
-      cwd, env: { ...process.env, TEST_HUMAN_KEY: 'fake-human-key' }, stdio: ['pipe', 'pipe', 'pipe'],
+      cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_HUMAN_KEY: 'fake-human-key' }, stdio: ['pipe', 'pipe', 'pipe'],
     })
     : spawn(process.execPath, cliArgs, {
-      cwd, env: { ...process.env, TEST_HUMAN_KEY: 'fake-human-key' }, stdio: ['pipe', 'pipe', 'pipe'],
+      cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_HUMAN_KEY: 'fake-human-key' }, stdio: ['pipe', 'pipe', 'pipe'],
     });
   children.push(child);
   let stdout = '';

@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
 import { loadEnvFile } from 'node:process';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { runAgent } from './agent.js';
 import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig } from './config.js';
-import { loadConversation, newConversationId, saveConversation } from './conversations.js';
+import { loadLegacyConversation, loadOrCreateSession, newConversationId, saveLegacyConversation, saveSuccessfulRound } from './conversations.js';
 import { AgentError, publicError } from './errors.js';
 import { CliInput } from './cli-input.js';
 import type { ApprovalControl } from './tool-approval.js';
@@ -23,7 +24,7 @@ const help = `用法：node dist/cli.js [选项]
   --help              显示帮助
 
 从当前目录 .env 或环境变量读取配置中 apiKeyEnv 指定的凭据。
-回答流式输出到 stdout；会话历史保存在当前目录 .agent/conversations/；运行 JSON 日志及错误输出到 stderr。
+回答流式输出到 stdout；会话记录保存在用户目录 ~/.qhy-coding-agents/；运行 JSON 日志及错误输出到 stderr。
 `;
 
 function log(event: Record<string, unknown>): void {
@@ -69,10 +70,22 @@ async function main(): Promise<void> {
     });
     const smokeTool = args.values['smoke-tool'] ?? false;
     const conversationId = args.values['conversation-id'] ?? newConversationId();
-    const conversationDirectory = join(process.cwd(), '.agent', 'conversations');
-    let history: ModelMessage[] = smokeTool ? [] : await loadConversation(conversationDirectory, conversationId);
+    const userHome = homedir();
+    const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+    const session = smokeTool ? undefined : await loadOrCreateSession(userHome, {
+      id: conversationId,
+      workspace: config.workspace,
+      config: persistedConfig,
+    });
+    if (session && session.workspace !== config.workspace) {
+      throw new AgentError('CONFIG_ERROR', `会话绑定工作区 ${session.workspace}，请从该工作区继续。`);
+    }
+    const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
+    // Read older workspace histories during migration; the user-level session remains the durable record.
+    const legacyHistory = smokeTool ? undefined : await loadLegacyConversation(legacyDirectory, conversationId);
+    let history: ModelMessage[] = legacyHistory ?? session?.effectiveHistory ?? [];
     if (smokeTool) {
-      await runTurn('smoke', config, history, conversationDirectory, conversationId, cancellation.signal, true);
+      await runTurn('smoke', config, history, userHome, conversationId, cancellation.signal, true);
       return;
     }
 
@@ -86,7 +99,7 @@ async function main(): Promise<void> {
         continue;
       }
       try {
-        history = await runTurn(prompt, config, history, conversationDirectory, conversationId, cancellation.signal, false, input.approve);
+        history = await runTurn(prompt, config, history, userHome, conversationId, cancellation.signal, false, input.approve, legacyDirectory);
       } catch (error) {
         if (cancellation.signal.aborted) throw error;
         const failure = publicError(error);
@@ -117,12 +130,14 @@ async function runTurn(
   prompt: string,
   config: Awaited<ReturnType<typeof loadConfig>>,
   history: ModelMessage[],
-  conversationDirectory: string,
+  userHome: string,
   conversationId: string,
   signal: AbortSignal,
   smokeTool: boolean,
   approvalControl?: ApprovalControl,
+  legacyDirectory?: string,
 ): Promise<ModelMessage[]> {
+  const turnStartedAt = new Date().toISOString();
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
   log({
@@ -148,7 +163,10 @@ async function runTurn(
     });
     signal.throwIfAborted();
     const nextHistory = smokeTool ? history : result.effectiveHistory;
-    if (!smokeTool) await saveConversation(conversationDirectory, conversationId, nextHistory);
+    if (!smokeTool) {
+      await saveSuccessfulRound(userHome, conversationId, prompt, result.responseMessages, nextHistory, turnStartedAt);
+      if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
+    }
     process.stdout.write('\n');
     log({
       event: 'run.finished', runId: lastRunId, status: 'succeeded',

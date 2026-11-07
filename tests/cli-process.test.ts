@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -68,13 +68,29 @@ describe('compiled CLI process driver', () => {
       expect(JSON.stringify(model.requests[3])).toContain(`${firstCwd}|${firstUserDir}`);
       expect(model.requests).toHaveLength(4);
 
+      const firstId = findConversationId((await first.done).stderr);
+      const recordPath = join(firstUserDir, '.qhy-coding-agents', 'sessions', firstId, 'record.json');
+      const stored = await readFile(recordPath, 'utf8');
+      const record = JSON.parse(stored) as { workspace: string; transcript: Array<{ content: unknown }>; rounds: Array<{ status: string }>; config: { apiKeyEnv: string } };
+      expect(record.workspace).toBe(firstCwd);
+      expect(JSON.stringify(record.transcript)).toContain('第二条');
+      expect(record.rounds.map(({ status }) => status)).toEqual(['succeeded', 'succeeded']);
+      expect(record.config.apiKeyEnv).toBe('TEST_MODEL_API_KEY');
+      expect(stored).not.toContain(secret);
+      if (process.platform !== 'win32') expect((await stat(recordPath)).mode & 0o777).toBe(0o600);
+
+      const restarted = startCLI({ cwd: firstCwd, userDir: firstUserDir, conversationId: firstId, env: { TEST_MODEL_API_KEY: secret } });
+      restarted.end('重启后继续\n/exit\n');
+      expect((await restarted.done).code).toBe(0);
+      expect(JSON.stringify(model.requests[4])).toContain('第一条');
+      expect(JSON.stringify(model.requests[4])).toContain('第二条');
+
       const second = startCLI({ cwd: secondCwd, userDir: secondUserDir, env: { TEST_MODEL_API_KEY: secret } });
       second.end('另一工作区\n/exit\n');
       expect((await second.done).code).toBe(0);
       await expect(readFile(join(firstCwd, 'first.txt'), 'utf8')).resolves.toBe('第一条');
-      expect(model.requests).toHaveLength(6);
-      expect(JSON.stringify(model.requests[5])).toContain(`${secondCwd}|${secondUserDir}`);
-      expect(await readFile(join(firstCwd, '.agent', 'conversations', findConversationId((await first.done).stderr) + '.json'), 'utf8')).toContain('第二条');
+      expect(model.requests).toHaveLength(8);
+      expect(JSON.stringify(model.requests[7])).toContain(`${secondCwd}|${secondUserDir}`);
     } finally {
       await model.close();
     }

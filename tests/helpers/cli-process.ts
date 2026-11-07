@@ -16,7 +16,8 @@ export function startCLI(options: {
     env: {
       ...process.env,
       ...options.env,
-      ...(options.userDir === undefined ? {} : { HOME: options.userDir, USERPROFILE: options.userDir }),
+      HOME: options.userDir ?? options.cwd,
+      USERPROFILE: options.userDir ?? options.cwd,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });

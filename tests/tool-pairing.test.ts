@@ -33,7 +33,7 @@ describe('工具批次顺序与新增往返配对', () => {
   function run(input = '继续处理\n/exit\n', onStdout?: (stdout: string) => void) {
     return new Promise<{ code: number; stdout: string; stderr: string }>((done) => {
       const child = spawn(process.execPath, [cli], {
-        cwd: workspace, env: { ...process.env, PAIRING_KEY: 'pairing-fixture-key' }, stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: workspace, env: { ...process.env, HOME: workspace, USERPROFILE: workspace, PAIRING_KEY: 'pairing-fixture-key' }, stdio: ['pipe', 'pipe', 'pipe'],
       });
       let stdout = '';
       let stderr = '';

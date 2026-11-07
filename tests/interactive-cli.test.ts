@@ -89,7 +89,7 @@ describe('interactive compiled CLI', () => {
 
   function run(input: string, args: string[] = []) {
     return new Promise<{ code: number; stdout: string; stderr: string }>((done) => {
-      const child = spawn(process.execPath, [cli, ...args], { cwd, env: { ...process.env, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, [cli, ...args], { cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
       const timer = setTimeout(() => child.kill('SIGKILL'), 8000);
@@ -459,7 +459,7 @@ describe('interactive compiled CLI', () => {
       : ['-q', '-e', '-c', command.map((part) => `'${part.replaceAll("'", "'\\''")}'`).join(' '), '/dev/null'];
     // macOS script 不接受 Node 的 socket 类型 stdin，cat 将其转换为普通管道。
     const child = spawn('/bin/sh', ['-c', 'cat | script "$@"', 'terminal-test', ...args], {
-      cwd, env: { ...process.env, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'],
+      cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'],
     });
     let output = '';
     let ready: () => void;
@@ -510,7 +510,7 @@ describe('interactive compiled CLI', () => {
 
     const requestStarted = new Promise<void>((done) => { onRequest = done; });
     const child = spawn(process.execPath, [cli], {
-      cwd, env: { ...process.env, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'],
+      cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_MODEL_API_KEY: secret }, stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stderr = '';
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });

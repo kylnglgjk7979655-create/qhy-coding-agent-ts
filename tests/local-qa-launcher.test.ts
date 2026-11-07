@@ -28,7 +28,7 @@ it('独立 QA 入口生成可运行的配置和历史，CLI 无需真实模型�
   expect(errors).toBe('');
   async function run(command: string, conversation = 'qa-summary') {
     const child = spawn(process.execPath, [resolve('dist/cli.js'), '--config', 'config.json', '--conversation-id', conversation], {
-      cwd: root, env: { ...process.env, TEST_MODEL_API_KEY: 'fake-model', QA_MCP_HEADER: 'fake-header' }, stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: root, env: { ...process.env, HOME: root, USERPROFILE: root, TEST_MODEL_API_KEY: 'fake-model', QA_MCP_HEADER: 'fake-header' }, stdio: ['pipe', 'pipe', 'pipe'],
     });
     processes.push(child);
     let text = '';

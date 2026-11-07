@@ -31,7 +31,7 @@ async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0], revie
 }
 function run(input = '运行受控命令\n/exit\n', env: NodeJS.ProcessEnv = {}) {
   const child = spawn(process.execPath, [cli, '--conversation-id', 'bash'], {
-    cwd, env: { ...process.env, TEST_BASH_KEY: 'fake-bash-key', TEST_BASH_ENV: 'inherited-marker', ...env },
+    cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_BASH_KEY: 'fake-bash-key', TEST_BASH_ENV: 'inherited-marker', ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stdout = '';
