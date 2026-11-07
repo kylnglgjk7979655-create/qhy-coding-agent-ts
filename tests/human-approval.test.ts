@@ -213,8 +213,8 @@ it.skipIf(process.platform === 'win32').each(['Ctrl+C', 'SIGTERM'] as const)('�
     running.child.stdin.end();
   }
   const result = await running.done;
-  expect(result.code, running.output()).toBe(130);
-  expect(running.output()).toContain('CANCELLED');
+  expect(result.code, running.output()).toBe(stop === 'Ctrl+C' ? 0 : 130);
+  expect(running.output()).toContain(stop === 'Ctrl+C' ? 'Interrupt by user' : 'CANCELLED');
   expect(running.output()).not.toContain('：开始');
   expect(fixture.requests).toHaveLength(1);
   await expect(readFile(join(cwd, 'note.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });

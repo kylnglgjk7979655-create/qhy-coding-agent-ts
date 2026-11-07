@@ -182,8 +182,8 @@ it.each(['deadline', 'SIGINT', 'SIGTERM'] as const)('审批等待受到 %s 约�
   expect(fixture.approvalRequests).toHaveLength(1);
   if (stop !== 'deadline') running.child.kill(stop);
   const result = await running.done;
-  expect(result.code).toBe(stop === 'deadline' ? 0 : 130);
-  expect(result.stderr).toContain(stop === 'deadline' ? 'TIMEOUT' : 'CANCELLED');
+  expect(result.code).toBe(stop === 'deadline' || stop === 'SIGINT' ? 0 : 130);
+  expect(result.stdout + result.stderr).toContain(stop === 'deadline' ? 'TIMEOUT' : stop === 'SIGINT' ? 'Interrupt by user' : 'CANCELLED');
   expect(result.stdout).not.toContain('：开始');
   expect(fixture.requests).toHaveLength(1);
   expect(fixture.approvalRequests).toHaveLength(1);

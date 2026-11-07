@@ -436,7 +436,10 @@ export async function runAgent(
       toolSmokePassed: options.smokeTool && toolSmokePassed,
     };
   } catch (error) {
-    if (options.signal?.aborted) throw new AgentError('CANCELLED', '请求已取消。');
+    if (options.signal?.aborted) {
+      const reason = options.signal.reason;
+      throw reason instanceof AgentError ? reason : new AgentError('CANCELLED', '请求已取消。');
+    }
     if (deadline.signal.aborted) {
       throw new AgentError('TIMEOUT', `请求超过 ${config.timeoutMs}ms，已终止。`);
     }

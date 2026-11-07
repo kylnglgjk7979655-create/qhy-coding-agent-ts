@@ -324,7 +324,7 @@ it('摘要成功后主模型失败仍保留原历史，恢复轮再次从原历�
   expect(await readFile(historyPath(), 'utf8')).not.toContain('摘要后失败');
 });
 
-it.each(['摘要中', '摘要后'])('%s取消退出且不覆盖上次成功历史', async (phase) => {
+it.each(['摘要中', '摘要后'])('%s被用户中断后保留之前的有效历史', async (phase) => {
   let entered!: () => void;
   const waiting = new Promise<void>((resolve) => { entered = resolve; });
   const fixture = await setup(() => {
@@ -339,8 +339,8 @@ it.each(['摘要中', '摘要后'])('%s取消退出且不覆盖上次成功历�
   await Promise.race([waiting, running.done.then(() => { throw new Error('在待取消的请求前意外退出'); })]);
   running.child.kill('SIGINT');
   const result = await running.done;
-  expect(result.code).toBe(130);
-  expect(result.stdout + result.stderr).toContain('CANCELLED');
+  expect(result.code).toBe(0);
+  expect(result.stdout + result.stderr).toContain('Interrupt by user');
   expect(fixture.summaryRequests).toHaveLength(1);
   expect(fixture.requests).toHaveLength(phase === '摘要中' ? 0 : 1);
   expect(await readFile(historyPath(), 'utf8')).toBe(previous);

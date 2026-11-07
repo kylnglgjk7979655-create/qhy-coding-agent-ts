@@ -11,6 +11,7 @@ import { appendRoundMessages, appendRoundText, createSession, finishSessionRound
 import { AgentError, publicError } from './errors.js';
 import { CliInput } from './cli-input.js';
 import type { ApprovalControl } from './tool-approval.js';
+import { acquireSessionLock } from './session-lock.js';
 
 const help = `用法：node dist/cli.js [选项]
 
@@ -35,10 +36,17 @@ function log(event: Record<string, unknown>): void {
 
 async function main(): Promise<void> {
   const cancellation = new AbortController();
-  const cancel = (): void => cancellation.abort(new AgentError('CANCELLED', '请求已取消。'));
-  process.once('SIGINT', cancel);
-  process.once('SIGTERM', cancel);
+  let activeRound: AbortController | undefined;
   let input: CliInput | undefined;
+  const cancel = (): void => {
+    if (activeRound) activeRound.abort(new AgentError('CANCELLED', 'Interrupt by user'));
+    else if (input) input.close();
+    else cancellation.abort(new AgentError('CANCELLED', 'Interrupt by user'));
+  };
+  process.on('SIGINT', cancel);
+  const terminate = (): void => cancellation.abort(new AgentError('CANCELLED', '进程收到终止信号。'));
+  process.once('SIGTERM', terminate);
+  let releaseSession: (() => Promise<void>) | undefined;
   try {
     if (process.versions.node.split('.')[0] !== '24') {
       throw new AgentError('CONFIG_ERROR', '请使用项目锁定的 Node.js 24.22.2（见 .nvmrc）。');
@@ -101,6 +109,7 @@ async function main(): Promise<void> {
         session = await createSession(userHome, { id: conversationId, workspace: config.workspace, config: persistedConfig });
       }
     }
+    if (session) releaseSession = await acquireSessionLock(userHome, conversationId);
     const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
     // Read older workspace histories during migration; the user-level session remains the durable record.
     legacyHistory ??= smokeTool || args.values['conversation-id'] === undefined
@@ -114,11 +123,22 @@ async function main(): Promise<void> {
       recoveredRoundIds = recovered.recoveredRoundIds;
     } else history = [];
     if (smokeTool) {
-      await runTurn('smoke', config, history, userHome, conversationId, cancellation.signal, true);
+      activeRound = new AbortController();
+      await runTurn('smoke', config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), true);
       return;
     }
 
     input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
+    const switchSession = async (id: string) => {
+      const resumed = await resumeSession(userHome, id);
+      if (id !== conversationId) {
+        const nextRelease = await acquireSessionLock(userHome, id);
+        await releaseSession?.();
+        releaseSession = nextRelease;
+      }
+      process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
+      return resumed;
+    };
     let selection: { sessions: Awaited<ReturnType<typeof listSessions>>; all: boolean } | undefined;
     if (process.stdin.isTTY) input.prompt();
     for await (const line of input) {
@@ -139,7 +159,7 @@ async function main(): Promise<void> {
           continue;
         }
         try {
-          ({ config, conversationId, history, recoveredRoundIds } = await resumeSession(userHome, chosen.id));
+          ({ config, conversationId, history, recoveredRoundIds } = await switchSession(chosen.id));
           selection = undefined;
         } catch (error) {
           process.stdout.write(`\n错误：${publicError(error).message}\n`);
@@ -151,6 +171,9 @@ async function main(): Promise<void> {
         const id = newConversationId();
         const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
         await createSession(userHome, { id, workspace: config.workspace, config: persistedConfig });
+        const nextRelease = await acquireSessionLock(userHome, id);
+        await releaseSession?.();
+        releaseSession = nextRelease;
         conversationId = id;
         history = [];
         recoveredRoundIds = [];
@@ -168,7 +191,7 @@ async function main(): Promise<void> {
       if (prompt.startsWith('/resume ')) {
         const id = prompt.slice('/resume '.length).trim();
         try {
-          ({ config, conversationId, history, recoveredRoundIds } = await resumeSession(userHome, id));
+          ({ config, conversationId, history, recoveredRoundIds } = await switchSession(id));
         } catch (error) {
           process.stdout.write(`\n错误：${publicError(error).message}\n`);
         }
@@ -180,12 +203,16 @@ async function main(): Promise<void> {
         continue;
       }
       try {
-        history = await runTurn(prompt, config, history, userHome, conversationId, cancellation.signal, false, input.approve, legacyDirectory, recoveredRoundIds);
+        activeRound = new AbortController();
+        const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
+        history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds);
         recoveredRoundIds = [];
       } catch (error) {
         if (cancellation.signal.aborted) throw error;
         const failure = publicError(error);
         process.stdout.write(`\n错误：${failure.message}\n`);
+      } finally {
+        activeRound = undefined;
       }
       if (process.stdin.isTTY) input.prompt();
     }
@@ -200,8 +227,9 @@ async function main(): Promise<void> {
     process.exitCode = failure.exitCode;
   } finally {
     input?.close();
+    await releaseSession?.().catch(() => undefined);
     process.removeListener('SIGINT', cancel);
-    process.removeListener('SIGTERM', cancel);
+    process.removeListener('SIGTERM', terminate);
   }
 }
 
@@ -222,6 +250,7 @@ async function runTurn(
 ): Promise<ModelMessage[]> {
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
+  const pendingToolCalls = new Map<string, { toolName: string; input: unknown }>();
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
   log({
@@ -243,6 +272,7 @@ async function runTurn(
         process.stdout.write(chunk);
       },
       onToolCallStart: async ({ callId, toolName, input }) => {
+        pendingToolCalls.set(callId, { toolName, input });
         if (!smokeTool && roundId) {
           await appendRoundMessages(userHome, conversationId, roundId, [{
             role: 'assistant', content: [{ type: 'tool-call', toolCallId: callId, toolName, input }],
@@ -252,6 +282,7 @@ async function runTurn(
       onStepMessages: async (content) => {
         if (smokeTool || !roundId) return;
         const results = content.filter((part): part is Record<string, unknown> => typeof part === 'object' && part !== null && (part as { type?: string }).type === 'tool-result');
+        for (const result of results) if (typeof result.toolCallId === 'string') pendingToolCalls.delete(result.toolCallId);
         if (results.length > 0) await appendRoundMessages(userHome, conversationId, roundId, [{ role: 'tool', content: results } as unknown as ModelMessage]);
       },
       onToolEvent: ({ toolName, status }) => {
@@ -288,6 +319,20 @@ async function runTurn(
     return nextHistory;
   } catch (error) {
     const failure = publicError(error);
+    const interrupted = failure.code === 'CANCELLED' && failure.message === 'Interrupt by user';
+    if (interrupted && !smokeTool && roundId) {
+      const results = [...pendingToolCalls].map(([toolCallId, call]) => ({
+        type: 'tool-result', toolCallId, toolName: call.toolName, input: call.input,
+        output: 'Interrupt by user',
+      }));
+      if (results.length > 0) await appendRoundMessages(userHome, conversationId, roundId, [{ role: 'tool', content: results } as unknown as ModelMessage]);
+      await finishSessionRound(userHome, conversationId, roundId, {
+        status: 'cancelled', error: { code: 'CANCELLED', message: 'Interrupt by user' },
+      }).catch(() => undefined);
+      process.stdout.write('\nInterrupt by user\n');
+      log({ event: 'run.finished', runId: lastRunId, status: 'cancelled', durationMs: Math.round(performance.now() - lastRunStartedAt), conversationId });
+      return history;
+    }
     if (!smokeTool && roundId) {
       await finishSessionRound(userHome, conversationId, roundId, {
         status: failure.code === 'CANCELLED' ? 'cancelled' : 'failed',
@@ -330,7 +375,6 @@ async function resumeSession(userHome: string, id: string): Promise<{
   const session = await loadSession(userHome, id);
   const config = await restoreSessionConfig(session.config, process.env);
   const recovered = reconstructSessionHistory(session);
-  process.stdout.write(`已继续会话：${id}（工作区：${config.workspace}）\n`);
   return { config, conversationId: id, ...recovered };
 }
 
