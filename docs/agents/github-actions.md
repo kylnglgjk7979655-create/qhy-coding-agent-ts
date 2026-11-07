@@ -23,15 +23,15 @@ gh secret set CODEX_AUTH_JSON --repo kylnglgjk7979655-create/qhy-coding-agent-ts
 
 Settings → Actions → General 中启用 **Allow GitHub Actions to create and approve pull requests**。实际审查发布 COMMENT，PR 仍由人决定合并。
 
-默认不需要额外配置 `AGENT_PAT`：依赖队列使用内置 `GITHUB_TOKEN` 的 `workflow_dispatch` 接续；实现后显式调度分支的 `Check` 和同仓库 PR 的 `Agent Review`，审查产生新提交时再对新版本调度 `Check`，避免机器人推送或贴标签不触发下一条 workflow。GitHub 官方将 dispatch 列为该限制的例外，来源见[调查记录](../notes/course-video-manager-ticket-workflows.md#无-agent_pat-时的内部接续)。
+父需求共享 PR 的子任务之间使用 `AGENT_PAT` 重新给父 Issue 添加 `agent:implement` 接续；未配置 PAT 时实现后显式调度分支的 `Check` 和同仓库 PR 的 `Agent Review`，审查产生新提交时再对新版本调度 `Check`，避免机器人推送或贴标签不触发下一条 workflow。GitHub 官方将 dispatch 列为该限制的例外，来源见[调查记录](../notes/course-video-manager-ticket-workflows.md#无-agent_pat-时的内部接续)。
 
-保留可选的 `AGENT_PAT` 标签接续方式：权限至少为本仓库 **Contents、Issues、Pull requests → Read and write**，推送 workflow 修改时另需 **Workflows → Read and write**。配置后使用该 Token 推送、创建 PR 和贴标签，不再为同一次转交重复 dispatch。没有 PAT 时，Explore 转交的实现标签也可由定时队列扫描拾取。
+配置 `AGENT_PAT`：权限至少为本仓库 **Contents、Issues、Pull requests → Read and write**，推送 workflow 修改时另需 **Workflows → Read and write**。配置后使用该 Token 推送和贴接续标签，不再为同一次转交重复 dispatch。没有 PAT 时，父需求的直接接续会失败并保留队列；Explore 转交的实现标签仍可由定时队列扫描拾取。
 
 | Secret / Variable | 用途 |
 | --- | --- |
 | Secret `CODEX_AUTH_JSON` | 必需，CI 专用订阅登录文件 |
 | Secret `CODEX_AUTH_STORE_PAT` | 必需，认证版本检查和刷新后回存 |
-| Secret `AGENT_PAT` | 可选；使用 PAT 推送、创建 PR 和贴标签接续；未配置时内置 Token 通过 dispatch 接续 |
+| Secret `AGENT_PAT` | 父需求子任务直接接续必需；使用 PAT 推送和贴标签接续；其他队列入口可在未配置时使用内置 Token dispatch |
 | Variable `CODEX_MODEL` | 可选；优先使用该值，未配置时从 `codex debug models` 选择首个可用模型，探测失败回退 `gpt-6-luna` |
 
 ## 日常入口
@@ -58,7 +58,7 @@ Explore 的手动入口默认 `dry_run=true`，只展示计划；取消勾选才
 3. 在父 Issue 评论中检查每票行为、验收标准和阻塞关系。需要修改时留言，再重新添加 `agent:to-issues`。认可后添加 `agent:publish-tickets`：它批准贴标时已存在的最新有效机器人计划。
 4. 发布脚本创建真正的 GitHub 子 Issue，添加 `ready-for-agent`，设置原生父子及 blocked-by 关系，返回带真实票号的评论。发布阶段不调用模型，也不启动实现。
 5. 给父 Issue 添加 `agent:implement`。父需求保留 `agent:queued`，每次选择一个依赖已完成的开放子票。第一张子票从 main 创建父需求共享分支和草稿 PR；后续子票在同一分支继续并更新同一个 PR。提交并更新 PR 后关闭该子票为 completed，全部子票完成后对共享 PR 请求整体审查。
-6. 子票提交至共享 PR 并关闭后，队列扫描下一张就绪票，无需等待 PR 合并；原生依赖而不是标题编号或正文文字决定能否执行。每个父需求最多一个活动子任务。全部子票完成后，移除父需求的排队标签并评论，由维护者验收父需求，脚本不自动关闭它。
+6. 子票提交至共享 PR 并关闭后，使用 `AGENT_PAT` 给父 Issue 重新添加 `agent:implement`；下一轮检查依赖后选择就绪票，无需等待 PR 合并；原生依赖而不是标题编号或正文文字决定能否执行。每个父需求最多一个活动子任务。全部子票完成后，移除父需求的排队标签并评论，由维护者验收父需求，脚本不自动关闭它。
 
 独立 Issue 或单个子 Issue 也可以添加 `agent:queued` 预约执行，或直接添加 `agent:implement`；直接执行仍检查本票、父需求的原生依赖和兄弟活动任务。前置票必须以 `completed` 关闭；同父需求的共享 PR 可以保持开放，其他开放实现 PR 仍会阻塞；`not_planned` 不算完成。明确以 completed 关闭人工交付票同样可解锁依赖，仅创建 PR、审查完成或提交代码不会解锁。
 

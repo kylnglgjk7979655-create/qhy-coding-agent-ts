@@ -167,6 +167,35 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(workflow).toContain("github.event_name == 'workflow_run'");
   });
 
+  it('子票完成后用 PAT 重新贴父票 implement；暂停和无剩余子票时不触发', () => {
+    const h = harness(); h.publish();
+    h.update((state) => {
+      state.issues[23]!.labels.push('agent:queued');
+      state.issues[24]!.state = 'closed'; state.issues[24]!.state_reason = 'completed';
+      state.requests = [];
+    });
+    h.ok('continue-parent', { ISSUE_NUMBER: '24', PARENT_NUMBER: '23' });
+    expect(h.read().issues[23]!.labels).toContain('agent:implement');
+    expect(h.read().requests).toContainEqual(expect.objectContaining({
+      method: 'POST', resource: 'issues/23/labels', token: 'dispatch-token', body: { labels: ['agent:implement'] },
+    }));
+    h.update((state) => { state.issues[23]!.labels = ['agent:queued', 'agent:blocked']; state.requests = []; });
+    h.ok('continue-parent', { ISSUE_NUMBER: '24', PARENT_NUMBER: '23' });
+    expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
+    h.update((state) => { state.issues[23]!.labels = ['agent:queued']; state.issues[25]!.state = 'closed'; state.issues[25]!.state_reason = 'completed'; });
+    h.ok('continue-parent', { ISSUE_NUMBER: '24', PARENT_NUMBER: '23' });
+    expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
+  }, 30_000);
+
+  it('没有 PAT 或子票尚未完成时不能冒充 PAT 接续', () => {
+    const h = harness(); h.publish();
+    h.update((state) => { state.issues[23]!.labels.push('agent:queued'); });
+    expect(h.run('continue-parent', { ISSUE_NUMBER: '24', PARENT_NUMBER: '23' }).status).toBe(1);
+    h.update((state) => { state.issues[24]!.state = 'closed'; state.issues[24]!.state_reason = 'completed'; });
+    expect(h.run('continue-parent', { ISSUE_NUMBER: '24', PARENT_NUMBER: '23', AGENT_PAT: '' }).status).toBe(1);
+    expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
+  }, 30_000);
+
   it('共享 PR 未合并时，已完成的前置子票允许下一张开始', () => {
     const h = harness(); h.publish();
     h.update((state) => {
