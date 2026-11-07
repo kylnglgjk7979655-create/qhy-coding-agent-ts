@@ -6,8 +6,8 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { runAgent } from './agent.js';
-import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig } from './config.js';
-import { loadLegacyConversation, loadOrCreateSession, newConversationId, saveLegacyConversation, saveSuccessfulRound } from './conversations.js';
+import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './config.js';
+import { createSession, listSessions, loadLegacyConversation, loadSession, newConversationId, saveLegacyConversation, saveSuccessfulRound } from './conversations.js';
 import { AgentError, publicError } from './errors.js';
 import { CliInput } from './cli-input.js';
 import type { ApprovalControl } from './tool-approval.js';
@@ -15,6 +15,8 @@ import type { ApprovalControl } from './tool-approval.js';
 const help = `用法：node dist/cli.js [选项]
 
 启动后直接进入交互式对话，输入 /exit 结束。
+  /new                 在当前工作区新建会话
+  /resume [ID]         继续会话；省略 ID 时选择会话，输入 all 查看全部
 
 选项：
   --workspace <目录>  覆盖配置的工作区（相对当前目录）
@@ -62,27 +64,42 @@ async function main(): Promise<void> {
     } catch (error) {
       if (!isMissing(error)) throw new AgentError('CONFIG_ERROR', '无法读取当前目录 .env 文件。');
     }
-    const config = await loadConfig({
+    const smokeTool = args.values['smoke-tool'] ?? false;
+    let conversationId = args.values['conversation-id'] ?? newConversationId();
+    const userHome = homedir();
+    const loadCurrentConfig = () => loadConfig({
       cwd: process.cwd(),
       env: process.env,
       ...(args.values.config === undefined ? {} : { configPath: args.values.config }),
       ...(args.values.workspace === undefined ? {} : { workspace: args.values.workspace }),
     });
-    const smokeTool = args.values['smoke-tool'] ?? false;
-    const conversationId = args.values['conversation-id'] ?? newConversationId();
-    const userHome = homedir();
-    const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
-    const session = smokeTool ? undefined : await loadOrCreateSession(userHome, {
-      id: conversationId,
-      workspace: config.workspace,
-      config: persistedConfig,
-    });
-    if (session && session.workspace !== config.workspace) {
-      throw new AgentError('CONFIG_ERROR', `会话绑定工作区 ${session.workspace}，请从该工作区继续。`);
+    let config: Awaited<ReturnType<typeof loadConfig>>;
+    let session: Awaited<ReturnType<typeof loadSession>> | undefined;
+    let legacyHistory: ModelMessage[] | undefined;
+    if (!smokeTool && args.values['conversation-id'] !== undefined) {
+      try {
+        session = await loadSession(userHome, conversationId);
+        config = await restoreSessionConfig(session.config, process.env);
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.startsWith('会话记录不存在：')) throw error;
+        config = await loadCurrentConfig();
+        const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
+        legacyHistory = await loadLegacyConversation(legacyDirectory, conversationId);
+        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+        session = await createSession(userHome, { id: conversationId, workspace: config.workspace, config: persistedConfig });
+      }
+    } else {
+      config = await loadCurrentConfig();
+      if (smokeTool) session = undefined;
+      else {
+        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+        session = await createSession(userHome, { id: conversationId, workspace: config.workspace, config: persistedConfig });
+      }
     }
     const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
     // Read older workspace histories during migration; the user-level session remains the durable record.
-    const legacyHistory = smokeTool ? undefined : await loadLegacyConversation(legacyDirectory, conversationId);
+    legacyHistory ??= smokeTool || args.values['conversation-id'] === undefined
+      ? undefined : await loadLegacyConversation(legacyDirectory, conversationId);
     let history: ModelMessage[] = legacyHistory ?? session?.effectiveHistory ?? [];
     if (smokeTool) {
       await runTurn('smoke', config, history, userHome, conversationId, cancellation.signal, true);
@@ -90,10 +107,61 @@ async function main(): Promise<void> {
     }
 
     input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
+    let selection: { sessions: Awaited<ReturnType<typeof listSessions>>; all: boolean } | undefined;
     if (process.stdin.isTTY) input.prompt();
     for await (const line of input) {
       const prompt = line.trim();
       if (prompt === '/exit') break;
+      if (selection) {
+        if (prompt.toLowerCase() === 'all' && !selection.all) {
+          selection = { sessions: await listSessions(userHome), all: true };
+          printSessionChoices(selection.sessions, true);
+          if (process.stdin.isTTY) input.prompt();
+          continue;
+        }
+        const chosen = /^\d+$/.test(prompt) ? selection.sessions[Number(prompt) - 1] : selection.sessions.find(({ id }) => id === prompt);
+        if (!chosen) {
+          if (prompt === '/cancel') selection = undefined;
+          else process.stdout.write('无效的会话选择；请输入列表编号或会话 ID，输入 /cancel 取消。\n');
+          if (process.stdin.isTTY) input.prompt();
+          continue;
+        }
+        try {
+          ({ config, conversationId, history } = await resumeSession(userHome, chosen.id));
+          selection = undefined;
+        } catch (error) {
+          process.stdout.write(`\n错误：${publicError(error).message}\n`);
+        }
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
+      if (prompt === '/new') {
+        const id = newConversationId();
+        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+        await createSession(userHome, { id, workspace: config.workspace, config: persistedConfig });
+        conversationId = id;
+        history = [];
+        process.stdout.write(`已新建会话：${id}\n`);
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
+      if (prompt === '/resume' || prompt === '/resume all') {
+        const all = prompt.endsWith(' all');
+        selection = { sessions: await listSessions(userHome, all ? undefined : config.workspace), all };
+        printSessionChoices(selection.sessions, all);
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
+      if (prompt.startsWith('/resume ')) {
+        const id = prompt.slice('/resume '.length).trim();
+        try {
+          ({ config, conversationId, history } = await resumeSession(userHome, id));
+        } catch (error) {
+          process.stdout.write(`\n错误：${publicError(error).message}\n`);
+        }
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
       if (!prompt) {
         if (process.stdin.isTTY) input.prompt();
         continue;
@@ -205,3 +273,25 @@ function parseCliArgs() {
 }
 
 await main();
+
+async function resumeSession(userHome: string, id: string): Promise<{
+  config: Awaited<ReturnType<typeof loadConfig>>;
+  conversationId: string;
+  history: ModelMessage[];
+}> {
+  const session = await loadSession(userHome, id);
+  const config = await restoreSessionConfig(session.config, process.env);
+  process.stdout.write(`已继续会话：${id}（工作区：${config.workspace}）\n`);
+  return { config, conversationId: id, history: session.effectiveHistory };
+}
+
+function printSessionChoices(sessions: Awaited<ReturnType<typeof listSessions>>, all: boolean): void {
+  if (sessions.length === 0) process.stdout.write('没有可用会话。\n');
+  else {
+    process.stdout.write(`${all ? '全部会话' : '当前工作区会话'}：\n`);
+    sessions.forEach((session, index) => {
+      process.stdout.write(`${index + 1}. ${session.id}  ${session.updatedAt}${all ? `  ${session.workspace}` : ''}\n`);
+    });
+  }
+  process.stdout.write(all ? '输入编号或会话 ID 选择，输入 /cancel 取消。\n' : '输入编号或会话 ID 选择，输入 all 查看全部会话，输入 /cancel 取消。\n');
+}

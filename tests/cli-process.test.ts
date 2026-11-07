@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -91,6 +91,132 @@ describe('compiled CLI process driver', () => {
       await expect(readFile(join(firstCwd, 'first.txt'), 'utf8')).resolves.toBe('第一条');
       expect(model.requests).toHaveLength(8);
       expect(JSON.stringify(model.requests[7])).toContain(`${secondCwd}|${secondUserDir}`);
+    } finally {
+      await model.close();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('creates an empty session with /new and keeps the previous session', async () => {
+    const cwd = await directory('new-session-cwd');
+    const userDir = await directory('new-session-user');
+    const model = await startLocalOpenAIModel(() => ({ content: '回答' }));
+    try {
+      await configure(cwd, model.baseURL);
+      let output = '';
+      const child = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      child.send('/new\n');
+      await waitForOutput(() => output, '已新建会话：', 1);
+      child.end('/exit\n');
+      expect((await child.done).code).toBe(0);
+
+      const sessionRoot = join(userDir, '.qhy-coding-agents', 'sessions');
+      const ids = await readdir(sessionRoot);
+      expect(ids).toHaveLength(2);
+      const records = await Promise.all(ids.map(async (id) => JSON.parse(await readFile(join(sessionRoot, id, 'record.json'), 'utf8')) as { workspace: string; transcript: unknown[] }));
+      expect(records).toEqual(expect.arrayContaining([
+        expect.objectContaining({ workspace: cwd, transcript: [] }),
+        expect.objectContaining({ workspace: cwd, transcript: [] }),
+      ]));
+      expect(model.requests).toHaveLength(0);
+    } finally {
+      await model.close();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('resumes a session from another directory with its workspace and saved model configuration', async () => {
+    const originalCwd = await directory('resume-original-cwd');
+    const launchCwd = await directory('resume-launch-cwd');
+    const userDir = await directory('resume-user');
+    const originalModel = await startLocalOpenAIModel((request) => {
+      if (request.messages.at(-1)?.role === 'tool') return { content: '恢复回答' };
+      const user = request.messages.filter(({ role }) => role === 'user').at(-1)?.content;
+      if (user === '确认恢复') return { calls: [{ id: 'check-workspace', type: 'function', function: {
+        name: 'Bash', arguments: JSON.stringify({ command: 'pwd' }),
+      } }] };
+      return { content: '初始回答' };
+    });
+    const otherModel = await startLocalOpenAIModel(() => ({ content: '错误的启动配置' }));
+    try {
+      await Promise.all([configure(originalCwd, originalModel.baseURL), configure(launchCwd, otherModel.baseURL)]);
+      const first = startCLI({ cwd: originalCwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '创建历史\n/exit\n' });
+      expect((await first.done).code).toBe(0);
+      const [conversationId] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!conversationId) throw new Error('初始会话未创建');
+
+      let output = '';
+      const resumed = startCLI({ cwd: launchCwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      resumed.send(`/resume ${conversationId}\n`);
+      await waitForOutput(() => output, `已继续会话：${conversationId}`, 1);
+      resumed.end('确认恢复\n/exit\n');
+      const result = await resumed.done;
+      expect(result.code).toBe(0);
+      expect(originalModel.requests).toHaveLength(3);
+      expect(otherModel.requests).toHaveLength(0);
+      expect(JSON.stringify(originalModel.requests.at(-1))).toContain(originalCwd);
+    } finally {
+      await Promise.all([originalModel.close(), otherModel.close()]);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('lists current workspace sessions by default and allows selecting from all sessions', async () => {
+    const firstCwd = await directory('list-first-cwd');
+    const secondCwd = await directory('list-second-cwd');
+    const userDir = await directory('list-user');
+    const firstModel = await startLocalOpenAIModel(() => ({ content: '已恢复' }));
+    const secondModel = await startLocalOpenAIModel(() => ({ content: '来自第二工作区' }));
+    try {
+      await Promise.all([configure(firstCwd, firstModel.baseURL), configure(secondCwd, secondModel.baseURL)]);
+      const first = startCLI({ cwd: firstCwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '/exit\n' });
+      expect((await first.done).code).toBe(0);
+      const [firstId] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!firstId) throw new Error('初始会话未创建');
+
+      let output = '';
+      const chooser = startCLI({ cwd: secondCwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      chooser.send('/resume\n');
+      await waitForOutput(() => output, '当前工作区会话：', 1);
+      const currentListing = output.slice(output.indexOf('当前工作区会话：'), output.indexOf('全部会话：'));
+      expect(currentListing).not.toContain(firstId);
+      const localIds = (await readdir(join(userDir, '.qhy-coding-agents', 'sessions'))).filter((id) => id !== firstId);
+      expect(localIds.length).toBeGreaterThan(0);
+      for (const id of localIds) expect(currentListing).toContain(id);
+
+      chooser.send('all\n');
+      await waitForOutput(() => output, '全部会话：', 1);
+      expect(output.slice(output.indexOf('全部会话：'))).toContain(firstId);
+      chooser.send(`${firstId}\n`);
+      await waitForOutput(() => output, `已继续会话：${firstId}`, 1);
+      chooser.end('跨工作区选择\n/exit\n');
+      expect((await chooser.done).code).toBe(0);
+      expect(firstModel.requests).toHaveLength(1);
+      expect(secondModel.requests).toHaveLength(0);
+    } finally {
+      await Promise.all([firstModel.close(), secondModel.close()]);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('reports missing sessions and sessions whose workspace no longer exists', async () => {
+    const cwd = await directory('invalid-session-cwd');
+    const userDir = await directory('invalid-session-user');
+    const model = await startLocalOpenAIModel(() => ({ content: '回答' }));
+    try {
+      await configure(cwd, model.baseURL);
+      const missing = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '/resume missing-session\n/exit\n' });
+      const missingResult = await missing.done;
+      expect(missingResult.code).toBe(0);
+      expect(missingResult.stdout).toContain('会话记录不存在：missing-session');
+
+      const create = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '/exit\n' });
+      expect((await create.done).code).toBe(0);
+      const [conversationId] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!conversationId) throw new Error('初始会话未创建');
+      await rm(cwd, { recursive: true, force: true });
+      const otherCwd = await directory('invalid-session-launch-cwd');
+      await configure(otherCwd, model.baseURL);
+      const invalidWorkspace = startCLI({ cwd: otherCwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: `/resume ${conversationId}\n/exit\n` });
+      const invalidResult = await invalidWorkspace.done;
+      expect(invalidResult.code).toBe(0);
+      expect(invalidResult.stdout).toContain('会话工作区不可用');
     } finally {
       await model.close();
     }

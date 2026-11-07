@@ -146,6 +146,45 @@ export async function loadConfig(options: ConfigOptions): Promise<ResolvedConfig
   return { ...config, workspace, apiKey, mcpHeaders, ...(approvalApiKey === undefined ? {} : { approvalApiKey }) };
 }
 
+export async function restoreSessionConfig(config: ModelConfig, env: NodeJS.ProcessEnv): Promise<ResolvedConfig> {
+  const parsed = configSchema.safeParse(config);
+  if (!parsed.success) throw new AgentError('PROVIDER_ERROR', '会话运行配置无效，无法恢复。');
+  const workspacePath = parsed.data.workspace;
+  let workspace: string;
+  try {
+    workspace = await realpath(workspacePath);
+    if (!(await stat(workspace)).isDirectory()) throw new Error('Not a directory');
+  } catch {
+    throw new AgentError('CONFIG_ERROR', `会话工作区不可用：${workspacePath}。`);
+  }
+  const apiKey = env[parsed.data.apiKeyEnv]?.trim();
+  if (!apiKey) throw new AgentError('CONFIG_ERROR', `缺少凭据：请在环境变量或 .env 中设置 ${parsed.data.apiKeyEnv}。`);
+  const reviewKeyEnv = parsed.data.approval.model?.apiKeyEnv;
+  const approvalApiKey = reviewKeyEnv === undefined ? undefined : env[reviewKeyEnv]?.trim();
+  if (reviewKeyEnv !== undefined && !approvalApiKey) {
+    throw new AgentError('CONFIG_ERROR', `缺少审批凭据：请设置环境变量 ${reviewKeyEnv}。`);
+  }
+  const mcpHeaders: Record<string, Record<string, string>> = Object.create(null);
+  for (const server of parsed.data.mcp?.servers ?? []) {
+    const headers: Record<string, string> = Object.create(null);
+    for (const [name, reference] of Object.entries(server.headers)) {
+      const value = env[reference.env];
+      if (!value?.trim() || /[^\t\x20-\x7e\x80-\xff]/.test(value)) {
+        throw new AgentError('CONFIG_ERROR', `MCP 请求头环境变量缺失或无效：${reference.env}。`);
+      }
+      headers[name] = value;
+    }
+    mcpHeaders[server.name] = headers;
+  }
+  return {
+    ...parsed.data,
+    workspace,
+    apiKey,
+    mcpHeaders,
+    ...(approvalApiKey === undefined ? {} : { approvalApiKey }),
+  };
+}
+
 export function isMissing(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }

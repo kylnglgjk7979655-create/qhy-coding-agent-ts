@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { ModelMessage } from 'ai';
@@ -77,6 +77,21 @@ export async function loadSession(home: string, conversationId: string): Promise
   } catch {
     throw new AgentError('PROVIDER_ERROR', '会话记录格式无效或已损坏，未覆盖原记录。');
   }
+}
+
+export async function listSessions(home: string, workspace?: string): Promise<SessionRecord[]> {
+  const directory = join(sessionStorageRoot(home), 'sessions');
+  let entries: string[];
+  try {
+    entries = await readdir(directory);
+  } catch (error) {
+    if (isMissing(error)) return [];
+    throw new AgentError('PROVIDER_ERROR', '无法列出会话记录。');
+  }
+  const sessions = await Promise.all(entries.map((id) => loadSession(home, id)));
+  return sessions
+    .filter((session) => workspace === undefined || session.workspace === resolve(workspace))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id));
 }
 
 export async function loadOrCreateSession(home: string, options: {

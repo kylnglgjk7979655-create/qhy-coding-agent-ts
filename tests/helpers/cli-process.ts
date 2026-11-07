@@ -6,11 +6,12 @@ const cli = resolve('dist/cli.js');
 export function startCLI(options: {
   cwd: string;
   conversationId?: string;
+  args?: string[];
   input?: string;
   userDir?: string;
   env: NodeJS.ProcessEnv;
 }, onOutput?: (stdout: string) => void) {
-  const args = options.conversationId === undefined ? [] : ['--conversation-id', options.conversationId];
+  const args = [...(options.conversationId === undefined ? [] : ['--conversation-id', options.conversationId]), ...(options.args ?? [])];
   const child = spawn(process.execPath, [cli, ...args], {
     cwd: options.cwd,
     env: {
