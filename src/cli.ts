@@ -212,7 +212,9 @@ async function main(): Promise<void> {
               ? undefined : currentSession.transcript[round.transcriptStart];
             const message = transcriptMessage?.role === 'user' ? userMessageText(transcriptMessage) : '';
             return {
-              label: message || `原始用户消息不可用（检查点 ${checkpoint.id}）`,
+              label: transcriptMessage?.role === 'user'
+                ? message || '（无文本用户消息）'
+                : `原始用户消息不可用（检查点 ${checkpoint.id}）`,
               detail: `${checkpoint.createdAt} · 检查点 ${checkpoint.id}${checkpoint.files ? ` · ${checkpoint.files.length} 个文件` : ' · 文件清单缺失'}`,
               value: checkpoint.id,
             };

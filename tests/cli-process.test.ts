@@ -261,6 +261,7 @@ describe('compiled CLI process driver', () => {
       const record = JSON.parse(await readFile(recordPath, 'utf8')) as {
         checkpoints: Array<{ id: string; messageId: string }>;
         rounds: Array<{ id: string; transcriptStart?: number }>;
+        transcript: Array<{ role: string; content: unknown }>;
       };
       expect(record.checkpoints).toHaveLength(2);
 
@@ -277,6 +278,20 @@ describe('compiled CLI process driver', () => {
       expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('before-first-message');
       chooser.end('/exit\n');
       expect((await chooser.done).code).toBe(0);
+
+      const firstRound = record.rounds.find(({ id: roundId }) => roundId === record.checkpoints[0]!.messageId);
+      if (firstRound?.transcriptStart === undefined) throw new Error('检查点轮次缺少 transcript 起点');
+      record.transcript[firstRound.transcriptStart] = { role: 'user', content: '' };
+      await writeFile(recordPath, JSON.stringify(record));
+      let emptyOutput = '';
+      const emptyChooser = startCLI({ cwd, userDir, conversationId: id, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { emptyOutput = text; });
+      emptyChooser.send('/rewind\n');
+      await waitForOutput(() => emptyOutput, '（无文本用户消息）', 1);
+      emptyChooser.send('\u001b');
+      await waitForOutput(() => emptyOutput, '已取消文件检查点选择', 1);
+      emptyChooser.end('/exit\n');
+      expect((await emptyChooser.done).code).toBe(0);
+      expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('before-first-message');
 
       const legacyRound = record.rounds.find(({ id: roundId }) => roundId === record.checkpoints[0]!.messageId);
       if (!legacyRound) throw new Error('检查点轮次未保存');
