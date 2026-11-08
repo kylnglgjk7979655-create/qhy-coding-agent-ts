@@ -1,0 +1,35 @@
+name: Agent QA Feedback
+
+on:
+  workflow_run:
+    workflows: [Check]
+    types: [completed]
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  feedback:
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name == github.repository) ||
+      (github.event_name == 'pull_request_target' && github.event.label.name == 'agent:qa' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    concurrency:
+      group: agent-qa-${{ github.event.workflow_run.head_branch || github.event.pull_request.head.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const result = await require('./.github/scripts/qa-feedback.cjs').handle({ github, context });
+            core.info(JSON.stringify(result));
+

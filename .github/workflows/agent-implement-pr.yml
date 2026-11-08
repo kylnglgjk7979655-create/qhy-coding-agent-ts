@@ -19,6 +19,8 @@ on:
 
 jobs:
   implement-pr:
+    outputs:
+      checked-branch: ${{ steps.push.outputs.branch }}
     if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id != ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -129,12 +131,14 @@ jobs:
           store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
 
       - name: Push branch
+        id: push
         if: success()
         run: |
           gh pr view "$PR_NUMBER" --json state,headRefOid,labels > "$RUNNER_TEMP/current-pr.json"
           jq -e --arg sha "$BRANCH_HEAD_SHA" '.state == "OPEN" and .headRefOid == $sha and any(.labels[]; .name == "agent:in-progress") and (all(.labels[]; .name != "agent:blocked"))' "$RUNNER_TEMP/current-pr.json" > /dev/null
           if [ "$(cat "${RUNNER_TEMP}/has_commits.txt")" != "true" ]; then
             echo "No commits to push."
+            echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           set +e
@@ -150,6 +154,7 @@ jobs:
             cat push_err.txt
             exit $status
           fi
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Post thread replies
         if: success()
@@ -224,3 +229,17 @@ jobs:
       - name: Always remove in-progress
         if: always()
         run: gh pr edit "$PR_NUMBER" --remove-label "agent:in-progress" || true
+
+  check:
+    needs: implement-pr
+    if: ${{ always() && needs.implement-pr.outputs.checked-branch != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Check feedback changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ needs.implement-pr.outputs.checked-branch }}
+        run: gh api --method POST "repos/$GH_REPO/actions/workflows/check.yml/dispatches" -f ref="$BRANCH"

@@ -225,21 +225,18 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     }));
   }, 30_000);
 
-  it('无 PAT 时显式调度 Check 并将 Review 放入持久队列，有 PAT 时只贴标签避免重复启动', () => {
+  it('父需求完成后标记可审查并显式调度 Check', () => {
     const h = harness();
     h.update((state) => {
       state.issues[90] = issue(90);
       state.pulls = [{ number: 90, body: '', base: { ref: 'main' }, head: { ref: 'branch', sha: 'a'.repeat(40), repo: { full_name: 'owner/repo' } } }];
     });
-    h.ok('review', { PR_NUMBER: '90', BRANCH: 'agent/issue-24', AGENT_PAT: '' });
+    h.ok('check', { PR_NUMBER: '90', BRANCH: 'agent/parent-23', AGENT_PAT: '' });
     expect(h.read().requests.filter((entry) => entry.resource.endsWith('/dispatches'))).toMatchObject([
-      { resource: 'actions/workflows/check.yml/dispatches', body: { ref: 'agent/issue-24' } },
-      { resource: 'actions/workflows/agent-queue.yml/dispatches', body: { ref: 'main', inputs: {} } },
+      { resource: 'actions/workflows/check.yml/dispatches', body: { ref: 'agent/parent-23' } },
     ]);
-    expect(h.read().comments[90]?.map((comment) => comment.body).join('\n')).toContain('<!-- agent-subscription-queue:v1 ');
-    h.update((state) => { state.requests = []; state.issues[90]!.labels = []; });
-    h.ok('review', { PR_NUMBER: '90', BRANCH: 'agent/issue-24' });
-    expect(h.read().requests).toMatchObject([{ method: 'POST', resource: 'issues/90/labels', token: 'dispatch-token' }]);
+    expect(h.read().comments[90]?.[0]?.body).toContain('<!-- agent-qa-review -->');
+    expect(h.read().issues[90]!.labels).not.toContain('agent:review');
   });
 
   it('失败子票不被自动重试，人工重加 implement 后才允许重试；推送前重新检查依赖', () => {

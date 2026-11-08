@@ -105,21 +105,14 @@ try {
       console.log(selected.length ? `已转交：${selected.map((issue) => `#${issue}`).join('、')}。` : '没有可执行的直接依赖任务。');
       break;
     }
-    case 'review': {
+    case 'check': {
       const pr = Number(required('PR_NUMBER'));
       if (!Number.isSafeInteger(pr) || pr < 1) throw new Error('无效 PR 编号。');
-      if (process.env.AGENT_PAT) {
-        new GitHub(github.repo, process.env.AGENT_PAT).addLabels(pr, ['agent:review']);
-      } else {
-        const pull = github.api<{ head: { sha: string } }>('GET', `pulls/${pr}`);
-        github.addLabels(pr, ['agent:review']);
-        github.api('POST', 'actions/workflows/check.yml/dispatches', { ref: required('BRANCH') });
-        github.queueTask({
-          id: `internal-review-${pr}-${Math.floor(Date.now() / 1000)}`,
-          kind: 'review', number: pr, workflow: 'agent-review.yml',
-          inputs: { pr_number: String(pr), authorization_label: 'agent:review', expected_head_sha: pull.head.sha },
-        });
+      const branch = required('BRANCH');
+      if (branch.startsWith('agent/parent-')) {
+        github.comment(pr, '<!-- agent-qa-review -->\n全部子任务已提交，完整检查通过后请求审查。');
       }
+      github.api('POST', 'actions/workflows/check.yml/dispatches', { ref: branch });
       break;
     }
     default: throw new Error('未知 tickets 控制命令。');

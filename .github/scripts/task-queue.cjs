@@ -58,7 +58,8 @@ function renderRequest(request) {
   }[request.status];
   const run = request.runUrl ? `\n关联运行：${request.runUrl}` : '';
   const reason = request.reason ? `\n原因：${request.reason}` : '';
-  return `${encodeRequest(request)}\n订阅任务 #${request.number}（${request.kind}）：${state}。${run}${reason}`;
+  const feedback = request.feedback ? `\n${request.feedback}` : '';
+  return `${encodeRequest(request)}\n订阅任务 #${request.number}（${request.kind}）：${state}。${run}${reason}${feedback}`;
 }
 
 async function commentsFor(github, context, number) {
@@ -84,6 +85,7 @@ async function enqueue({ github, context, request }) {
     inputs: request.inputs,
     queuedAt: request.queuedAt || new Date().toISOString(),
     status: 'waiting',
+    ...(request.feedback ? { feedback: request.feedback } : {}),
   };
   const { data } = await github.rest.issues.createComment({
     ...context.repo, issue_number: record.number, body: renderRequest(record),
