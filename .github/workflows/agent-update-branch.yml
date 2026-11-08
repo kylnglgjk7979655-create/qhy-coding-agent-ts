@@ -19,8 +19,6 @@ on:
 
 jobs:
   update-branch:
-    outputs:
-      checked-branch: ${{ steps.push.outputs.branch }}
     # Same-repo PRs only: fork PRs never run here, so a fork's code never runs
     # with repo secrets.
     if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id != ''
@@ -84,6 +82,7 @@ jobs:
           ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
           path: worktree
+          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Prepare branch
         working-directory: worktree
@@ -113,7 +112,9 @@ jobs:
         working-directory: worktree
         env:
           OUTPUT_DIR: ${{ runner.temp }}
-        run: '"$GITHUB_WORKSPACE/node_modules/.bin/tsx" "$GITHUB_WORKSPACE/.sandcastle/agent-workflows/update-branch/update-branch.ts"'
+        run: |
+          export PATH="$GITHUB_WORKSPACE/node_modules/.bin:$PATH"
+          tsx "$GITHUB_WORKSPACE/.sandcastle/agent-workflows/update-branch/update-branch.ts"
 
       - name: Save refreshed Codex subscription
         if: always() && steps.auth.outputs.restored == 'true'
@@ -122,7 +123,6 @@ jobs:
           store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
 
       - name: Push branch (abort cleanly if non-fast-forward)
-        id: push
         if: success()
         working-directory: worktree
         env:
@@ -150,7 +150,6 @@ jobs:
             cat push_err.txt
             exit $status
           fi
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Post PR comment
         if: success()
@@ -178,17 +177,3 @@ jobs:
       - name: Always remove in-progress
         if: always()
         run: gh pr edit "$PR_NUMBER" --remove-label "agent:in-progress" || true
-
-  check:
-    needs: update-branch
-    if: ${{ always() && needs.update-branch.outputs.checked-branch != '' }}
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - name: Check updated branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          BRANCH: ${{ needs.update-branch.outputs.checked-branch }}
-        run: gh api --method POST "repos/$GH_REPO/actions/workflows/check.yml/dispatches" -f ref="$BRANCH"

@@ -173,7 +173,7 @@ it('非零退出作为单次失败回传实际状态与输出，同批后续命�
 });
 
 it('stdout 与 stderr 合计限制为 64 KiB，超限继续消费并正确处理多字节文本', async () => {
-  const script = "const fs = require('node:fs'); const { once } = require('node:events'); async function write() { for (let i = 0; i < 128; i++) { if (!process.stdout.write('界'.repeat(4096))) await once(process.stdout, 'drain'); if (!process.stderr.write('错误'.repeat(4096))) await once(process.stderr, 'drain'); } fs.writeFileSync('drained.txt', 'done'); } write().catch(error => { console.error(error); process.exitCode = 1; });";
+  const script = "const fs = require('node:fs'); for (let i = 0; i < 128; i++) { fs.writeSync(1, '界'.repeat(4096)); fs.writeSync(2, '错误'.repeat(4096)); } fs.writeFileSync('drained.txt', 'done');";
   await setup((_request, index) => index === 1 ? { calls: [bash('large', { command: `${process.execPath} -e ${JSON.stringify(script)}` })] } : { content: '完成' });
   const result = await run().done;
   expect(result.code, result.stderr).toBe(0);
