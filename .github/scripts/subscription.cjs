@@ -1,7 +1,12 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 
 const SECRET_NAME = 'CODEX_AUTH_JSON';
+
+function authDigest(auth) {
+  return createHash('sha256').update(auth).digest('hex');
+}
 
 function validateAuth(text) {
   let auth;
@@ -44,6 +49,7 @@ async function restore(mask = () => {}) {
   }
   await fs.mkdir(process.env.CODEX_HOME, { recursive: true, mode: 0o700 });
   await fs.writeFile(path.join(process.env.CODEX_HOME, 'auth.json'), auth, { mode: 0o600 });
+  await fs.writeFile(path.join(process.env.CODEX_HOME, 'auth.sha256'), authDigest(auth), { mode: 0o600 });
   await fs.writeFile(path.join(process.env.CODEX_HOME, 'config.toml'),
     'cli_auth_credentials_store = "file"\nforced_login_method = "chatgpt"\n', { mode: 0o600 });
 }
@@ -64,8 +70,12 @@ async function sealAuth(auth, key) {
 async function seal() {
   if (!process.env.CODEX_HOME) throw new Error('缺少 CODEX_HOME。');
   const auth = await fs.readFile(path.join(process.env.CODEX_HOME, 'auth.json'), 'utf8');
+  const originalDigest = await fs.readFile(path.join(process.env.CODEX_HOME, 'auth.sha256'), 'utf8');
+  if (!/^[a-f0-9]{64}$/.test(originalDigest)) throw new Error('原始登录文件摘要无效，停止回存。');
   const key = JSON.parse(await fs.readFile(path.join(process.env.RUNNER_TEMP, 'codex-public-key/key.json'), 'utf8'));
   const encrypted = await sealAuth(auth, key);
+  // sealed box 使用随机数，密文每次都会变化；比较原始登录文件才能判断是否需要回存。
+  encrypted.auth_changed = authDigest(auth) !== originalDigest;
   const dir = path.join(process.env.RUNNER_TEMP, 'codex-auth-update');
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, 'encrypted.json'), JSON.stringify(encrypted));
@@ -77,6 +87,7 @@ async function persist({ github, context }) {
   if (typeof payload.encrypted_value !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload.encrypted_value)
     || payload.encrypted_value.length < 64 || payload.encrypted_value.length > 70_000
     || typeof payload.key_id !== 'string' || !/^[\w-]+$/.test(payload.key_id)
+    || (payload.auth_changed !== undefined && typeof payload.auth_changed !== 'boolean')
     || typeof payload.expected_updated_at !== 'string') {
     throw new Error('加密认证包格式错误，停止写回。');
   }
@@ -84,10 +95,15 @@ async function persist({ github, context }) {
   if (current.updated_at !== payload.expected_updated_at) {
     throw new Error('运行期间凭据被其他操作更新，停止覆盖；请重新触发工作流。');
   }
+  if (payload.auth_changed === false) {
+    console.log('Codex 登录文件未变化，跳过 Secret 更新。');
+    return;
+  }
   await github.rest.actions.createOrUpdateRepoSecret({
     ...context.repo, secret_name: SECRET_NAME,
     key_id: payload.key_id, encrypted_value: payload.encrypted_value,
   });
+  console.log('Codex 登录文件已变化，已更新订阅 Secret。');
 }
 
 module.exports = { validateAuth, assertFreshSnapshot, publicKey, restore, sealAuth, seal, persist };

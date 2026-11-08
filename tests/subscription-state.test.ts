@@ -10,7 +10,9 @@ type Payload = { key_id: string; expected_updated_at: string; encrypted_value: s
 const subscription = require('../.github/scripts/subscription.cjs') as {
   validateAuth: (auth: string) => string;
   assertFreshSnapshot: (updated: string, created: string) => void;
+  publicKey: (args: { github: unknown; context: unknown }) => Promise<void>;
   restore: () => Promise<void>;
+  seal: () => Promise<void>;
   sealAuth: (auth: string, key: Key) => Promise<Payload>;
   persist: (args: { github: unknown; context: unknown }) => Promise<void>;
 };
@@ -65,6 +67,44 @@ describe('临时 Runner 的订阅登录态持久化', () => {
     expect(payload.key_id).toBe('key-1');
     const decoded = sodium.crypto_box_seal_open(sodium.from_base64(payload.encrypted_value, sodium.base64_variants.ORIGINAL), pair.publicKey, pair.privateKey);
     expect(sodium.to_string(decoded)).toBe(fixture);
+  });
+
+  it.each([false, true])('恢复、运行、回存完整流程只在登录文件变化时更新 Secret：变化=%s', async (changed) => {
+    const pair = sodium.crypto_box_keypair();
+    const context = { repo: { owner: 'owner', repo: 'repo' } };
+    let updatedAt = '2026-11-08T03:00:00Z';
+    const update = vi.fn().mockImplementation(async () => { updatedAt = '2026-11-08T03:23:00Z'; });
+    const github = { rest: { actions: {
+      getRepoSecret: vi.fn().mockImplementation(async () => ({ data: { updated_at: updatedAt } })),
+      getRepoPublicKey: vi.fn().mockResolvedValue({ data: {
+        key: sodium.to_base64(pair.publicKey, sodium.base64_variants.ORIGINAL), key_id: 'key-1',
+      } }),
+      createOrUpdateRepoSecret: update,
+    } } };
+    vi.stubEnv('RUNNER_TEMP', directory);
+    vi.stubEnv('CODEX_HOME', join(directory, 'codex-home'));
+    vi.stubEnv('CODEX_AUTH_JSON', fixture);
+    vi.stubEnv('AUTH_STORE_CONFIGURED', 'true');
+    vi.stubEnv('AUTH_JSON_CONFIGURED', 'true');
+    vi.stubEnv('RUN_CREATED_AT', '2026-11-08T03:16:00Z');
+    await subscription.publicKey({ github, context });
+    await subscription.restore();
+    const refreshed = JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'new-access', refresh_token: 'new-refresh' } });
+    if (changed) await writeFile(join(directory, 'codex-home/auth.json'), refreshed);
+    await subscription.seal();
+    await subscription.persist({ github, context });
+
+    if (changed) {
+      expect(update).toHaveBeenCalledTimes(1);
+      const payload = update.mock.calls[0]![0] as Payload;
+      const decoded = sodium.crypto_box_seal_open(sodium.from_base64(payload.encrypted_value, sodium.base64_variants.ORIGINAL), pair.publicKey, pair.privateKey);
+      expect(sodium.to_string(decoded)).toBe(refreshed);
+      expect(() => subscription.assertFreshSnapshot(updatedAt, '2026-11-08T03:17:43Z')).toThrow('重新触发');
+    } else {
+      vi.stubEnv('RUN_CREATED_AT', '2026-11-08T03:17:43Z');
+      await expect(subscription.publicKey({ github, context })).resolves.toBeUndefined();
+      expect(update).not.toHaveBeenCalled();
+    }
   });
 
   it('运行中发生凭据更新时停止写回；版本一致时只更新指定 Secret', async () => {
