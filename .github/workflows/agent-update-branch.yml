@@ -43,7 +43,7 @@ jobs:
       - name: Checkout trusted queue scripts
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Verify queued authorization
@@ -81,8 +81,11 @@ jobs:
         with:
           ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
+          path: worktree
+          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Prepare branch
+        working-directory: worktree
         run: |
           git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH"
           git config user.name "sandcastle-agent[bot]"
@@ -92,7 +95,10 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Build
-        run: pnpm build
+        working-directory: worktree
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
 
       - name: Restore Codex subscription
         id: auth
@@ -103,9 +109,12 @@ jobs:
 
       - name: Run update-branch agent
         id: run
+        working-directory: worktree
         env:
           OUTPUT_DIR: ${{ runner.temp }}
-        run: pnpm exec tsx .sandcastle/agent-workflows/update-branch/update-branch.ts
+        run: |
+          export PATH="$GITHUB_WORKSPACE/node_modules/.bin:$PATH"
+          tsx "$GITHUB_WORKSPACE/.sandcastle/agent-workflows/update-branch/update-branch.ts"
 
       - name: Save refreshed Codex subscription
         if: always() && steps.auth.outputs.restored == 'true'
@@ -115,6 +124,7 @@ jobs:
 
       - name: Push branch (abort cleanly if non-fast-forward)
         if: success()
+        working-directory: worktree
         env:
           SHOULD_PUSH_FILE: ${{ runner.temp }}/should_push.txt
         run: |
