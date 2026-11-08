@@ -335,6 +335,7 @@ async function runTurn(
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
   const pendingToolCalls = new Map<string, { toolName: string; input: unknown }>();
+  let bashFailed = false;
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
   log({
@@ -379,6 +380,7 @@ async function runTurn(
         log({ event: 'checkpoint.backup_failed', conversationId, message: 'write_file 原状态备份失败，继续写入。' });
       },
       onToolEvent: ({ toolName, status }) => {
+        if (toolName === 'Bash' && status === 'failed') bashFailed = true;
         const label = {
           started: '开始',
           succeeded: '成功',
@@ -400,6 +402,7 @@ async function runTurn(
       });
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }
+    if (bashFailed) process.stdout.write('\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n');
     process.stdout.write('\n');
     log({
       event: 'run.finished', runId: lastRunId, status: 'succeeded',
