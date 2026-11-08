@@ -76,8 +76,9 @@ function harness() {
 }
 
 describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
-  it('实现事件入口先通过完整 Check 才能推送，并为 dispatch 保留 issue 编号校验', () => {
+  it('实现任务经标签入队，并在推送前通过完整 Check 和编号校验', () => {
     const workflow = readFileSync(fileURLToPath(new URL('../.github/workflows/agent-implement.yml', import.meta.url)), 'utf8');
+    const ingress = readFileSync(fileURLToPath(new URL('../.github/workflows/agent-queue-ingress.yml', import.meta.url)), 'utf8');
     const validation = workflow.indexOf('name: Validate implementation');
     const push = workflow.indexOf('name: Push branch');
     expect(validation).toBeGreaterThan(-1);
@@ -85,10 +86,10 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(workflow.slice(validation, push)).toContain('pnpm check');
     expect(workflow.slice(validation, push)).toContain('pnpm demo:test');
     expect(workflow).toContain('persist-credentials: false');
-    expect(workflow).toMatch(/issues:\s*\n\s+types: \[labeled\]/u);
+    expect(ingress).toMatch(/issues:\s*\n\s+types: \[labeled\]/u);
     expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).toContain('issue_number:');
-    expect(workflow).toContain("github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:implement'");
+    expect(workflow).toContain("github.event_name == 'workflow_dispatch' && inputs.queue_request_id != ''");
     expect(workflow).toContain('ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}');
     expect(workflow).toContain('pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts prepare');
     expect(workflow.slice(validation, push)).toContain("GH_TOKEN: ''");
