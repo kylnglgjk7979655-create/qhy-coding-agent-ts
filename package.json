@@ -31,6 +31,8 @@
     "@ai-sdk/openai": "4.0.108",
     "ai": "7.0.162",
     "ajv": "8.20.0",
+    "ignore": "7.0.14",
+    "minimatch": "11.0.5",
     "zod": "4.6.7"
   },
   "devDependencies": {
