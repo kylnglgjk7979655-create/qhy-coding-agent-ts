@@ -48,19 +48,21 @@ describe('OpenAI SSE fetch 适配器', () => {
     expect(await response.json()).toEqual({ error: 'invalid' });
   });
 
-  it('跨任意网络分片解析事件，并在 EOF 交付最后一个完整事件', async () => {
-    const frame = 'data: {"choices":[{"delta":{"content":"分片文本"},"finish_reason":"stop"}]}';
+  it('跨 JSON 和事件分隔符的网络分片解析，并在 EOF 交付最后一个事件', async () => {
+    const frame = 'data: {"choices":[{"delta":{"content":"分片文本"},"finish_reason":"stop"}]}\n\n';
+    const finalFrame = 'data: {"choices":[{"delta":{"content":"EOF"}}]}';
     await listen((_request, response) => {
       response.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      for (const part of [`da`, `ta: {"choices":[{"delta":{"content":`, `"分片文本"},"finish_reason":"stop"}]}`]) {
+      for (const part of [`da`, `ta: {"choices":[{"delta":{"content":`, `"分片文本"},"finish_reason":"stop"}]}\n`, `\n`]) {
         response.write(part);
       }
+      response.write(finalFrame);
       response.end();
     });
 
     const response = await validatedOpenAIFetch(`${baseURL}/stream`);
 
-    expect(await response.text()).toBe(frame);
+    expect(await response.text()).toBe(frame + finalFrame);
   });
 
   it('非工具事件在服务端结束流前及时透传', async () => {
@@ -123,6 +125,10 @@ describe('OpenAI SSE fetch 适配器', () => {
     ['完整参数后重复起始帧', [
       { index: 0, id: 'original', function: { name: 'write_file', arguments: '{}' } },
       { index: 0, id: 'original', function: { name: 'write_file', arguments: '{}' } },
+    ]],
+    ['完整参数后重复空参数起始帧', [
+      { index: 0, id: 'original', function: { name: 'write_file', arguments: '{}' } },
+      { index: 0, id: 'original', function: { name: 'write_file', arguments: '' } },
     ]],
   ])('工具批次出现%s时以 PROVIDER_ERROR 终止流', async (_case, calls) => {
     await listen((_request, response) => {

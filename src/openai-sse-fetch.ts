@@ -70,8 +70,7 @@ export async function validatedOpenAIFetch(input: string | URL | Request, init?:
             if ('id' in item && item.id !== existing.id) {
               throw new AgentError('PROVIDER_ERROR', '同一调用索引出现不同原始 ID，已在执行前终止。');
             }
-            const isStructuredRestart = argumentFragment.trimStart().startsWith('{') || argumentFragment.trimStart().startsWith('[');
-            if (existing.argumentsComplete && typeof functionDelta?.name === 'string' && isStructuredRestart) {
+            if (existing.argumentsComplete && typeof functionDelta?.name === 'string') {
               throw new AgentError('PROVIDER_ERROR', '完整工具参数后出现重复的调用起始帧，已在执行前终止。');
             }
             if (argumentFragment) {
