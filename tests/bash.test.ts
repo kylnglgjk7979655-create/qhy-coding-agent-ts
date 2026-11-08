@@ -82,6 +82,7 @@ it('Bash 默认独立审批，批准前无启动或副作用，批准后返回�
   expect(result.stdout + result.stderr).not.toMatch(/private-command-output|private-error-output|fake-bash-key/);
   expect(fixture.requests[0]!.messages[0]!.content).toContain('Bash');
   expect(fixture.requests[0]!.messages[0]!.content).not.toContain('没有执行命令');
+  expect(fixture.requests[0]!.messages[0]!.content).toContain('不得声称操作成功或把失败调用的输出当成已验证结果');
 });
 
 it('固定允许下 cwd 按工作区解析，独立 shell 继承 CLI 环境但不保留先前状态', async () => {
@@ -170,6 +171,16 @@ it('非零退出作为单次失败回传实际状态与输出，同批后续命�
   expect(results()[1]!.is_error).toBe(false);
   expect(await readFile(join(cwd, 'continued.txt'), 'utf8')).toBe('continued');
   expect(result.stdout).toContain('Bash：失败');
+});
+
+it('Bash 失败后即使模型声称任务成功，也明确提示回复未获命令验证', async () => {
+  await setup((_request, index) => index === 1
+    ? { calls: [bash('failed-search', { command: 'exit 1' })] }
+    : { content: '已找到微信的存放路径。' });
+  const result = await run().done;
+  expect(result.code, result.stderr).toBe(0);
+  expect(result.stdout).toContain('已找到微信的存放路径。');
+  expect(result.stdout).toContain('本轮 Bash 命令执行失败，回复未获命令验证。');
 });
 
 it('stdout 与 stderr 合计限制为 64 KiB，超限继续消费并正确处理多字节文本', async () => {
