@@ -605,6 +605,7 @@ describe('compiled CLI process driver', () => {
       expect(lastScreen).toContain('❯ 尾部目标');
       expect(lastScreen).toContain('…');
       expect(lastScreen).not.toContain('\n很长的标题');
+      expect(lastScreen).toContain('viewport-00');
       chooser.send('\u001b');
       chooser.send('/resume\n');
       await waitForOutput(() => output.slice(output.lastIndexOf('\u001b[2J')), '当前工作区会话', 1);
@@ -628,6 +629,66 @@ describe('compiled CLI process driver', () => {
       expect(secondModel.requests).toHaveLength(0);
     } finally {
       await Promise.all([firstModel.close(), secondModel.close()]);
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')('disambiguates sessions with identical titles by showing their IDs', async () => {
+    const cwd = await directory('duplicate-title-cwd');
+    const userDir = await directory('duplicate-title-user');
+    const model = await startLocalOpenAIModel(() => ({ content: '未预期的请求' }));
+    try {
+      await configure(cwd, model.baseURL);
+      const create = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '/exit\n' });
+      expect((await create.done).code).toBe(0);
+      const [sourceId] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!sourceId) throw new Error('初始会话未创建');
+      const sessionRoot = join(userDir, '.qhy-coding-agents', 'sessions');
+      const source = JSON.parse(await readFile(join(sessionRoot, sourceId, 'record.json'), 'utf8')) as Record<string, unknown>;
+      for (const [id, updatedAt] of [
+        ['duplicate-title-first', '2100-01-02T00:00:00.000Z'],
+        ['duplicate-title-second', '2100-01-01T00:00:00.000Z'],
+      ] as const) {
+        await mkdir(join(sessionRoot, id), { recursive: true });
+        await writeFile(join(sessionRoot, id, 'record.json'), JSON.stringify({ ...source, id, title: '同名会话', updatedAt }));
+      }
+
+      let output = '';
+      const chooser = startCLI({ cwd, userDir, conversationId: sourceId, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      chooser.send('/resume\n');
+      await waitForOutput(() => output, '同名会话', 1);
+      const initialScreen = output.slice(output.lastIndexOf('\u001b[2J'));
+      expect(initialScreen).toContain('duplicate-title-first');
+      expect(initialScreen).toContain('duplicate-title-second');
+      chooser.send('\u001b[B\r');
+      await waitForOutput(() => output, '已继续会话：duplicate-title-second', 1);
+      chooser.end('/exit\n');
+      expect((await chooser.done).code).toBe(0);
+      expect(model.requests).toHaveLength(0);
+    } finally {
+      await model.close();
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')('closes the chooser when terminal input ends', async () => {
+    const cwd = await directory('chooser-close-cwd');
+    const userDir = await directory('chooser-close-user');
+    const model = await startLocalOpenAIModel(() => ({ content: '未预期的请求' }));
+    try {
+      await configure(cwd, model.baseURL);
+      const create = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '/exit\n' });
+      expect((await create.done).code).toBe(0);
+
+      let output = '';
+      const chooser = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, pty: true }, (text) => { output = text; });
+      chooser.send('/resume\n');
+      await waitForOutput(() => output, '当前工作区会话', 1);
+      chooser.end();
+
+      const result = await chooser.done;
+      expect(result.code).toBe(0);
+      expect(model.requests).toHaveLength(0);
+    } finally {
+      await model.close();
     }
   });
 
