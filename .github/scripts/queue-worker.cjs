@@ -16,10 +16,10 @@ async function pauseWaiting(github, context, fingerprint) {
   });
 }
 
-async function resumePaused(github, context, fingerprint) {
+async function resumePaused(github, context, fingerprint, verified = false) {
   const paused = await listStatus({ github, context, status: 'paused' });
   for (const entry of paused) {
-    if (entry.request.authFingerprint !== fingerprint) await transition({
+    if (verified || entry.request.authFingerprint !== fingerprint) await transition({
       github, context, number: entry.request.number, commentId: entry.commentId, status: 'waiting',
     });
   }
@@ -47,13 +47,22 @@ async function findLatestRun(github, context, request) {
   return data.workflow_runs.sort((a, b) => b.id - a.id)[0];
 }
 
-async function authPersistenceFailed(github, context, runId) {
+async function jobSteps(github, context, runId) {
   const { data } = await github.rest.actions.listJobsForWorkflowRun({
     ...context.repo, run_id: runId, per_page: 100,
   });
-  return data.jobs.some((job) => job.steps?.some((step) =>
-    /(?:Restore Codex subscription|Save refreshed Codex subscription|Persist encrypted login)/.test(step.name)
-      && step.conclusion === 'failure'));
+  return data.jobs.flatMap((job) => job.steps ?? []);
+}
+
+async function authPersistenceFailed(github, context, runId) {
+  const steps = await jobSteps(github, context, runId);
+  return steps.some((step) => /(?:Restore Codex subscription|Save refreshed Codex subscription|Persist encrypted login)/.test(step.name)
+    && step.conclusion === 'failure');
+}
+
+function authRoundTripSucceeded(steps) {
+  return ['Restore Codex subscription', 'Save refreshed Codex subscription'].every((name) =>
+    steps.some((step) => step.name === name && step.conclusion === 'success'));
 }
 
 async function execute(github, context, entry) {
@@ -106,6 +115,9 @@ async function execute(github, context, entry) {
   }
   if (run.conclusion === 'success') {
     await transition({ github, context, number: request.number, commentId, status: 'completed', runUrl });
+    if (authRoundTripSucceeded(await jobSteps(github, context, run.id))) {
+      await resumePaused(github, context, authFingerprint(), true);
+    }
     return false;
   } else {
     const authFailure = await authPersistenceFailed(github, context, run.id);

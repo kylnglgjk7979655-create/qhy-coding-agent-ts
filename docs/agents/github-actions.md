@@ -23,7 +23,7 @@ gh secret set CODEX_AUTH_JSON --repo kylnglgjk7979655-create/qhy-coding-agent-ts
 
 Settings → Actions → General 中启用 **Allow GitHub Actions to create and approve pull requests**。实际审查发布 COMMENT，PR 仍由人决定合并。
 
-父需求共享 PR 的子任务之间优先使用 `AGENT_PAT` 重新给父 Issue 添加 `agent:implement` 接续；未配置 PAT 时，完成脚本直接把父票接续写入持久队列。内置 Token 推送后仍显式调度分支的 `Check` 和同仓库 PR 的 `Agent Review`，审查产生新提交时再对新版本调度 `Check`。GitHub 官方将 dispatch 列为 GITHUB_TOKEN 不触发后续 workflow 的例外，来源见[调查记录](../notes/course-video-manager-ticket-workflows.md#无-agent_pat-时的内部接续)。
+父需求共享 PR 的子任务之间优先使用 `AGENT_PAT` 重新给父 Issue 添加 `agent:implement` 接续；未配置 PAT 时，完成脚本直接把父票接续写入持久队列。完整实现发布后显式调度 `Check`，再由 `Agent QA Feedback` 根据结果接续同仓库 PR。GitHub 官方将 dispatch 列为 GITHUB_TOKEN 不触发后续 workflow 的例外，来源见[调查记录](../notes/course-video-manager-ticket-workflows.md#无-agent_pat-时的内部接续)。
 
 配置 `AGENT_PAT`：权限至少为本仓库 **Contents、Issues、Pull requests → Read and write**，推送 workflow 修改时另需 **Workflows → Read and write**。配置后使用该 Token 推送和贴接续标签，由 ingress 记录队列请求。没有 PAT 时，内置 Token 通过持久队列完成内部接续；对不会触发后续 workflow 的推送，脚本会显式 dispatch 检查流程。
 
@@ -50,6 +50,12 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 标签入口统一由 `Agent Queue Ingress` 保存请求，再由 `Agent Queue` 按入队时间串行分发；模型任务运行期间，队列协调器持有仓库级订阅锁。Explore 的手动入口默认 `dry_run=true`，请求同样先进入队列，只展示计划；取消勾选才实际发布。添加 `agent:explore` 会直接应用结果：`easy-call` 转 `agent:implement`，`needs-a-human` 转 `ready-for-human`，`blocked` 转 `agent:blocked`；重复 Issue 被评论并关闭。这三个 verdict 是输出字段，不是 GitHub 标签。没有 `AGENT_PAT` 时，Explore 转交的实现任务也会写入持久队列。
 
 `ready-for-agent` 仅表示准备完成，不触发执行。拆票审批与依赖队列是参考 course-video-manager 的项目扩展，详细差异见[调查记录](../notes/course-video-manager-ticket-workflows.md)。定时架构审查仍未启用；历史 Issue 和子 Issue 不自动删除。
+
+## PR 自动 QA 与反馈
+
+实现发布后自动运行 `Check`（`pnpm check` 与 `pnpm demo:test`）。也可给现有 Sandcastle PR 添加 `agent:qa` 来发起一次检查。`Agent QA Feedback` 从可信工作流提交运行，仅处理同仓库、开放且仍指向被测提交的 Agent PR。完整检查通过后发起首次审查；父需求仍须等全部子票完成。
+
+测试步骤失败时，PR 队列评论保留失败步骤和 Actions 链接，随后由 `Agent Implement PR` 处理。每个提交最多自动处理一次，每条 PR 最多两轮；反馈处理完重新执行检查。权限、环境准备及超时等失败只记录证据，订阅认证异常沿用队列暂停规则。人工验收及合并按项目约定单独执行。
 
 ## 从 spec 到按依赖实现
 

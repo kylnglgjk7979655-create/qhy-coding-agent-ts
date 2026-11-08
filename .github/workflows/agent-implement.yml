@@ -152,12 +152,11 @@ jobs:
         env:
           PR_NUMBER: ${{ steps.open_pr.outputs.pr_number }}
 
-      - name: Request automated review
+      - name: Request QA before review
         if: steps.route.outputs.proceed == 'true' && steps.completion.outputs.review == 'true' && success()
         env:
           PR_NUMBER: ${{ steps.open_pr.outputs.pr_number }}
-          AGENT_PAT: ${{ secrets.AGENT_PAT }}
-        run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts review
+        run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts check
 
       - name: Finish parent queue
         if: steps.route.outputs.proceed == 'true' && steps.completion.outputs.review == 'true' && env.PARENT_NUMBER != '' && success()

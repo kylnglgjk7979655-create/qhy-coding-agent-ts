@@ -19,6 +19,8 @@ on:
 
 jobs:
   update-branch:
+    outputs:
+      checked-branch: ${{ steps.push.outputs.branch }}
     # Same-repo PRs only: fork PRs never run here, so a fork's code never runs
     # with repo secrets.
     if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id != ''
@@ -43,7 +45,7 @@ jobs:
       - name: Checkout trusted queue scripts
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Verify queued authorization
@@ -81,8 +83,10 @@ jobs:
         with:
           ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
+          path: worktree
 
       - name: Prepare branch
+        working-directory: worktree
         run: |
           git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH"
           git config user.name "sandcastle-agent[bot]"
@@ -92,7 +96,10 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Build
-        run: pnpm build
+        working-directory: worktree
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
 
       - name: Restore Codex subscription
         id: auth
@@ -103,9 +110,10 @@ jobs:
 
       - name: Run update-branch agent
         id: run
+        working-directory: worktree
         env:
           OUTPUT_DIR: ${{ runner.temp }}
-        run: pnpm exec tsx .sandcastle/agent-workflows/update-branch/update-branch.ts
+        run: '"$GITHUB_WORKSPACE/node_modules/.bin/tsx" "$GITHUB_WORKSPACE/.sandcastle/agent-workflows/update-branch/update-branch.ts"'
 
       - name: Save refreshed Codex subscription
         if: always() && steps.auth.outputs.restored == 'true'
@@ -114,7 +122,9 @@ jobs:
           store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
 
       - name: Push branch (abort cleanly if non-fast-forward)
+        id: push
         if: success()
+        working-directory: worktree
         env:
           SHOULD_PUSH_FILE: ${{ runner.temp }}/should_push.txt
         run: |
@@ -140,6 +150,7 @@ jobs:
             cat push_err.txt
             exit $status
           fi
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
       - name: Post PR comment
         if: success()
@@ -167,3 +178,17 @@ jobs:
       - name: Always remove in-progress
         if: always()
         run: gh pr edit "$PR_NUMBER" --remove-label "agent:in-progress" || true
+
+  check:
+    needs: update-branch
+    if: ${{ always() && needs.update-branch.outputs.checked-branch != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Check updated branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ needs.update-branch.outputs.checked-branch }}
+        run: gh api --method POST "repos/$GH_REPO/actions/workflows/check.yml/dispatches" -f ref="$BRANCH"
