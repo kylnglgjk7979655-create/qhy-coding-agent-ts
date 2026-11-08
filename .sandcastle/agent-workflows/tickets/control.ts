@@ -8,8 +8,10 @@ import { fail, required, writeJson } from '../shared/common.js';
 
 const github = new GitHub(required('GH_REPO'));
 const number = (): number => {
-  const value = Number(required('ISSUE_NUMBER'));
-  if (!Number.isSafeInteger(value) || value < 1) throw new Error('无效 Issue 编号。');
+  const raw = required('ISSUE_NUMBER');
+  if (!/^[1-9]\d*$/u.test(raw)) throw new Error('无效 Issue 编号。');
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) throw new Error('无效 Issue 编号。');
   return value;
 };
 const output = (key: string, value: string): void => {

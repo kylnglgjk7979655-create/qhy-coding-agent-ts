@@ -94,9 +94,11 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(workflow.slice(validation, push)).toContain("GH_TOKEN: ''");
 
     const h = harness();
-    const invalidIssue = h.run('prepare', { ISSUE_NUMBER: 'not-a-number' });
-    expect(invalidIssue.status).toBe(1);
-    expect(invalidIssue.stderr).toContain('无效 Issue 编号');
+    for (const issueNumber of ['not-a-number', '1e2', '0x10', '0', '9007199254740992']) {
+      const invalidIssue = h.run('prepare', { ISSUE_NUMBER: issueNumber });
+      expect(invalidIssue.status, issueNumber).toBe(1);
+      expect(invalidIssue.stderr, issueNumber).toContain('无效 Issue 编号');
+    }
   });
 
   it('只生成待审批评论；未审批、伪造计划或需求变化不能发布', () => {
