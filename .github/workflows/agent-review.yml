@@ -145,10 +145,12 @@ jobs:
             exit $status
           fi
 
-      - name: Check review changes
+      - name: Check review changes without PAT
         if: success()
+        env:
+          AGENT_PAT: ${{ secrets.AGENT_PAT }}
         run: |
-          if [ "$(git rev-parse HEAD)" != "$BRANCH_HEAD_SHA" ]; then
+          if [ -z "$AGENT_PAT" ] && [ "$(git rev-parse HEAD)" != "$BRANCH_HEAD_SHA" ]; then
             gh api --method POST "repos/$GH_REPO/actions/workflows/check.yml/dispatches" -f ref="$BRANCH"
           fi
 

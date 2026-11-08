@@ -103,6 +103,8 @@ jobs:
       - name: Create or update draft PR
         id: open_pr
         if: steps.route.outputs.proceed == 'true' && success()
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           pr_number=$(gh pr list --state open --head "$BRANCH" --base main --json number --jq '.[0].number // empty')
@@ -152,11 +154,12 @@ jobs:
         env:
           PR_NUMBER: ${{ steps.open_pr.outputs.pr_number }}
 
-      - name: Request QA before review
+      - name: Request automated review
         if: steps.route.outputs.proceed == 'true' && steps.completion.outputs.review == 'true' && success()
         env:
           PR_NUMBER: ${{ steps.open_pr.outputs.pr_number }}
-        run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts check
+          AGENT_PAT: ${{ secrets.AGENT_PAT }}
+        run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts review
 
       - name: Finish parent queue
         if: steps.route.outputs.proceed == 'true' && steps.completion.outputs.review == 'true' && env.PARENT_NUMBER != '' && success()
