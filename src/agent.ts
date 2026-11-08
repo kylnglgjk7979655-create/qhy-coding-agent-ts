@@ -13,6 +13,7 @@ import { approveToolCall } from './tool-approval.js';
 import type { ApprovalControl } from './tool-approval.js';
 import { ToolRegistry } from './tool-registry.js';
 import { prepareBashInput, runHostBash } from './host-bash.js';
+import { globWorkspace, grepWorkspace, validateSearchRoot } from './workspace-search.js';
 import { registerRemoteMCP } from './remote-mcp.js';
 import { DEFAULT_CONTEXT } from './config.js';
 import { prepareConversation } from './context-summary.js';
@@ -251,6 +252,32 @@ export async function runAgent(
     execute: async ({ path }) => ({ content: await readWorkspaceFile(config.workspace, path) }),
   });
   registry.register({
+    name: 'glob',
+    description: '按 glob 模式查找工作区文件，默认搜索整个工作区；可用 path 限定子目录。包含隐藏目录并遵循 .gitignore。',
+    inputSchema: z.strictObject({ pattern: z.string().min(1), path: z.string().min(1).optional() }),
+    prepare: async (input) => {
+      await validateSearchRoot(config.workspace, input.path);
+      return { input };
+    },
+    execute: (input) => globWorkspace(config.workspace, input),
+  });
+  registry.register({
+    name: 'grep',
+    description: '按正则搜索工作区文件，默认搜索整个工作区；可用 path 限定子目录、glob 限定文件。返回相对路径、行号和命中文本。包含隐藏目录并遵循 .gitignore。',
+    inputSchema: z.strictObject({
+      pattern: z.string().min(1).refine((pattern) => {
+        try { new RegExp(pattern); return true; } catch { return false; }
+      }),
+      path: z.string().min(1).optional(),
+      glob: z.string().min(1).optional(),
+    }),
+    prepare: async (input) => {
+      await validateSearchRoot(config.workspace, input.path);
+      return { input };
+    },
+    execute: (input) => grepWorkspace(config.workspace, input),
+  });
+  registry.register({
     name: 'write_file',
     description: '将工作区内文件完整替换为指定内容；目标不存在时创建文件，不会创建父目录。',
     inputSchema: z.strictObject({ path: z.string().min(1), content: z.string() }),
@@ -305,6 +332,7 @@ export async function runAgent(
     });
     const instructions = [
         '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
+        '搜索文件路径时优先使用 glob，搜索文件内容时优先使用 grep；两者默认搜索整个工作区，也可限定子目录，遵循 .gitignore 并包含隐藏目录。',
         '可使用 read_file 读取工作区文件，使用 write_file 完整替换或创建工作区文件；文件访问仅限配置的工作区。',
         'write_file 和 Bash 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
         'Bash 可运行命令和项目测试，每次使用独立 shell，继承 CLI 环境并以宿主当前用户权限执行；cwd 只约束启动位置，不提供文件系统或网络隔离。',
