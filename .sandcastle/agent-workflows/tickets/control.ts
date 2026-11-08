@@ -88,7 +88,16 @@ try {
       if (root.state !== 'open' || !hasLabel(root, 'agent:queued')
         || ['agent:blocked', 'agent:to-issues', 'agent:publish-tickets', 'agent:implement'].some((label) => hasLabel(root, label))) break;
       if (!github.children(parent).some((issue) => issue.state === 'open')) break;
-      new GitHub(github.repo, required('AGENT_PAT')).addLabels(parent, ['agent:implement']);
+      if (process.env.AGENT_PAT) {
+        new GitHub(github.repo, process.env.AGENT_PAT).addLabels(parent, ['agent:implement']);
+      } else {
+        github.addLabels(parent, ['agent:implement']);
+        github.queueTask({
+          id: `continue-parent-${number()}-${parent}-${Math.floor(Date.now() / 1000)}`,
+          kind: 'implement', number: parent, workflow: 'agent-implement.yml',
+          inputs: { issue_number: String(parent), authorization_label: 'agent:implement' },
+        });
+      }
       break;
     }
     case 'promote': {
@@ -102,11 +111,13 @@ try {
       if (process.env.AGENT_PAT) {
         new GitHub(github.repo, process.env.AGENT_PAT).addLabels(pr, ['agent:review']);
       } else {
+        const pull = github.api<{ head: { sha: string } }>('GET', `pulls/${pr}`);
         github.addLabels(pr, ['agent:review']);
-        // GITHUB_TOKEN 推送/贴标不会接续；官方允许 workflow_dispatch 例外。
         github.api('POST', 'actions/workflows/check.yml/dispatches', { ref: required('BRANCH') });
-        github.api('POST', 'actions/workflows/agent-review.yml/dispatches', {
-          ref: 'main', inputs: { pr_number: String(pr) },
+        github.queueTask({
+          id: `internal-review-${pr}-${Math.floor(Date.now() / 1000)}`,
+          kind: 'review', number: pr, workflow: 'agent-review.yml',
+          inputs: { pr_number: String(pr), authorization_label: 'agent:review', expected_head_sha: pull.head.sha },
         });
       }
       break;

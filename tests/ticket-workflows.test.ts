@@ -18,7 +18,7 @@ interface FixtureComment {
 }
 interface State {
   issues: Record<number, FixtureIssue>; parents: Record<number, number>; blockers: Record<number, number[]>;
-  comments: Record<number, FixtureComment[]>; pulls: { number: number; body: string; base: { ref: string }; head?: { ref: string; repo?: { full_name: string } }; draft?: boolean; labels?: { name: string }[] }[];
+  comments: Record<number, FixtureComment[]>; pulls: { number: number; body: string; base: { ref: string }; head?: { ref: string; sha?: string; repo?: { full_name: string } }; draft?: boolean; labels?: { name: string }[] }[];
   requests: { method: string; resource: string; token: string; body?: unknown }[]; failNext?: string;
   runs?: { path: string; status: string }[];
 }
@@ -175,13 +175,15 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
   }, 30_000);
 
-  it('没有 PAT 或子票尚未完成时不能冒充 PAT 接续', () => {
+  it('子票未完成时拒绝接续；无需 PAT 时将父票持久入队', () => {
     const h = harness(); h.publish();
     h.update((state) => { state.issues[23]!.labels.push('agent:queued'); });
     expect(h.run('continue-parent', { ISSUE_NUMBER: '24', PARENT_NUMBER: '23' }).status).toBe(1);
     h.update((state) => { state.issues[24]!.state = 'closed'; state.issues[24]!.state_reason = 'completed'; });
-    expect(h.run('continue-parent', { ISSUE_NUMBER: '24', PARENT_NUMBER: '23', AGENT_PAT: '' }).status).toBe(1);
-    expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
+    h.ok('continue-parent', { ISSUE_NUMBER: '24', PARENT_NUMBER: '23', AGENT_PAT: '' });
+    expect(h.read().issues[23]!.labels).toContain('agent:implement');
+    expect(h.read().comments[23]?.map((comment) => comment.body).join('\n')).toContain('<!-- agent-subscription-queue:v1 ');
+    expect(h.read().requests).toContainEqual(expect.objectContaining({ resource: 'actions/workflows/agent-queue.yml/dispatches' }));
   }, 30_000);
 
   it('拆票预检后立即切换执行标签', () => {
@@ -216,20 +218,25 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(h.read().issues[23]!.labels).toContain('agent:implement');
     expect(h.read().issues[24]!.labels).not.toContain('agent:implement');
     expect(h.read().issues[26]!.labels).not.toContain('agent:implement');
+    expect(h.read().comments[23]?.map((comment) => comment.body).join('\n')).toContain('<!-- agent-subscription-queue:v1 ');
     expect(h.read().requests).toContainEqual(expect.objectContaining({
-      resource: 'actions/workflows/agent-implement.yml/dispatches',
-      body: { ref: 'main', inputs: { issue_number: '23' } },
+      resource: 'actions/workflows/agent-queue.yml/dispatches',
+      body: { ref: 'main', inputs: {} },
     }));
   }, 30_000);
 
-  it('无 PAT 时显式调度 Check 和 Review，有 PAT 时只贴标签避免重复启动', () => {
+  it('无 PAT 时显式调度 Check 并将 Review 放入持久队列，有 PAT 时只贴标签避免重复启动', () => {
     const h = harness();
-    h.update((state) => { state.issues[90] = issue(90); });
+    h.update((state) => {
+      state.issues[90] = issue(90);
+      state.pulls = [{ number: 90, body: '', base: { ref: 'main' }, head: { ref: 'branch', sha: 'a'.repeat(40), repo: { full_name: 'owner/repo' } } }];
+    });
     h.ok('review', { PR_NUMBER: '90', BRANCH: 'agent/issue-24', AGENT_PAT: '' });
     expect(h.read().requests.filter((entry) => entry.resource.endsWith('/dispatches'))).toMatchObject([
       { resource: 'actions/workflows/check.yml/dispatches', body: { ref: 'agent/issue-24' } },
-      { resource: 'actions/workflows/agent-review.yml/dispatches', body: { ref: 'main', inputs: { pr_number: '90' } } },
+      { resource: 'actions/workflows/agent-queue.yml/dispatches', body: { ref: 'main', inputs: {} } },
     ]);
+    expect(h.read().comments[90]?.map((comment) => comment.body).join('\n')).toContain('<!-- agent-subscription-queue:v1 ');
     h.update((state) => { state.requests = []; state.issues[90]!.labels = []; });
     h.ok('review', { PR_NUMBER: '90', BRANCH: 'agent/issue-24' });
     expect(h.read().requests).toMatchObject([{ method: 'POST', resource: 'issues/90/labels', token: 'dispatch-token' }]);

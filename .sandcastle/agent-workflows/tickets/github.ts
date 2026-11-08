@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { z } from 'zod';
 
 const issueSchema = z.object({
@@ -14,6 +15,12 @@ export interface Comment {
   id: number; body: string; created_at: string; updated_at: string;
   user: { login: string; type: string };
 }
+const require = createRequire(import.meta.url);
+const { assertSafeInputs, decodeRequest, renderRequest } = require('../../../.github/scripts/task-queue.cjs') as {
+  assertSafeInputs: (inputs: unknown) => void;
+  decodeRequest: (body: string) => { id: string } | undefined;
+  renderRequest: (request: Record<string, unknown>) => string;
+};
 export const hasLabel = (issue: Issue, label: string): boolean =>
   issue.labels.some((entry) => (typeof entry === 'string' ? entry : entry.name) === label);
 
@@ -58,6 +65,13 @@ export class GitHub {
   }
   comments(number: number): Comment[] { return this.list<Comment>(`issues/${number}/comments`); }
   comment(number: number, body: string): void { this.api('POST', `issues/${number}/comments`, { body }); }
+  queueTask(request: { id: string; kind: string; number: number; workflow: string; inputs: Record<string, string> }): void {
+    assertSafeInputs(request.inputs);
+    if (!this.comments(request.number).some((comment) => comment.user.login === 'github-actions[bot]' && decodeRequest(comment.body)?.id === request.id)) {
+      this.comment(request.number, renderRequest({ version: 1, ...request, queuedAt: new Date().toISOString(), status: 'waiting' }));
+    }
+    this.api('POST', 'actions/workflows/agent-queue.yml/dispatches', { ref: 'main', inputs: {} });
+  }
   addLabels(number: number, labels: string[]): void { this.api('POST', `issues/${number}/labels`, { labels }); }
   removeLabel(issue: Issue, label: string): void {
     if (hasLabel(issue, label)) this.api('DELETE', `issues/${issue.number}/labels/${encodeURIComponent(label)}`);
