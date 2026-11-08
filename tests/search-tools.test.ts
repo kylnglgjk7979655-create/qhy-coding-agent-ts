@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
@@ -12,14 +12,18 @@ it('Agent 可用 glob 和 grep 搜索工作区，包含隐藏目录并遵循忽�
   let closeFixture: (() => Promise<void>) | undefined;
   try {
     await mkdir(join(workspace, '.hidden'));
+    await mkdir(join(workspace, 'linked-rules'));
     await writeFile(join(workspace, '.gitignore'), 'ignored.txt\n');
     await writeFile(join(workspace, '.hidden', '.gitignore'), 'excluded.txt\n');
+    await writeFile(join(outside, '.gitignore'), 'secret.txt\n');
+    await symlink(join(outside, '.gitignore'), join(workspace, 'linked-rules', '.gitignore'));
     await writeFile(join(workspace, 'visible.txt'), 'needle visible\n');
     await writeFile(join(workspace, 'ignored.txt'), 'needle ignored\n');
     await writeFile(join(workspace, '.hidden', 'secret.txt'), 'needle hidden\n');
     await writeFile(join(workspace, '.hidden', 'excluded.txt'), 'needle excluded\n');
+    await writeFile(join(workspace, 'linked-rules', 'secret.txt'), 'needle inside\n');
     await writeFile(join(outside, 'outside.txt'), 'needle outside\n');
-    await import('node:fs/promises').then(({ symlink }) => symlink(join(outside, 'outside.txt'), join(workspace, 'escape.txt')));
+    await symlink(join(outside, 'outside.txt'), join(workspace, 'escape.txt'));
 
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1 ? { calls: [
       { id: 'search-glob', type: 'function', function: { name: 'glob', arguments: JSON.stringify({ pattern: '**/*.txt' }) } },
@@ -43,9 +47,10 @@ it('Agent 可用 glob 和 grep 搜索工作区，包含隐藏目录并遵循忽�
     const results = fixture.requests[1]!.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ content: string; tool_call_id: string }>;
     const globResult = JSON.parse(results.find(({ tool_call_id }) => tool_call_id === 'search-glob')!.content);
     const grepResult = JSON.parse(results.find(({ tool_call_id }) => tool_call_id === 'search-grep')!.content);
-    expect(globResult).toEqual({ is_error: false, output: { paths: ['.hidden/secret.txt', 'visible.txt'], truncated: false } });
+    expect(globResult).toEqual({ is_error: false, output: { paths: ['.hidden/secret.txt', 'linked-rules/secret.txt', 'visible.txt'], truncated: false } });
     expect(grepResult).toEqual({ is_error: false, output: { matches: [
       { path: '.hidden/secret.txt', line: 1, text: 'needle hidden' },
+      { path: 'linked-rules/secret.txt', line: 1, text: 'needle inside' },
       { path: 'visible.txt', line: 1, text: 'needle visible' },
     ], truncated: false } });
     expect(JSON.parse(results.find(({ tool_call_id }) => tool_call_id === 'search-empty')!.content))

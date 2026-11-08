@@ -30,9 +30,11 @@ async function searchRoot(workspace: string, requestedPath?: string): Promise<st
   return target;
 }
 
-async function gitignoreRules(directory: string): Promise<IgnoreRules | undefined> {
+async function gitignoreRules(workspace: string, directory: string): Promise<IgnoreRules | undefined> {
   try {
-    const content = await readFile(resolve(directory, '.gitignore'), 'utf8');
+    const ignoreFile = await realpath(resolve(directory, '.gitignore'));
+    if (!isWithinWorkspace(workspace, ignoreFile)) return undefined;
+    const content = await readFile(ignoreFile, 'utf8');
     return { base: directory, matcher: ignore().add(content) };
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
@@ -46,7 +48,7 @@ async function ancestorIgnoreRules(workspace: string, root: string): Promise<Ign
   const relativeRoot = relative(workspace, root);
   for (const segment of relativeRoot === '' ? [] : relativeRoot.split(sep).slice(0, -1)) {
     directory = resolve(directory, segment);
-    const rule = await gitignoreRules(directory);
+    const rule = await gitignoreRules(workspace, directory);
     if (rule) rules.push(rule);
   }
   return rules;
@@ -64,14 +66,14 @@ function isIgnored(path: string, rules: IgnoreRules[]): boolean {
   return ignored;
 }
 
-async function workspaceFiles(workspace: string, requestedPath?: string): Promise<string[]> {
+async function workspaceFiles(workspace: string, requestedPath?: string): Promise<{ root: string; paths: string[] }> {
   const root = await searchRoot(workspace, requestedPath);
   const files: string[] = [];
   const rootRules = await ancestorIgnoreRules(workspace, root);
-  if (isIgnored(root, rootRules)) return files;
+  if (isIgnored(root, rootRules)) return { root, paths: files };
 
   async function visit(directory: string, inheritedRules: IgnoreRules[]): Promise<void> {
-    const localRules = await gitignoreRules(directory);
+    const localRules = await gitignoreRules(workspace, directory);
     const rules = localRules ? [...inheritedRules, localRules] : inheritedRules;
     const entries = await readdir(directory, { withFileTypes: true });
     entries.sort((left, right) => left.name.localeCompare(right.name));
@@ -103,7 +105,10 @@ async function workspaceFiles(workspace: string, requestedPath?: string): Promis
   }
 
   await visit(root, rootRules);
-  return files.map((file) => toPosix(relative(workspace, file))).sort((left, right) => left.localeCompare(right));
+  return {
+    root,
+    paths: files.map((file) => toPosix(relative(workspace, file))).sort((left, right) => left.localeCompare(right)),
+  };
 }
 
 function matchesGlob(path: string, pattern: string): boolean {
@@ -119,8 +124,7 @@ function outputFits(value: unknown): boolean {
 }
 
 export async function globWorkspace(workspace: string, input: SearchOptions): Promise<{ paths: string[]; truncated: boolean }> {
-  const candidates = await workspaceFiles(workspace, input.path);
-  const root = await searchRoot(workspace, input.path);
+  const { root, paths: candidates } = await workspaceFiles(workspace, input.path);
   const paths: string[] = [];
   let truncated = false;
   for (const path of candidates) {
@@ -140,8 +144,7 @@ export async function grepWorkspace(
   input: SearchOptions & { glob?: string | undefined },
 ): Promise<{ matches: Array<{ path: string; line: number; text: string }>; truncated: boolean }> {
   const expression = new RegExp(input.pattern);
-  const candidates = await workspaceFiles(workspace, input.path);
-  const root = await searchRoot(workspace, input.path);
+  const { root, paths: candidates } = await workspaceFiles(workspace, input.path);
   const matches: Array<{ path: string; line: number; text: string }> = [];
   let truncated = false;
 
