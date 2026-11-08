@@ -103,6 +103,8 @@ jobs:
       - name: Create or update draft PR
         id: open_pr
         if: steps.route.outputs.proceed == 'true' && success()
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           pr_number=$(gh pr list --state open --head "$BRANCH" --base main --json number --jq '.[0].number // empty')
