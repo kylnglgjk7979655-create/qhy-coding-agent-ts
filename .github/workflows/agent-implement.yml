@@ -41,6 +41,7 @@ jobs:
           ref: main
           fetch-depth: 0
           token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Setup Node.js and pnpm
         uses: ./.github/actions/setup
@@ -92,9 +93,22 @@ jobs:
         if: steps.route.outputs.proceed == 'true' && success()
         run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts verify
 
+      - name: Validate implementation
+        if: steps.route.outputs.proceed == 'true' && success()
+        env:
+          GH_TOKEN: ''
+        run: |
+          pnpm check
+          pnpm demo:test
+
       - name: Push branch
         if: steps.route.outputs.proceed == 'true' && success()
-        run: git push --force-with-lease origin "$BRANCH"
+        run: |
+          gh auth setup-git
+          git push --force-with-lease origin "$BRANCH"
+        # Only grant the Git credential after generated code has passed checks.
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Create or update draft PR
         id: open_pr

@@ -76,6 +76,22 @@ function harness() {
 }
 
 describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
+  it('实现事件入口先通过完整 Check 才能推送，并为 dispatch 保留 issue 编号校验', () => {
+    const workflow = readFileSync(fileURLToPath(new URL('../.github/workflows/agent-implement.yml', import.meta.url)), 'utf8');
+    const validation = workflow.indexOf('name: Validate implementation');
+    const push = workflow.indexOf('name: Push branch');
+    expect(validation).toBeGreaterThan(-1);
+    expect(validation).toBeLessThan(push);
+    expect(workflow.slice(validation, push)).toContain('pnpm check');
+    expect(workflow.slice(validation, push)).toContain('pnpm demo:test');
+    expect(workflow).toContain('persist-credentials: false');
+    expect(workflow).toMatch(/issues:\s*\n\s+types: \[labeled\]/u);
+    expect(workflow).toContain('workflow_dispatch:');
+    expect(workflow).toContain('issue_number:');
+    expect(workflow).toContain("github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:implement'");
+    expect(workflow.slice(validation, push)).toContain("GH_TOKEN: ''");
+  });
+
   it('只生成待审批评论；未审批、伪造计划或需求变化不能发布', () => {
     const h = harness(); h.plan();
     expect(Object.keys(h.read().issues)).toEqual(['23']);

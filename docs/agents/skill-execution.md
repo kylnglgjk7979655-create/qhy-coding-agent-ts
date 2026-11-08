@@ -18,7 +18,7 @@
 - 实现、审查、反馈修改由 Agent 在当前分支提交；workflow 负责推送、PR、标签和评论。
 - 普通实现不要求结构化 JSON；审查、反馈修改、冲突处理及 Explore 先完成工作，再恢复会话提取结果。拆票按参考仓库直接输出 slices，校验失败在同会话修正；计划来源指纹由包装脚本维护，不交给模型生成。
 - Explore 批量只读调查，独立 apply job 校验并发布评论、转交标签和关闭重复 Issue；添加 `agent:explore` 即授权这一完整流程。手动入口默认 dry-run。
-- 提交前按官方 prompt 运行 `pnpm typecheck` 和相关聚焦测试；完整项目验证由 `Check` 执行。人工 QA 仍需人实际执行，代码检查不代表人工 QA 已通过。
+- 提交前按官方 prompt 运行 `pnpm typecheck` 和相关聚焦测试；推送实现分支前，`Agent Implement` 还会运行与 `Check` 相同的 `pnpm check` 和 `pnpm demo:test`。人工 QA 仍需人实际执行，代码检查不代表人工 QA 已通过。
 - PR 审查发布 COMMENT 并标记 Ready，由人决定是否合并。普通实现 PR 的 `Closes #编号` 在合并时关闭 Issue。
 
 Codex 订阅的认证恢复、刷新回存和串行使用保持现有适配，具体配置见 [github-actions.md](github-actions.md)。拆票与队列是在官方流程上恢复的有限扩展；旧的统一任务协议、外层提交发布、定时架构提案没有恢复。
