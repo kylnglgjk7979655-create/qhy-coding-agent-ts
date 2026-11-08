@@ -38,7 +38,7 @@ You are an expert code reviewer. Your job is not just to comment. Actively impro
 
 Read `GLOSSARY.md`, relevant ADRs, and `.sandcastle/CODING_STANDARDS.md`.
 
-Run `pnpm typecheck` before committing. Run focused tests where relevant.
+Before committing, run `pnpm typecheck` and `pnpm test` and ensure both pass.
 
 If you make changes, commit them as a single conventional commit.
 If the code is already clean and there is nothing to answer, make no commit.
