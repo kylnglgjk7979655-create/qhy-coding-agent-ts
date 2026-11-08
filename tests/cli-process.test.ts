@@ -269,7 +269,7 @@ describe('compiled CLI process driver', () => {
       const chooser = startCLI({ cwd, userDir, conversationId: id, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
       chooser.send('/rewind\n');
       await waitForOutput(() => output, '选择要预览的用户消息恢复点', 1);
-      expect(output.split('重复请求').length - 1).toBeGreaterThanOrEqual(2);
+      await waitForOutput(() => output, '重复请求', 2);
       chooser.send('\u001b[A');
       chooser.send('\r');
       await waitForOutput(() => output, `消息 ${record.checkpoints[0]!.messageId}`, 1);
