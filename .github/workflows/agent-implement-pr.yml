@@ -1,63 +1,99 @@
 name: Agent Implement PR
 
 on:
-  # pull_request, not pull_request_target: on a fork PR this gets no secrets
-  # and a read-only token, so checking out and running the PR's code is safe.
-  # Same-repo PRs (the ones the agent opens) keep secrets as before.
-  # pull_request does not fire on PRs with merge conflicts (GitHub can't build
-  # the merge ref) — resolving those is agent-update-branch's job.
-  pull_request:
-    types: [labeled]
-
-# 同一份 Codex 订阅认证必须串行刷新，锁覆盖回存和发布。
-concurrency:
-  group: ${{ (github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:implement') && format('codex-subscription-{0}', github.repository) || format('agent-ignored-{0}', github.run_id) }}
-  cancel-in-progress: false
+  # Agent Queue dispatches only after confirming this is an open same-repository PR.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: '队列中的目标 PR 编号'
+        type: string
+        required: true
+      queue_request_id:
+        description: '由持久化订阅队列分发的请求编号'
+        type: string
+        required: true
+      expected_head_sha:
+        description: '入队时记录的 PR 分支版本'
+        type: string
+        required: false
 
 jobs:
   implement-pr:
-    if: github.event.label.name == 'agent:implement'
+    if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id != ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: agent-mutate-pr-${{ github.event.pull_request.number }}
+      group: agent-mutate-pr-${{ inputs.pr_number }}
       cancel-in-progress: false
     permissions:
       actions: read
       contents: write
+      issues: read
       pull-requests: write
 
     env:
       CODEX_MODEL: ${{ vars.CODEX_MODEL }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      BRANCH: ${{ github.event.pull_request.head.ref }}
-      BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ inputs.pr_number }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
-      - name: Refuse closed PR
-        if: github.event.pull_request.state != 'open'
+      - name: Checkout trusted queue scripts
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Verify queued authorization
+        uses: ./.github/actions/queue-authorization
+        with:
+          queue-request-id: ${{ inputs.queue_request_id }}
+          item-number: ${{ inputs.pr_number }}
+          workflow: agent-implement-pr.yml
+          expected-head-sha: ${{ inputs.expected_head_sha }}
+
+      - name: Read PR branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr edit "$PR_NUMBER" --remove-label "agent:implement" || true
-          gh pr comment "$PR_NUMBER" --body "Refused to run: PR #${PR_NUMBER} is not open."
+          gh pr view "$PR_NUMBER" --json state,headRefName,headRefOid --jq 'select(.state == "OPEN") | [.headRefName, .headRefOid] | @tsv' > "$RUNNER_TEMP/pr.tsv"
+          if [ ! -s "$RUNNER_TEMP/pr.tsv" ]; then
+            echo "PR #$PR_NUMBER is closed; refusing queued work." >&2
+            exit 1
+          fi
+          IFS=$'\t' read -r branch head_sha < "$RUNNER_TEMP/pr.tsv"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "BRANCH=$branch" >> "$GITHUB_ENV"
+          echo "BRANCH_HEAD_SHA=$head_sha" >> "$GITHUB_ENV"
+
+      - name: Verify queued branch version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+        run: |
+          if [ -n "$EXPECTED_HEAD_SHA" ] && [ "$EXPECTED_HEAD_SHA" != "${BRANCH_HEAD_SHA}" ]; then
+            echo "PR branch changed after enqueue; please re-add agent:implement." >&2
+            exit 1
+          fi
 
       - name: Transition labels
-        if: github.event.pull_request.state == 'open'
+        if: success()
         run: |
           gh pr edit "$PR_NUMBER" --remove-label "agent:implement" || true
           gh pr edit "$PR_NUMBER" --remove-label "agent:blocked" || true
           gh pr edit "$PR_NUMBER" --add-label "agent:in-progress"
 
       - name: Checkout PR branch
-        if: github.event.pull_request.state == 'open'
+        if: success()
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
 
       - name: Prepare branch
-        if: github.event.pull_request.state == 'open'
+        if: success()
         run: |
           git fetch origin main:main || git fetch origin main
           git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH"
@@ -65,23 +101,23 @@ jobs:
           git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
 
       - name: Setup Node.js and pnpm
-        if: github.event.pull_request.state == 'open'
+        if: success()
         uses: ./.github/actions/setup
 
       - name: Build
-        if: github.event.pull_request.state == 'open'
+        if: success()
         run: pnpm build
 
       - name: Restore Codex subscription
         id: auth
-        if: github.event.pull_request.state == 'open'
+        if: success()
         uses: ./.github/actions/codex-auth-restore
         with:
           auth-json: ${{ secrets.CODEX_AUTH_JSON }}
           store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
 
       - name: Run implement-PR agent
-        if: github.event.pull_request.state == 'open'
+        if: success()
         env:
           OUTPUT_DIR: ${{ runner.temp }}
         run: pnpm exec tsx .sandcastle/agent-workflows/implement-pr/implement-pr.ts
@@ -93,8 +129,10 @@ jobs:
           store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
 
       - name: Push branch
-        if: github.event.pull_request.state == 'open' && success()
+        if: success()
         run: |
+          gh pr view "$PR_NUMBER" --json state,headRefOid,labels > "$RUNNER_TEMP/current-pr.json"
+          jq -e --arg sha "$BRANCH_HEAD_SHA" '.state == "OPEN" and .headRefOid == $sha and any(.labels[]; .name == "agent:in-progress") and (all(.labels[]; .name != "agent:blocked"))' "$RUNNER_TEMP/current-pr.json" > /dev/null
           if [ "$(cat "${RUNNER_TEMP}/has_commits.txt")" != "true" ]; then
             echo "No commits to push."
             exit 0
@@ -114,7 +152,7 @@ jobs:
           fi
 
       - name: Post thread replies
-        if: github.event.pull_request.state == 'open' && success()
+        if: success()
         env:
           REPLIES: ${{ runner.temp }}/implement_thread_replies.json
         run: |
@@ -134,7 +172,7 @@ jobs:
           done
 
       - name: Post inline comments
-        if: github.event.pull_request.state == 'open' && success()
+        if: success()
         env:
           COMMENTS: ${{ runner.temp }}/implement_new_inline_comments.json
         run: |
@@ -156,7 +194,7 @@ jobs:
           done
 
       - name: Post top-level comments
-        if: github.event.pull_request.state == 'open' && success()
+        if: success()
         env:
           COMMENTS: ${{ runner.temp }}/implement_top_level_comments.json
         run: |
@@ -170,7 +208,7 @@ jobs:
           done
 
       - name: Mark blocked on failure
-        if: github.event.pull_request.state == 'open' && failure()
+        if: failure()
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -184,5 +222,5 @@ jobs:
           gh pr comment "$PR_NUMBER" --body-file "$body_file"
 
       - name: Always remove in-progress
-        if: always() && github.event.pull_request.state == 'open'
+        if: always()
         run: gh pr edit "$PR_NUMBER" --remove-label "agent:in-progress" || true
