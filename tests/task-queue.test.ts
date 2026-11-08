@@ -62,6 +62,13 @@ function request(id: string, number: number, queuedAt: string, kind = 'implement
 }
 
 describe('订阅 Agent 持久化队列', () => {
+  it('标签入口使用已部署的 workflow 和同一提交中的脚本', () => {
+    const workflow = readFileSync(new URL('../.github/workflows/agent-queue-ingress.yml', import.meta.url), 'utf8');
+    expect(workflow).not.toMatch(/^  pull_request:/mu);
+    expect(workflow).toMatch(/^  pull_request_target:\n    types: \[labeled\]/mu);
+    expect(workflow).toContain('ref: ${{ github.workflow_sha }}');
+  });
+
   it('保存三个不同请求并按入队时间排序，重复投递保持幂等', async () => {
     const h = fixture();
     await queue.enqueue({ github: h.github, context, request: request('evt-3', 13, '2026-11-08T10:03:00Z', 'update-branch', 'agent-update-branch.yml') });
@@ -88,9 +95,10 @@ describe('订阅 Agent 持久化队列', () => {
     await ingress.route({
       github: h.github,
       context: {
-        ...context, runId: 52, eventName: 'pull_request',
+        ...context, runId: 52, eventName: 'pull_request_target',
         payload: { action: 'labeled', label: { name: 'agent:review' }, pull_request: {
-          number: 12, updated_at: '2026-11-08T10:01:00Z', head: { sha: 'a'.repeat(40), repo: { full_name: 'org/project' } },
+          number: 12, state: 'open', updated_at: '2026-11-08T10:01:00Z',
+          head: { sha: 'a'.repeat(40), repo: { full_name: 'org/project' } },
         } },
       },
     });
@@ -105,6 +113,37 @@ describe('订阅 Agent 持久化队列', () => {
     expect(h.github.rest.actions.createWorkflowDispatch).toHaveBeenCalledTimes(4);
     expect((await queue.listWaiting({ github: h.github, context })).map((entry) => entry.request.workflow))
       .toEqual(['agent-implement.yml', 'agent-review.yml', 'agent-explore.yml']);
+  });
+
+  it.each([
+    ['agent:implement', 'agent-implement-pr.yml'],
+    ['agent:review', 'agent-review.yml'],
+    ['agent:update-branch', 'agent-update-branch.yml'],
+  ])('从可信 PR 标签事件路由 %s，忽略 fork、关闭的 PR 和旧事件', async (label, workflow) => {
+    const h = fixture();
+    const pull = {
+      number: 12, state: 'open', updated_at: '2026-11-08T10:01:00Z',
+      head: { sha: 'a'.repeat(40), repo: { full_name: 'org/project' } },
+    };
+    const event = { ...context, eventName: 'pull_request_target', payload: { action: 'labeled', label: { name: label }, pull_request: pull } };
+    for (const pr of [
+      { ...pull, head: { ...pull.head, repo: { full_name: 'fork/project' } } },
+      { ...pull, state: 'closed' },
+    ]) {
+      await expect(ingress.route({ github: h.github, context: { ...event, payload: { ...event.payload, pull_request: pr } } }))
+        .resolves.toMatchObject({ ignored: true });
+    }
+    await expect(ingress.route({ github: h.github, context: { ...event, eventName: 'pull_request' } }))
+      .resolves.toMatchObject({ ignored: true });
+    expect(h.github.rest.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+
+    await ingress.route({ github: h.github, context: event });
+    await ingress.route({ github: h.github, context: event });
+    expect(h.github.rest.issues.createComment).toHaveBeenCalledTimes(1);
+    expect((await queue.listWaiting({ github: h.github, context })).map((entry) => entry.request.workflow)).toEqual([workflow]);
+    expect(h.github.rest.actions.createWorkflowDispatch).toHaveBeenCalledWith(expect.objectContaining({
+      workflow_id: 'agent-queue.yml', ref: 'main',
+    }));
   });
 
   it('状态转换保留审计记录，并禁止重放已终结请求', async () => {

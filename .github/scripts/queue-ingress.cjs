@@ -34,21 +34,18 @@ async function route({ github, context }) {
     return saved;
   }
   const isIssue = context.eventName === 'issues';
-  const isPullRequest = context.eventName === 'pull_request' || context.eventName === 'pull_request_target';
+  const isPullRequest = context.eventName === 'pull_request_target';
   if (!isIssue && !isPullRequest) return { ignored: true };
   if (event.action !== 'labeled') return { ignored: true };
   const label = event.label?.name;
-  const routes = isIssue ? issueRoutes : context.eventName === 'pull_request_target'
-    ? { 'agent:update-branch': prRoutes['agent:update-branch'] }
-    : { 'agent:implement': prRoutes['agent:implement'], 'agent:review': prRoutes['agent:review'] };
-  const routeInfo = routes[label];
-  if (!routeInfo) return { ignored: true };
+  const routes = isIssue ? issueRoutes : prRoutes;
+  if (!Object.hasOwn(routes, label)) return { ignored: true };
   const item = isIssue ? event.issue : event.pull_request;
-  if (isPullRequest && label === 'agent:update-branch'
-    && item.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
-    return { ignored: true, reason: '不接受 fork PR 的分支更新任务。' };
+  if (isPullRequest && (item.state !== 'open'
+    || item.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`)) {
+    return { ignored: true, reason: '只接受同仓库的开放 PR。' };
   }
-  const [kind, workflow] = routeInfo;
+  const [kind, workflow] = routes[label];
   const number = item.number;
   const inputs = {
     authorization_label: label,
