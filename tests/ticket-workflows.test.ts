@@ -89,7 +89,14 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).toContain('issue_number:');
     expect(workflow).toContain("github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:implement'");
+    expect(workflow).toContain('ISSUE_NUMBER: ${{ github.event.issue.number || inputs.issue_number }}');
+    expect(workflow).toContain('pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts prepare');
     expect(workflow.slice(validation, push)).toContain("GH_TOKEN: ''");
+
+    const h = harness();
+    const invalidIssue = h.run('prepare', { ISSUE_NUMBER: 'not-a-number' });
+    expect(invalidIssue.status).toBe(1);
+    expect(invalidIssue.stderr).toContain('无效 Issue 编号');
   });
 
   it('只生成待审批评论；未审批、伪造计划或需求变化不能发布', () => {
