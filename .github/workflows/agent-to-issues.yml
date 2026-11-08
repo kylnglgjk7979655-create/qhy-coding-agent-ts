@@ -1,17 +1,22 @@
 name: Agent To Issues
 on:
-  issues:
-    types: [labeled]
-concurrency:
-  group: ${{ github.event.label.name == 'agent:to-issues' && format('codex-subscription-{0}', github.repository) || format('agent-ignored-{0}', github.run_id) }}
-  cancel-in-progress: false
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: '队列中的目标 Issue 编号'
+        type: string
+        required: true
+      queue_request_id:
+        description: '由持久化订阅队列分发的请求编号'
+        type: string
+        required: true
 jobs:
   plan:
-    if: github.event.label.name == 'agent:to-issues'
+    if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
     concurrency:
-      group: agent-ticket-control-${{ github.repository }}-${{ github.event.issue.number }}
+      group: agent-ticket-control-${{ github.repository }}-${{ inputs.issue_number }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -20,7 +25,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
-      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      ISSUE_NUMBER: ${{ inputs.issue_number }}
       CODEX_MODEL: ${{ vars.CODEX_MODEL }}
     outputs:
       started: ${{ steps.prepare.outputs.started }}
@@ -29,6 +34,12 @@ jobs:
         with:
           ref: main
           persist-credentials: false
+      - name: Verify queued authorization
+        uses: ./.github/actions/queue-authorization
+        with:
+          queue-request-id: ${{ inputs.queue_request_id }}
+          item-number: ${{ inputs.issue_number }}
+          workflow: agent-to-issues.yml
       - uses: ./.github/actions/setup
       - name: Capture source before agent runs
         id: prepare
@@ -66,7 +77,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: agent-ticket-control-${{ github.repository }}-${{ github.event.issue.number }}
+      group: agent-ticket-control-${{ github.repository }}-${{ inputs.issue_number }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -74,7 +85,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
-      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      ISSUE_NUMBER: ${{ inputs.issue_number }}
     steps:
       - uses: actions/checkout@v4
         with:

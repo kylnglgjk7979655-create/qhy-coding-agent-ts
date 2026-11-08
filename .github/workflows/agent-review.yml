@@ -1,32 +1,28 @@
 name: Agent Review
 
 on:
-  # pull_request, not pull_request_target: on a fork PR this gets no secrets
-  # and a read-only token, so checking out and running the PR's code is safe.
-  # Same-repo PRs (the ones the agent opens) keep secrets as before.
-  # pull_request does not fire on PRs with merge conflicts (GitHub can't build
-  # the merge ref) — resolving those is agent-update-branch's job.
-  pull_request:
-    types: [labeled]
   workflow_dispatch:
     inputs:
       pr_number:
         description: '内部接续：同仓库、开放且携带 agent:review 标签的 PR 编号'
         type: string
         required: true
-
-# 同一份 Codex 订阅认证必须串行刷新，锁覆盖回存和发布。
-concurrency:
-  group: ${{ (github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:review') && format('codex-subscription-{0}', github.repository) || format('agent-ignored-{0}', github.run_id) }}
-  cancel-in-progress: false
+      queue_request_id:
+        description: '由持久化订阅队列分发的请求编号'
+        type: string
+        required: true
+      expected_head_sha:
+        description: '入队时记录的 PR 分支版本'
+        type: string
+        required: false
 
 jobs:
   review:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:review'
+    if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id != ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: agent-mutate-pr-${{ github.event.pull_request.number || inputs.pr_number }}
+      group: agent-mutate-pr-${{ inputs.pr_number }}
       cancel-in-progress: false
     permissions:
       actions: write
@@ -37,12 +33,40 @@ jobs:
     env:
       CODEX_MODEL: ${{ vars.CODEX_MODEL }}
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-      BRANCH: ${{ github.event.pull_request.head.ref }}
-      BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
+      - name: Checkout trusted queue scripts
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Verify queued authorization
+        uses: ./.github/actions/queue-authorization
+        with:
+          queue-request-id: ${{ inputs.queue_request_id }}
+          item-number: ${{ inputs.pr_number }}
+          workflow: agent-review.yml
+          expected-head-sha: ${{ inputs.expected_head_sha }}
+
+      - name: Read and verify PR
+        id: pr
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+        run: |
+          gh pr view "$PR_NUMBER" --json state,headRefName,headRefOid --jq 'select(.state == "OPEN") | [.headRefName, .headRefOid] | @tsv' > "$RUNNER_TEMP/pr.tsv"
+          if [ ! -s "$RUNNER_TEMP/pr.tsv" ]; then echo "PR is closed." >&2; exit 1; fi
+          IFS=$'\t' read -r branch head_sha < "$RUNNER_TEMP/pr.tsv"
+          if [ -n "$EXPECTED_HEAD_SHA" ] && [ "$EXPECTED_HEAD_SHA" != "$head_sha" ]; then
+            echo "PR branch changed after enqueue; please re-add agent:review." >&2; exit 1
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "BRANCH=$branch" >> "$GITHUB_ENV"
+          echo "BRANCH_HEAD_SHA=$head_sha" >> "$GITHUB_ENV"
+
       - name: Validate PR and resolve current snapshot
         run: |
           set -euo pipefail
@@ -67,7 +91,7 @@ jobs:
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.BRANCH_HEAD_SHA }}
+          ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
           token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
@@ -105,6 +129,8 @@ jobs:
       - name: Push branch
         if: success()
         run: |
+          gh pr view "$PR_NUMBER" --json state,headRefOid,labels > "$RUNNER_TEMP/current-pr.json"
+          jq -e --arg sha "$BRANCH_HEAD_SHA" '.state == "OPEN" and .headRefOid == $sha and any(.labels[]; .name == "agent:in-progress") and (all(.labels[]; .name != "agent:blocked"))' "$RUNNER_TEMP/current-pr.json" > /dev/null
           set +e
           git push --force-with-lease="refs/heads/$BRANCH:$BRANCH_HEAD_SHA" origin "$BRANCH" 2> push_err.txt
           status=$?

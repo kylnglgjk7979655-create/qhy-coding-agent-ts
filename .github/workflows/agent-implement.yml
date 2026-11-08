@@ -1,23 +1,20 @@
 name: Agent Implement
 
 on:
-  issues:
-    types: [labeled]
   workflow_dispatch:
     inputs:
       issue_number:
         description: '内部接续：仍携带 agent:implement 标签的 Issue 编号'
         type: string
         required: true
-
-# 锁覆盖认证恢复、模型执行、回存与发布。
-concurrency:
-  group: ${{ (github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:implement') && format('codex-subscription-{0}', github.repository) || format('agent-ignored-{0}', github.run_id) }}
-  cancel-in-progress: false
+      queue_request_id:
+        description: '由持久化订阅队列分发的请求编号'
+        type: string
+        required: true
 
 jobs:
   implement:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:implement'
+    if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id != ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
@@ -42,6 +39,13 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
           persist-credentials: false
+
+      - name: Verify queued authorization
+        uses: ./.github/actions/queue-authorization
+        with:
+          queue-request-id: ${{ inputs.queue_request_id }}
+          item-number: ${{ inputs.issue_number }}
+          workflow: agent-implement.yml
 
       - name: Setup Node.js and pnpm
         uses: ./.github/actions/setup
@@ -113,6 +117,8 @@ jobs:
       - name: Create or update draft PR
         id: open_pr
         if: steps.route.outputs.proceed == 'true' && success()
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           pr_number=$(gh pr list --state open --head "$BRANCH" --base main --json number --jq '.[0].number // empty')

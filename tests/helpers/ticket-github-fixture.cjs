@@ -35,6 +35,10 @@ if (parts[0] === 'actions') {
   send({ workflow_runs: (state.runs || []).filter((run) => run.status === params.get('status')) });
 } else if (pathname === 'pulls') {
   list(state.pulls);
+} else if (parts[0] === 'pulls' && parts.length === 2 && method === 'GET') {
+  const pull = state.pulls.find((entry) => entry.number === Number(parts[1]));
+  if (!pull) fail('Unknown pull request: ' + resource);
+  send(pull);
 } else if (pathname === 'issues' && method === 'GET') {
   list(Object.values(state.issues).filter((entry) => (params.get('state') === 'all' || entry.state === (params.get('state') || 'open'))
     && (!params.get('labels') || entry.labels.some((label) => label === params.get('labels')))));
