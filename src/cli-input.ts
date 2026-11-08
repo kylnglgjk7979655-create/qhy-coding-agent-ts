@@ -56,16 +56,25 @@ export class CliInput {
     return new Promise<T | undefined>((resolve) => {
       let finished = false;
       const render = (): void => {
+        const columns = Math.max(20, process.stdout.columns || 80);
+        const rows = Math.max(6, process.stdout.rows || 24);
+        const visibleCount = Math.max(1, Math.floor((rows - 4) / 2));
+        // Keep each choice to two terminal rows so the focused choice cannot scroll off-screen.
+        const start = Math.min(Math.max(0, selected - visibleCount + 1), Math.max(0, choices.length - visibleCount));
+        const end = Math.min(choices.length, start + visibleCount);
         process.stdout.write('\u001b[2J\u001b[H');
-        process.stdout.write(`${visibleText(title)}\n使用 ↑/↓ 移动，回车选择，Esc 或输入 /cancel 取消。${typed ? ` ${typed}` : ''}\n\n`);
-        choices.forEach((choice, index) => {
-          process.stdout.write(`${index === selected ? '❯' : ' '} ${visibleText(choice.label)}\n  ${visibleText(choice.detail)}\n`);
-        });
+        process.stdout.write(`${fitText(title, columns)}\n${fitText(`使用 ↑/↓ 移动，回车选择，Esc 或输入 /cancel 取消。${typed ? ` ${typed}` : ''}`, columns)}\n\n`);
+        for (let index = start; index < end; index += 1) {
+          const choice = choices[index]!;
+          process.stdout.write(`${index === selected ? '❯' : ' '} ${fitText(choice.label, columns - 2)}\n  ${fitText(choice.detail, columns - 2, true)}\n`);
+        }
+        process.stdout.write(`${selected + 1}/${choices.length}${start > 0 ? ' · ↑ 还有' : ''}${end < choices.length ? ' · ↓ 还有' : ''}\n`);
       };
       const finish = (value: T | undefined): void => {
         if (finished) return;
         finished = true;
         stdin.off('keypress', onKeypress);
+        process.stdout.off('resize', render);
         stdin.setRawMode(wasRaw);
         this.selector = undefined;
         renderDone();
@@ -88,6 +97,7 @@ export class CliInput {
       };
       this.selector = () => finish(undefined);
       stdin.on('keypress', onKeypress);
+      process.stdout.on('resize', render);
       render();
     });
   }
@@ -134,5 +144,31 @@ export class CliInput {
 }
 
 function visibleText(text: string): string {
-  return text.replace(/\r\n?/gu, '\n').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, '�').replaceAll('\u001b', '␛');
+  return text.replaceAll('\u001b', '␛').replace(/[\r\n]+/gu, ' ').replace(/[\u0000-\u001a\u001c-\u001f\u007f]/gu, '�');
+}
+
+function fitText(text: string, columns: number, preserveEnd = false): string {
+  const readable = visibleText(text);
+  const characters = Array.from(readable);
+  const widths = characters.map(characterWidth);
+  const totalWidth = widths.reduce((sum, width) => sum + width, 0);
+  if (totalWidth <= columns) return readable;
+  if (!preserveEnd) {
+    let width = 0;
+    let end = 0;
+    while (end < characters.length && width + widths[end]! <= columns - 1) width += widths[end++]!;
+    return `${characters.slice(0, end).join('')}…`;
+  }
+  let tailWidth = 0;
+  let tailStart = characters.length;
+  while (tailStart > 0 && tailWidth + widths[tailStart - 1]! <= Math.floor((columns - 1) / 2)) tailWidth += widths[--tailStart]!;
+  let headWidth = 0;
+  let headEnd = 0;
+  const headLimit = columns - 1 - tailWidth;
+  while (headEnd < tailStart && headWidth + widths[headEnd]! <= headLimit) headWidth += widths[headEnd++]!;
+  return `${characters.slice(0, headEnd).join('')}…${characters.slice(tailStart).join('')}`;
+}
+
+function characterWidth(character: string): number {
+  return /\p{Mark}/u.test(character) ? 0 : /[\u1100-\u115f\u2e80-\uA4cf\uAC00-\uD7a3\uF900-\uFAFF\uFE10-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6\u{1f300}-\u{1faff}]/u.test(character) ? 2 : 1;
 }

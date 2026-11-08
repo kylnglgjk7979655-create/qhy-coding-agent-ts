@@ -580,16 +580,41 @@ describe('compiled CLI process driver', () => {
       expect((await first.done).code).toBe(0);
       const [firstId] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
       if (!firstId) throw new Error('初始会话未创建');
+      const sourceRecord = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', firstId, 'record.json'), 'utf8')) as Record<string, unknown>;
+      for (let index = 0; index < 14; index += 1) {
+        const id = `viewport-${String(index).padStart(2, '0')}`;
+        const record = {
+          ...sourceRecord,
+          id,
+          workspace: secondCwd,
+          updatedAt: new Date(Date.UTC(2000, 0, index + 1)).toISOString(),
+          title: index === 0 ? `尾部目标\n${'很长的标题'.repeat(30)}` : `候选-${index}`,
+          config: { ...(sourceRecord.config as Record<string, unknown>), workspace: secondCwd },
+        };
+        await mkdir(join(userDir, '.qhy-coding-agents', 'sessions', id), { recursive: true });
+        await writeFile(join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json'), JSON.stringify(record));
+      }
 
       let output = '';
       const chooser = startCLI({ cwd: secondCwd, userDir, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
       chooser.send('/resume\n');
       await waitForOutput(() => output, '当前工作区会话', 1);
-      const currentListing = output.slice(output.indexOf('当前工作区会话'));
+      chooser.send('\u001b[B'.repeat(14));
+      await waitForOutput(() => output.slice(output.lastIndexOf('\u001b[2J')), '❯ 尾部目标', 1);
+      const lastScreen = output.slice(output.lastIndexOf('\u001b[2J'));
+      expect(lastScreen).toContain('❯ 尾部目标');
+      expect(lastScreen).toContain('…');
+      expect(lastScreen).not.toContain('\n很长的标题');
+      chooser.send('\u001b');
+      chooser.send('/resume\n');
+      await waitForOutput(() => output.slice(output.lastIndexOf('\u001b[2J')), '当前工作区会话', 1);
+      const firstScreenStart = output.indexOf('\u001b[2J');
+      const nextScreenStart = output.indexOf('\u001b[2J', firstScreenStart + 1);
+      const currentListing = output.slice(firstScreenStart, nextScreenStart);
       expect(currentListing).not.toContain(firstId);
       const localIds = (await readdir(join(userDir, '.qhy-coding-agents', 'sessions'))).filter((id) => id !== firstId);
-      expect(localIds.length).toBeGreaterThan(0);
-      for (const id of localIds) expect(currentListing).toContain(id);
+      expect(localIds.length).toBeGreaterThan(14);
+      expect(currentListing).toContain('viewport-13');
 
       chooser.send('\u001b[B\r');
       await waitForOutput(() => output, '全部工作区会话', 1);
