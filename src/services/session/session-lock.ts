@@ -1,7 +1,7 @@
 import { open, readFile, mkdir, unlink, link } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { AgentError } from './errors.js';
+import { AgentError } from '../../utils/errors.js';
 import { sessionStorageRoot } from './conversations.js';
 
 const idPattern = /^[a-zA-Z0-9_-]{1,128}$/;

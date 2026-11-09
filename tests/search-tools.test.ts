@@ -2,8 +2,8 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { runAgent } from '../src/agent.js';
-import type { ResolvedConfig } from '../src/config.js';
+import { runAgent } from '../src/query/agent.js';
+import type { ResolvedConfig } from '../src/services/settings/config.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 
 it('Agent 可用 glob 和 grep 搜索工作区，包含隐藏目录并遵循忽略规则', async () => {

@@ -3,9 +3,9 @@ import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { ModelMessage } from 'ai';
-import type { ModelConfig } from './config.js';
-import { AgentError } from './errors.js';
-import { snapshotWorkspaceFile } from './workspace-files.js';
+import type { ModelConfig } from '../settings/config.js';
+import { AgentError } from '../../utils/errors.js';
+import { snapshotWorkspaceFile } from '../../tools/workspace-files.js';
 
 const conversationIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
 

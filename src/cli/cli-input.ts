@@ -1,5 +1,5 @@
 import { createInterface, emitKeypressEvents } from 'node:readline';
-import type { ApprovalControl } from './tool-approval.js';
+import type { ApprovalControl } from '../tools/tool-approval.js';
 
 // 单一输入消费者将对话消息与正在等待的审批答复分开，已排队的消息不会变成批准。
 export class CliInput {

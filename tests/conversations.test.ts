@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createSession, loadSession, saveSession, sessionStorageRoot, startSessionRound } from '../src/conversations.js';
+import { createSession, loadSession, saveSession, sessionStorageRoot, startSessionRound } from '../src/services/session/conversations.js';
 
 describe('user-level session storage', () => {
   let userDirectory: string | undefined;

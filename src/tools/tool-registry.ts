@@ -1,6 +1,6 @@
 import { InvalidToolInputError, NoSuchToolError, tool } from 'ai';
 import type { FlexibleSchema, ToolExecutionOptions, ToolSet } from 'ai';
-import { AgentError } from './errors.js';
+import { AgentError } from '../utils/errors.js';
 
 export interface ToolExecutionEvent {
   callId: string;

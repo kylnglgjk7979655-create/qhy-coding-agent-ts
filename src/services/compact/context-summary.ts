@@ -1,9 +1,9 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { asSchema, generateText } from 'ai';
 import type { ModelMessage, ToolSet } from 'ai';
-import { DEFAULT_CONTEXT } from './config.js';
-import type { ResolvedConfig } from './config.js';
-import { AgentError } from './errors.js';
+import { DEFAULT_CONTEXT } from '../settings/config.js';
+import type { ResolvedConfig } from '../settings/config.js';
+import { AgentError } from '../../utils/errors.js';
 
 const summaryInstructions = [
   '[对话摘要生成] 将较早对话压缩为用于续聊的中文历史资料。',

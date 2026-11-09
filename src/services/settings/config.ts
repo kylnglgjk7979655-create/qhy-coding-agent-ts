@@ -1,7 +1,7 @@
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { z } from 'zod';
-import { AgentError } from './errors.js';
+import { AgentError } from '../../utils/errors.js';
 
 export const DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS = 300_000;
 

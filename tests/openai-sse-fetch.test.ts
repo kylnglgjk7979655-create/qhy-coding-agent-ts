@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { validatedOpenAIFetch } from '../src/openai-sse-fetch.js';
+import { validatedOpenAIFetch } from '../src/services/api/openai-sse-fetch.js';
 
 describe('OpenAI SSE fetch 适配器', () => {
   let server: Server | undefined;

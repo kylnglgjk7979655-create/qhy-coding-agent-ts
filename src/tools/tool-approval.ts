@@ -1,10 +1,10 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { generateText } from 'ai';
-import type { ResolvedConfig } from './config.js';
-import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS } from './config.js';
-import { AgentError } from './errors.js';
+import type { ResolvedConfig } from '../services/settings/config.js';
+import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS } from '../services/settings/config.js';
+import { AgentError } from '../utils/errors.js';
 import type { ToolApprovalRequest } from './tool-registry.js';
-import { assertInputBudget } from './context-summary.js';
+import { assertInputBudget } from '../services/compact/context-summary.js';
 
 export type ApprovalControl = (call: ToolApprovalRequest, signal: AbortSignal) => Promise<'approve' | 'deny'>;
 

@@ -5,16 +5,16 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
-import { runAgent } from './agent.js';
-import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './config.js';
-import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveLegacyConversation, startSessionRound } from './conversations.js';
-import type { WorkspaceFileSnapshot } from './workspace-files.js';
-import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './file-checkpoints.js';
-import type { FileRewindPlan } from './file-checkpoints.js';
-import { AgentError, publicError } from './errors.js';
-import { CliInput } from './cli-input.js';
-import type { ApprovalControl } from './tool-approval.js';
-import { acquireSessionLock } from './session-lock.js';
+import { runAgent } from './query/agent.js';
+import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
+import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveLegacyConversation, startSessionRound } from './services/session/conversations.js';
+import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
+import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './services/session/file-checkpoints.js';
+import type { FileRewindPlan } from './services/session/file-checkpoints.js';
+import { AgentError, publicError } from './utils/errors.js';
+import { CliInput } from './cli/cli-input.js';
+import type { ApprovalControl } from './tools/tool-approval.js';
+import { acquireSessionLock } from './services/session/session-lock.js';
 
 const help = `用法：node dist/cli.js [选项]
 
