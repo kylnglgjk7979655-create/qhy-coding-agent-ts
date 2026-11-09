@@ -72,16 +72,16 @@ it.each([
   { rules: [{ toolName: 'write_file', action: 'allow' }, { toolName: 'write_file', action: 'ask' }, { toolName: 'write_file', action: 'deny' }], expected: true },
 ])('固定策略优先且拒绝胜出：$rules', async ({ rules, expected }) => {
   const fixture = await setup((_request, index) => index === 1 ? { calls: [
-    call('write', 'write_file', { path: 'note.txt', content: 'after' }),
     call('read', 'read_file', { path: 'note.txt' }),
+    call('write', 'write_file', { path: 'note.txt', content: 'after' }),
   ] } : { content: '处理完毕' }, () => { throw new Error('不应审查'); }, { approval: { rules } });
   await writeFile(join(cwd, 'note.txt'), 'before');
   const result = await run().done;
   expect(result.code).toBe(0);
   expect(fixture.approvalRequests).toHaveLength(0);
   const messages = results(fixture);
-  expect(messages.map(({ tool_call_id }) => tool_call_id)).toEqual(['write', 'read']);
-  expect(JSON.parse(messages[0]!.content)).toMatchObject(expected
+  expect(messages.map(({ tool_call_id }) => tool_call_id)).toEqual(['read', 'write']);
+  expect(JSON.parse(messages[1]!.content)).toMatchObject(expected
     ? { is_error: true, error: { code: 'PERMISSION_DENIED' } } : { is_error: false });
   expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe(expected ? 'before' : 'after');
   if (expected) expect(result.stdout).not.toContain('write_file：开始');

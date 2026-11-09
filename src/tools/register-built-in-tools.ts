@@ -1,5 +1,5 @@
 import type { ResolvedConfig } from '../services/settings/config.js';
-import type { WorkspaceFileSnapshot } from './workspace-files.js';
+import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from './workspace-files.js';
 import type { ToolRegistry } from './tool-registry.js';
 import { registerRuntimeInfoTool } from './RuntimeInfoTool/RuntimeInfoTool.js';
 import { registerFileReadTool } from './FileReadTool/FileReadTool.js';
@@ -15,6 +15,7 @@ export interface BuiltInToolContext {
   probe: string;
   allowAgent?: boolean;
   approvalControl?: ApprovalControl;
+  fileBaselines?: WorkspaceFileBaselines;
   fileWriteCallbacks: {
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;

@@ -7,6 +7,23 @@ export interface WorkspaceFileSnapshot {
   content?: string;
 }
 
+export type WorkspaceFileBaselines = Map<string, WorkspaceFileSnapshot>;
+
+// 同一进程内的所有 Agent 共用写入门闩，避免检查基线与落盘之间被另一个受控写入插入。
+class WorkspaceWriteLock {
+  private tail: Promise<void> = Promise.resolve();
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.tail;
+    let release!: () => void;
+    this.tail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try { return await operation(); } finally { release(); }
+  }
+}
+
+const workspaceWriteLock = new WorkspaceWriteLock();
+
 export function isWithinWorkspace(workspace: string, target: string): boolean {
   const pathFromWorkspace = relative(workspace, target);
   return pathFromWorkspace === ''
@@ -40,12 +57,57 @@ async function resolveWriteTarget(workspace: string, requestedPath: string): Pro
   return canonicalTarget;
 }
 
-export async function readWorkspaceFile(workspace: string, requestedPath: string): Promise<string> {
+export async function readWorkspaceFile(
+  workspace: string,
+  requestedPath: string,
+  baselines?: WorkspaceFileBaselines,
+): Promise<string> {
   try {
-    return await readFile(await resolveReadTarget(workspace, requestedPath), 'utf8');
+    const target = await resolveReadTarget(workspace, requestedPath);
+    const content = await readFile(target, 'utf8');
+    baselines?.set(relative(workspace, target), { path: relative(workspace, target), existed: true, content });
+    return content;
   } catch {
     throw new Error('无法访问文件：目标必须存在且位于工作区内。');
   }
+}
+
+export async function writeControlledWorkspaceFile(
+  workspace: string,
+  requestedPath: string,
+  content: string,
+  baselines: WorkspaceFileBaselines,
+  beforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>,
+  onBackupFailure?: (path: string) => void,
+): Promise<void> {
+  await workspaceWriteLock.run(async () => {
+    let target: string;
+    try {
+      target = await resolveWriteTarget(workspace, requestedPath);
+      const path = relative(workspace, target);
+      let current: WorkspaceFileSnapshot;
+      try { current = { path, existed: true, content: await readFile(target, 'utf8') }; }
+      catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') current = { path, existed: false };
+        else throw error;
+      }
+      const baseline = baselines.get(path);
+      if (current.existed && !baseline) throw new Error(`写入冲突：尚未读取文件“${path}”，请先重新读取。`);
+      if (baseline && (baseline.existed !== current.existed || baseline.content !== current.content)) {
+        throw new Error(`写入冲突：文件“${path}”已在读取后变化，请重新读取后再写入。`);
+      }
+      if (!current.existed && baseline?.existed) throw new Error(`写入冲突：文件“${path}”已在读取后删除，请重新读取后再写入。`);
+      if (beforeWrite) {
+        try { await beforeWrite(current); }
+        catch { onBackupFailure?.(path); }
+      }
+      await writeFile(target, content, current.existed ? 'utf8' : { encoding: 'utf8', flag: 'wx' });
+      baselines.set(path, { path, existed: true, content });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('写入冲突：')) throw error;
+      throw new Error('无法写入文件：父目录必须存在且目标必须位于工作区内。');
+    }
+  });
 }
 
 export async function snapshotWorkspaceFile(workspace: string, requestedPath: string): Promise<WorkspaceFileSnapshot> {

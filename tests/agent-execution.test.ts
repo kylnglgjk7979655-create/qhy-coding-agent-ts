@@ -63,6 +63,45 @@ describe('公共工具执行边界', () => {
     }
   });
 
+  it('过期读取基线阻止覆盖，重新读取及成功写入后允许后续受控写入', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    await writeFile(join(workspace, 'note.txt'), '初始内容');
+    const fixture = await startLocalOpenAIModel(async (_request, index) => {
+      if (index === 1) return { calls: [{ id: 'baseline-read', type: 'function', function: {
+        name: 'read_file', arguments: '{"path":"note.txt"}',
+      } }] };
+      if (index === 2) {
+        await writeFile(join(workspace, 'note.txt'), '外部修改');
+        return { calls: [{ id: 'stale-write', type: 'function', function: {
+          name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: '不应覆盖' }),
+        } }] };
+      }
+      if (index === 3) return { calls: [
+        { id: 'refresh-read', type: 'function', function: { name: 'read_file', arguments: '{"path":"note.txt"}' } },
+        { id: 'refreshed-write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: '已更新' }) } },
+      ] };
+      if (index === 4) return { calls: [
+        { id: 'create-file', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'created.txt', content: '初次创建' }) } },
+        { id: 'overwrite-created', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'created.txt', content: '基线已更新' }) } },
+      ] };
+      return { content: '文件处理完成。' };
+    });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 8,
+    };
+
+    await runAgent(config, '处理文件', { smokeTool: false });
+
+    const staleResult = fixture.requests.flatMap(({ messages }) => messages)
+      .find((message) => message.role === 'tool' && 'tool_call_id' in message && message.tool_call_id === 'stale-write')!.content;
+    expect(JSON.parse(staleResult)).toMatchObject({ is_error: true, error: { message: expect.stringContaining('请重新读取') } });
+    expect(await readFile(join(workspace, 'note.txt'), 'utf8')).toBe('已更新');
+    expect(await readFile(join(workspace, 'created.txt'), 'utf8')).toBe('基线已更新');
+  });
+
   it('SDK 参数 schema 拒绝通过统一结果和拒绝事件反馈', async () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1

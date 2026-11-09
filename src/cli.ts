@@ -130,12 +130,14 @@ async function main(): Promise<void> {
     }
 
     input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
+    let fileBaselines = new Map<string, WorkspaceFileSnapshot>();
     const switchSession = async (id: string) => {
       const resumed = await resumeSession(userHome, id);
       if (id !== conversationId) {
         const nextRelease = await acquireSessionLock(userHome, id);
         await releaseSession?.();
         releaseSession = nextRelease;
+        fileBaselines = new Map();
       }
       process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
       return resumed;
@@ -196,6 +198,7 @@ async function main(): Promise<void> {
         releaseSession = nextRelease;
         conversationId = id;
         history = [];
+        fileBaselines = new Map();
         recoveredRoundIds = [];
         process.stdout.write(`已新建会话：${id}\n`);
         if (process.stdin.isTTY) input.prompt();
@@ -287,7 +290,7 @@ async function main(): Promise<void> {
       try {
         activeRound = new AbortController();
         const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
-        history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds);
+        history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines);
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
@@ -331,6 +334,7 @@ async function runTurn(
   approvalControl?: ApprovalControl,
   legacyDirectory?: string,
   recoveredRoundIds: string[] = [],
+  fileBaselines: Map<string, WorkspaceFileSnapshot> = new Map(),
 ): Promise<ModelMessage[]> {
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
@@ -353,6 +357,7 @@ async function runTurn(
       smokeTool,
       history,
       summaryCoverageBase,
+      fileBaselines,
       onText: async (chunk) => {
         if (!smokeTool && roundId) await appendRoundText(userHome, conversationId, roundId, chunk);
         process.stdout.write(chunk);

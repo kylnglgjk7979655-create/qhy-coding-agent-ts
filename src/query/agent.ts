@@ -8,7 +8,7 @@ import { z } from 'zod';
 import type { ResolvedConfig } from '../services/settings/config.js';
 import { AgentError, publicError } from '../utils/errors.js';
 import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
-import type { WorkspaceFileSnapshot } from '../tools/workspace-files.js';
+import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
 import type { ApprovalControl } from '../tools/tool-approval.js';
 import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.js';
@@ -52,6 +52,7 @@ export async function runAgent(
     onStepMessages?: (content: unknown[]) => Promise<void> | void;
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;
+    fileBaselines?: WorkspaceFileBaselines;
     onToolCall?: (name: string) => void;
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
@@ -122,6 +123,7 @@ export async function runAgent(
       }
     },
   });
+  const fileBaselines = options.fileBaselines ?? new Map<string, WorkspaceFileSnapshot>();
   registerBuiltInTools(registry, {
     config,
     probe,
@@ -131,6 +133,7 @@ export async function runAgent(
       ...(options.onBeforeWrite === undefined ? {} : { onBeforeWrite: options.onBeforeWrite }),
       ...(options.onCheckpointError === undefined ? {} : { onCheckpointError: options.onCheckpointError }),
     },
+    fileBaselines,
     bashOperations,
   });
   let closeMCP: (() => Promise<void>) | undefined;

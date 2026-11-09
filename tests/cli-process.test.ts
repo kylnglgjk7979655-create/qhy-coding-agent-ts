@@ -45,6 +45,11 @@ describe('compiled CLI process driver', () => {
             name: 'write_file', arguments: JSON.stringify({ path: 'first.txt', content: prompt }),
           } }] };
         }
+        if (prompt === '重启后继续') {
+          return { calls: [{ id: `restart-write-${index}`, type: 'function', function: {
+            name: 'write_file', arguments: JSON.stringify({ path: 'first.txt', content: '重启后不应覆盖' }),
+          } }] };
+        }
         return { calls: [{ id: `write-${index}`, type: 'function', function: {
           name: 'Bash', arguments: JSON.stringify({ command: `printf '%s|%s' "$PWD" "$HOME"` }),
         } }] };
@@ -90,6 +95,8 @@ describe('compiled CLI process driver', () => {
       expect((await restarted.done).code).toBe(0);
       expect(JSON.stringify(model.requests[4])).toContain('第一条');
       expect(JSON.stringify(model.requests[4])).toContain('第二条');
+      expect(await readFile(join(firstCwd, 'first.txt'), 'utf8')).toBe('第一条');
+      expect(JSON.stringify(model.requests[5])).toContain('写入冲突');
 
       const second = startCLI({ cwd: secondCwd, userDir: secondUserDir, env: { TEST_MODEL_API_KEY: secret } });
       second.end('另一工作区\n/exit\n');
@@ -109,6 +116,7 @@ describe('compiled CLI process driver', () => {
     await writeFile(join(cwd, 'note.txt'), 'before');
     const model = await startLocalOpenAIModel((_request, index) => {
       if (index === 1) return { calls: [
+        { id: 'initial-read', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'note.txt' }) } },
         { id: 'first-write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'first' }) } },
         { id: 'repeat-write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'within-message' }) } },
         { id: 'ignored-create', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'ignored.txt', content: 'ignored' }) } },
@@ -116,7 +124,9 @@ describe('compiled CLI process driver', () => {
       if (index === 2) return { content: '第一条已完成。' };
       if (index === 3) return { calls: [{ id: 'second-write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'second' }) } }] };
       if (index === 5) return { calls: [{ id: 'late-create', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'late.txt', content: 'late' }) } }] };
-      if (index === 7) return { calls: [{ id: 'other-session', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'other-session' }) } }] };
+      if (index === 7) return { calls: [
+        { id: 'other-session', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'other-session' }) } },
+      ] };
       return { content: '第二条已完成。' };
     });
     try {
@@ -155,10 +165,10 @@ describe('compiled CLI process driver', () => {
         checkpoints: Array<{ files: Array<{ path: string; backupId: string }> }>;
         backups: Array<{ id: string; content?: string }>;
       };
-      expect(otherRecord.checkpoints[0]!.files.map(({ path }) => path)).toEqual(['note.txt']);
-      expect(new Map(otherRecord.backups.map(({ id: backupId, content }) => [backupId, content]))
-        .get(otherRecord.checkpoints[0]!.files[0]!.backupId)).toBe('second');
-      expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('other-session');
+      expect(otherRecord.checkpoints[0]!.files).toEqual([]);
+      expect(otherRecord.backups).toEqual([]);
+      expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('second');
+      expect(JSON.stringify(model.requests[7])).toContain('尚未读取');
     } finally {
       await model.close();
     }
@@ -171,6 +181,7 @@ describe('compiled CLI process driver', () => {
     await writeFile(join(cwd, 'untracked.txt'), 'leave this alone');
     const model = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [
+        { id: 'rewind-read', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'note.txt' }) } },
         { id: 'rewind-note', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'after' }) } },
         { id: 'rewind-created', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'created.txt', content: 'remove me' }) } },
       ] }
@@ -321,7 +332,10 @@ describe('compiled CLI process driver', () => {
     const userDir = await directory('rewind-missing-backup-user');
     await writeFile(join(cwd, 'note.txt'), 'before');
     const model = await startLocalOpenAIModel((_request, index) => index === 1
-      ? { calls: [{ id: 'write-before-rewind', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'after' }) } }] }
+      ? { calls: [
+        { id: 'read-before-rewind', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'note.txt' }) } },
+        { id: 'write-before-rewind', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'after' }) } },
+      ] }
       : { content: '完成。' });
     try {
       await configure(cwd, model.baseURL);
@@ -358,6 +372,9 @@ describe('compiled CLI process driver', () => {
     await writeFile(join(cwd, 'last.txt'), 'last-before');
     const model = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [
+        { id: 'read-before-rewind', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'blocked.txt' }) } },
+        { id: 'read-good-before-rewind', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'good.txt' }) } },
+        { id: 'read-last-before-rewind', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'last.txt' }) } },
         { id: 'write-blocked', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'blocked.txt', content: 'blocked-after' }) } },
         { id: 'write-good', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'good.txt', content: 'good-after' }) } },
         { id: 'write-last', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'last.txt', content: 'last-after' }) } },

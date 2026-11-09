@@ -82,6 +82,66 @@ describe('只读 Explore 委派', () => {
     await expect(readFile(join(workspace, 'result.txt'), 'utf8')).resolves.toBe('已批准写入');
   });
 
+  it('子 Agent 创建文件后，主 Agent 不能以过期的缺失状态覆盖它', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-general-purpose-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1) return { calls: [{ id: 'delegate-create', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '创建共享结果', prompt: '创建 shared.txt' }),
+      } }] };
+      if (index === 2) return { calls: [{ id: 'child-create', type: 'function', function: {
+        name: 'write_file', arguments: JSON.stringify({ path: 'shared.txt', content: '子 Agent 版本' }),
+      } }] };
+      if (index === 3) return { content: '文件已创建。' };
+      if (index === 4) return { calls: [{ id: 'parent-overwrite', type: 'function', function: {
+        name: 'write_file', arguments: JSON.stringify({ path: 'shared.txt', content: '主 Agent 覆盖' }),
+      } }] };
+      return { content: '已处理。' };
+    });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [{ toolName: 'write_file', action: 'allow' }], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 8,
+    };
+
+    await runAgent(config, '创建后继续处理共享文件', { smokeTool: false });
+
+    const parentResult = fixture.requests.flatMap(({ messages }) => messages)
+      .find((message) => message.role === 'tool' && 'tool_call_id' in message && message.tool_call_id === 'parent-overwrite')!.content;
+    expect(JSON.parse(parentResult)).toMatchObject({ is_error: true, error: { message: expect.stringContaining('冲突') } });
+    expect(await readFile(join(workspace, 'shared.txt'), 'utf8')).toBe('子 Agent 版本');
+  });
+
+  it('并发 Agent 创建同一文件时只有首个受控写入成功', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-general-purpose-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1) return { calls: [
+        { id: 'delegate-a', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: '创建文件 A', prompt: '创建 shared.txt，写入 A' }) } },
+        { id: 'delegate-b', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: '创建文件 B', prompt: '创建 shared.txt，写入 B' }) } },
+      ] };
+      if (index === 2 || index === 3) return { calls: [{ id: `child-write-${index}`, type: 'function', function: {
+        name: 'write_file', arguments: JSON.stringify({ path: 'shared.txt', content: `Agent ${index}` }),
+      } }] };
+      return { content: '已完成。' };
+    });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [{ toolName: 'write_file', action: 'allow' }], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 8,
+    };
+
+    await runAgent(config, '并发创建同一文件', { smokeTool: false });
+
+    const results = fixture.requests.flatMap(({ messages }) => messages)
+      .filter((message) => message.role === 'tool' && 'tool_call_id' in message
+        && (message.tool_call_id === 'child-write-2' || message.tool_call_id === 'child-write-3'))
+      .map((message) => JSON.parse(message.content));
+    expect(results.filter(({ is_error }: { is_error: boolean }) => !is_error)).toHaveLength(1);
+    expect(results.filter(({ error }: { error?: { message: string } }) => error?.message.includes('冲突'))).toHaveLength(1);
+    expect(await readFile(join(workspace, 'shared.txt'), 'utf8')).toMatch(/^Agent [23]$/);
+  });
+
   it('通过 agent 启动独立 Explore，多轮搜索读取后把报告交回主 Agent', async () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     await writeFile(join(workspace, 'module.ts'), 'export const answer = 42;\n');
