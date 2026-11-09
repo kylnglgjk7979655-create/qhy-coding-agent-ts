@@ -4,10 +4,10 @@ import { jsonSchema } from 'ai';
 import { Ajv } from 'ajv';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { Ajv2019 } from 'ajv/dist/2019.js';
-import type { ResolvedConfig } from './config.js';
-import { AgentError } from './errors.js';
-import { ToolExecutionError } from './tool-registry.js';
-import type { ToolRegistry } from './tool-registry.js';
+import type { ResolvedConfig } from '../settings/config.js';
+import { AgentError } from '../../utils/errors.js';
+import { ToolExecutionError } from '../../tools/tool-registry.js';
+import type { ToolRegistry } from '../../tools/tool-registry.js';
 
 // 每轮新建连接与定义快照；不订阅工具变更，也不注入服务端 instructions。
 export async function registerRemoteMCP(config: ResolvedConfig, registry: ToolRegistry, signal: AbortSignal) {

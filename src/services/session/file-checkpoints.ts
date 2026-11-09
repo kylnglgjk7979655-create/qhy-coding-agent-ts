@@ -1,6 +1,6 @@
 import type { SessionRecord } from './conversations.js';
-import { deleteWorkspaceFile, snapshotWorkspaceFile, writeWorkspaceFile } from './workspace-files.js';
-import type { WorkspaceFileSnapshot } from './workspace-files.js';
+import { deleteWorkspaceFile, snapshotWorkspaceFile, writeWorkspaceFile } from '../../tools/workspace-files.js';
+import type { WorkspaceFileSnapshot } from '../../tools/workspace-files.js';
 
 export interface FileRewindItem {
   path: string;

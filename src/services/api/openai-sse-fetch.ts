@@ -1,4 +1,4 @@
-import { AgentError } from './errors.js';
+import { AgentError } from '../../utils/errors.js';
 
 /**
  * OpenAI 兼容接口的 fetch 适配器。工具事件在批次完成并通过原始调用 ID

@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { isWithinWorkspace } from './workspace-files.js';
-import { ToolExecutionError } from './tool-registry.js';
+import { isWithinWorkspace } from '../workspace-files.js';
+import { ToolExecutionError } from '../tool-registry.js';
 
 export async function prepareBashInput<Input extends { command: string; cwd?: string | undefined }>(workspace: string, input: Input) {
   try {

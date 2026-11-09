@@ -5,24 +5,22 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { APICallError, InvalidToolInputError, isStepCount, NoSuchToolError, ToolChoiceViolationError, ToolLoopAgent, wrapLanguageModel } from 'ai';
 import type { ModelMessage } from 'ai';
 import { z } from 'zod';
-import type { ResolvedConfig } from './config.js';
-import { AgentError, publicError } from './errors.js';
-import { validatedOpenAIFetch } from './openai-sse-fetch.js';
-import { readWorkspaceFile, writeWorkspaceFile } from './workspace-files.js';
-import type { WorkspaceFileSnapshot } from './workspace-files.js';
-import { approveToolCall } from './tool-approval.js';
-import type { ApprovalControl } from './tool-approval.js';
-import { ToolRegistry } from './tool-registry.js';
-import { prepareBashInput, runHostBash } from './host-bash.js';
-import { globWorkspace, grepWorkspace, validateSearchRoot } from './workspace-search.js';
-import { registerRemoteMCP } from './remote-mcp.js';
-import { DEFAULT_CONTEXT } from './config.js';
-import { prepareConversation } from './context-summary.js';
-import type { ToolExecutionEvent } from './tool-registry.js';
+import type { ResolvedConfig } from '../services/settings/config.js';
+import { AgentError, publicError } from '../utils/errors.js';
+import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
+import type { WorkspaceFileSnapshot } from '../tools/workspace-files.js';
+import { approveToolCall } from '../tools/tool-approval.js';
+import type { ApprovalControl } from '../tools/tool-approval.js';
+import { ToolRegistry } from '../tools/tool-registry.js';
+import { registerBuiltInTools } from '../tools/register-built-in-tools.js';
+import { registerRemoteMCP } from '../services/mcp/remote-mcp.js';
+import { DEFAULT_CONTEXT } from '../services/settings/config.js';
+import { prepareConversation } from '../services/compact/context-summary.js';
+import type { ToolExecutionEvent } from '../tools/tool-registry.js';
 
-export type { ApprovalControl } from './tool-approval.js';
-export type { ToolApprovalRequest } from './tool-registry.js';
-export type { ToolExecutionEvent } from './tool-registry.js';
+export type { ApprovalControl } from '../tools/tool-approval.js';
+export type { ToolApprovalRequest } from '../tools/tool-registry.js';
+export type { ToolExecutionEvent } from '../tools/tool-registry.js';
 
 export interface RunResult {
   text: string;
@@ -113,71 +111,7 @@ export async function runAgent(
       }
     },
   });
-  registry.register({
-    name: 'runtimeInfo',
-    description: '返回已配置的工作区绝对路径和本次运行探针。',
-    inputSchema: z.object({}),
-    execute: () => ({ workspace: config.workspace, probe }),
-  });
-  registry.register({
-    name: 'read_file',
-    description: '读取工作区内的文本文件。',
-    inputSchema: z.strictObject({ path: z.string().min(1) }),
-    execute: async ({ path }) => ({ content: await readWorkspaceFile(config.workspace, path) }),
-  });
-  registry.register({
-    name: 'glob',
-    description: '按 glob 模式查找工作区文件，默认搜索整个工作区；可用 path 限定子目录。包含隐藏目录并遵循 .gitignore。',
-    inputSchema: z.strictObject({ pattern: z.string().min(1), path: z.string().min(1).optional() }),
-    prepare: async (input) => {
-      await validateSearchRoot(config.workspace, input.path);
-      return { input };
-    },
-    execute: (input) => globWorkspace(config.workspace, input),
-  });
-  registry.register({
-    name: 'grep',
-    description: '按正则搜索工作区文件，默认搜索整个工作区；可用 path 限定子目录、glob 限定文件。返回相对路径、行号和命中文本。包含隐藏目录并遵循 .gitignore。',
-    inputSchema: z.strictObject({
-      pattern: z.string().min(1).refine((pattern) => {
-        try { new RegExp(pattern); return true; } catch { return false; }
-      }),
-      path: z.string().min(1).optional(),
-      glob: z.string().min(1).optional(),
-    }),
-    prepare: async (input) => {
-      await validateSearchRoot(config.workspace, input.path);
-      return { input };
-    },
-    execute: (input) => grepWorkspace(config.workspace, input),
-  });
-  registry.register({
-    name: 'write_file',
-    description: '将工作区内文件完整替换为指定内容；目标不存在时创建文件，不会创建父目录。',
-    inputSchema: z.strictObject({ path: z.string().min(1), content: z.string() }),
-    execute: async ({ path, content }) => {
-      await writeWorkspaceFile(
-        config.workspace,
-        path,
-        content,
-        options.onBeforeWrite,
-        options.onCheckpointError,
-      );
-      return { success: true as const };
-    },
-  });
-  registry.register({
-    name: 'Bash',
-    description: '使用独立宿主 Bash 执行命令，继承 CLI 环境；cwd 仅约束启动目录，不提供操作系统隔离。',
-    inputSchema: z.strictObject({ command: z.string().refine((value) => value.trim().length > 0), cwd: z.string().min(1).optional() }),
-    prepare: (input) => prepareBashInput(config.workspace, input),
-    execute: ({ command, cwd }, execution) => {
-      const operation = runHostBash(command, cwd ?? config.workspace, execution.abortSignal, config.bash?.timeoutMs);
-      bashOperations.add(operation);
-      void operation.finally(() => bashOperations.delete(operation)).catch(() => undefined);
-      return operation;
-    },
-  });
+  registerBuiltInTools(registry, { config, probe, options, bashOperations });
   let closeMCP: (() => Promise<void>) | undefined;
   try {
     closeMCP = await registerRemoteMCP(config, registry, signal);

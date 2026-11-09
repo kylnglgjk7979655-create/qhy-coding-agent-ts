@@ -2,8 +2,8 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runAgent } from '../src/agent.js';
-import type { ResolvedConfig } from '../src/config.js';
+import { runAgent } from '../src/query/agent.js';
+import type { ResolvedConfig } from '../src/services/settings/config.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 
 describe('公共工具执行边界', () => {

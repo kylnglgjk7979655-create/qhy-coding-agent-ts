@@ -4,6 +4,33 @@
 
 通过 `ToolLoopAgent.stream()` 运行工具循环，每个对话轮次使用独立的 `maxSteps` 限制，默认 20 步。Agent 可通过 Bash 运行项目测试，文件工具与 Bash 共用策略、审批、串行执行和结果路径。
 
+## 项目结构
+
+```text
+src/
+├── cli.ts                 # CLI 启动入口
+├── cli/                   # 交互输入
+├── query/                 # Agent 执行循环
+├── services/
+│   ├── api/               # 模型通信
+│   ├── compact/           # 上下文摘要
+│   ├── mcp/               # 远端 MCP 连接
+│   ├── session/           # 会话、锁和文件检查点
+│   └── settings/          # 配置加载
+├── tools/
+│   ├── BashTool/          # 宿主命令执行
+│   ├── FileReadTool/      # 文件读取
+│   ├── FileWriteTool/     # 文件写入
+│   ├── GlobTool/          # 文件路径搜索
+│   ├── GrepTool/          # 文件内容搜索
+│   ├── RuntimeInfoTool/   # 运行时信息
+│   └── register-built-in-tools.ts  # 内置工具的统一注册入口
+└── utils/                 # 共用错误处理
+tests/                     # 行为和集成测试
+```
+
+CLI 入口保留在 `src/cli.ts`，构建后仍为 `dist/cli.js`。内置工具和远端 MCP 工具均通过 `ToolRegistry` 注册，统一执行参数校验、审批及结果处理。
+
 ## 从干净终端启动
 
 需要 Git、可运行 pnpm 的 Node.js 和 pnpm 9.12.3。项目通过 `.npmrc` 的 `use-node-version=24.22.2` 自动选择运行时；首次运行会下载并缓存该版本，不需要手动切换终端的 Node.js。
