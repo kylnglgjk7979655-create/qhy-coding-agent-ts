@@ -78,6 +78,20 @@ describe('订阅 Agent 持久化队列', () => {
     expect(h.comments.size).toBe(0);
   });
 
+  it('spec 标签进入独立工作流并持久化授权', async () => {
+    const h = fixture();
+    await ingress.route({ github: h.github, context: {
+      ...context, eventName: 'issues',
+      payload: { action: 'labeled', label: { name: 'agent:implement-spec' }, issue: { number: 11, updated_at: '2026-11-08T10:00:00Z' } },
+    } });
+    const waiting = await queue.listWaiting({ github: h.github, context });
+    expect(waiting).toHaveLength(1);
+    expect(waiting[0]?.request.workflow).toBe('agent-implement-spec.yml');
+    expect(queue.decodeRequest(h.comments.get(11)![0]!.body)).toMatchObject({
+      kind: 'implement-spec', inputs: { issue_number: '11', authorization_label: 'agent:implement-spec' },
+    });
+  });
+
   it('保存三个不同请求并按入队时间排序，重复投递保持幂等', async () => {
     const h = fixture();
     await queue.enqueue({ github: h.github, context, request: request('evt-3', 13, '2026-11-08T10:03:00Z', 'update-branch', 'agent-update-branch.yml') });
@@ -262,7 +276,7 @@ describe('订阅 Agent 持久化队列', () => {
     expect(coordinator).toContain("cron: '*/5 * * * *'");
     for (const name of [
       'agent-implement.yml', 'agent-implement-pr.yml', 'agent-review.yml',
-      'agent-update-branch.yml', 'agent-explore.yml', 'agent-to-issues.yml',
+      'agent-update-branch.yml', 'agent-explore.yml', 'agent-to-issues.yml', 'agent-implement-spec.yml',
     ]) {
       const workflow = readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8');
       expect(workflow).toContain('queue_request_id');

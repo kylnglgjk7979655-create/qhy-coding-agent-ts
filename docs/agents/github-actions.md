@@ -42,6 +42,7 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 | --- | --- |
 | 父 Issue：`agent:to-issues` | 调用 `$to-tickets`，校验需求后自动创建子 Issue 和原生依赖 |
 | Issue／父 Issue：`agent:implement` | 调用 `$implement`；完成后同会话调用 `$pr`，workflow 推送并创建／更新 Draft PR |
+| 父 Issue：`agent:implement-spec` | 使用已有原生子 Issue 和依赖，在单次 Codex 会话内并行委派实现、整体审查并交付 PR；不拆票 |
 | PR：`agent:review` | 调用 `$code-review`，读取父 PRD 和全部子票，发布 COMMENT 并标记 Ready |
 | PR：评论后加 `agent:implement` | 处理反馈，需要改代码时调用 `$implement` |
 | PR：`agent:update-branch` | 合并最新基准；有冲突时调用 Agent |
@@ -60,6 +61,14 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 6. 子票提交到共享 PR 后以 completed 关闭，然后自动接续下一票。有 PAT 时重新贴父票 implement；未配置时直接记录持久队列请求。同父共享 PR 不阻塞后续票，其他开放实现 PR 仍可能阻塞依赖。
 7. 全部子票 completed 后移除父需求 queued，请求整体 CR。审查上下文通过原生父子关系显式读取父 PRD、全部子票及评论；旧 PR 首条 Closes 指向子票时同样会定位父需求。
 8. Review 发布 COMMENT 并标记 PR Ready；Check 独立执行 `pnpm check` 和 `pnpm demo:test`。维护者决定合并，合入 main 后 GitHub 自动关闭父 Issue，无需再单独验收关闭父票。共享 PR 不自动合并。
+
+## 使用 implement-spec
+
+父 Issue 正文和评论提供 spec；先准备真实的子 Issue 和原生阻塞关系，再添加 `agent:implement-spec`。父票和子票不能同时带有 `agent:implement`、`agent:queued`、`agent:in-progress` 或 `agent:blocked`。父票及子票的外部前置必须以 completed 关闭，子任务须全部开放，依赖不得成环。
+
+该标签授权单次 Codex 会话按仓库内 `implement-spec` 启动并行子代理和独立 worktree，合并到 `agent/spec-父票编号` 集成分支。首项合并后创建 Draft PR；整体审查和检查完成后标记 Ready。PR 包含父票和子票的关闭引用，合并时由 GitHub 关闭。它作为一个队列任务运行；队列仍串行持有仓库级订阅锁。
+
+运行失败或取消后，查看运行日志和已有分支、PR并手工核查进度。为避免重放已有工作，存在同名远程分支时流程拒绝重新启动；目前不自动恢复部分完成的运行。移除标签可撤销等待中的任务；运行中的任务须在 Actions 中取消。
 
 ## 失败、暂停与恢复
 

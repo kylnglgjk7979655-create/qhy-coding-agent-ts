@@ -16,6 +16,7 @@
 | --- | --- |
 | `agent:to-issues` | 父 Issue：拆分后自动创建子 Issue 和原生依赖 |
 | `agent:implement` | Issue：开始或恢复实现；PR：处理已有反馈 |
+| `agent:implement-spec` | 父 Issue：对已有子任务按 `implement-spec` 并行实现并交付集成 PR，不拆票 |
 | `agent:queued` | Issue／父 Issue：保留实现授权，等待依赖或下一张子票 |
 | `agent:review` | PR：整体审查、允许修复、发布 COMMENT 并标记 Ready |
 | `agent:update-branch` | 同仓库 PR：合并基准分支并处理冲突 |
