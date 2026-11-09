@@ -12,6 +12,8 @@
 
 云端使用 `.sandcastle/agent-workflows/` 内固定版本的官方阶段脚本和 prompt，不固定拼接 skills，不添加自定义的 Standards/Spec 独立审查会话。各阶段 prompt 明确当前任务、项目上下文、验证和交付方式。
 
+独立的 `agent:implement-spec` 是例外：它使用仓库内的 `implement-spec`、`tdd` 和 `code-review`，对父 Issue 已有子任务在同一次 Codex 会话中以子代理并行实施。它不拆票，也不调用现有逐票实现流程。
+
 - 父 spec 放在 GitHub Issue 正文和评论。`agent:to-issues` 读取 GitHub 需求与代码，只生成待审批评论；`agent:publish-tickets` 是人工批准，确定性创建子任务和原生阻塞关系。
 - `agent:implement` 支持独立 Issue、子 Issue 及父需求。父需求选择依赖已完成的子票，子票依次提交到同一分支和草稿 PR；全部完成后整体审查，不将整份父需求交给普通实现。
 - `agent:queued` 持久化实现授权，直接前置 Issue 以 completed 关闭时检查并推进；前置票须以 completed 关闭；同一父需求的共享草稿 PR 不阻塞后续子票，其他开放实现 PR 仍阻塞。失败票留待人工重试，not_planned 不算完成，父需求不自动关闭。

@@ -2,6 +2,7 @@ const { enqueue } = require('./task-queue.cjs');
 
 const issueRoutes = {
   'agent:implement': ['implement', 'agent-implement.yml'],
+  'agent:implement-spec': ['implement-spec', 'agent-implement-spec.yml'],
   'agent:to-issues': ['split', 'agent-to-issues.yml'],
   'agent:publish-tickets': ['publish-tickets', 'agent-publish-tickets.yml'],
   'agent:explore': ['explore', 'agent-explore.yml'],

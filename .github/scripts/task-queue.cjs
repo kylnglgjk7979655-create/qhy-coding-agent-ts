@@ -1,6 +1,7 @@
 const MARKER = '<!-- agent-subscription-queue:v1 ';
 const ROUTES = {
   implement: { workflow: 'agent-implement.yml', label: 'agent:implement', target: 'issue_number' },
+  'implement-spec': { workflow: 'agent-implement-spec.yml', label: 'agent:implement-spec', target: 'issue_number' },
   'implement-pr': { workflow: 'agent-implement-pr.yml', label: 'agent:implement', target: 'pr_number', sha: true },
   review: { workflow: 'agent-review.yml', label: 'agent:review', target: 'pr_number', sha: true },
   'update-branch': { workflow: 'agent-update-branch.yml', label: 'agent:update-branch', target: 'pr_number', sha: true },

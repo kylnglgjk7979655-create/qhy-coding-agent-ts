@@ -18,6 +18,7 @@
 | `agent:to-issues` | 父 Issue：从 GitHub spec 生成待审批的拆票计划评论，不创建子任务 |
 | `agent:publish-tickets` | 父 Issue：人工批准已生成的计划，创建原生子 Issue 和阻塞依赖，不启动实现 |
 | `agent:implement` | 父 Issue：授权逐票执行；独立／子 Issue：依赖满足后启动实现；PR：处理反馈 |
+| `agent:implement-spec` | 父 Issue：对已有子任务按 `implement-spec` 并行实现并交付集成 PR，不拆票 |
 | `agent:queued` | Issue／父 Issue：授权在前置依赖完成、没有冲突的活动任务后启动；直接前置 Issue 以 completed 关闭时检查 |
 | `agent:review` | PR 审查，可修复代码，发布 COMMENT 并标记 Ready |
 | `agent:update-branch` | 同仓库 PR 合并基准分支，处理冲突 |

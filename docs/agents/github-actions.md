@@ -42,6 +42,7 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 | Agent To Issues | 父 Issue 添加 `agent:to-issues` | 从 GitHub 读取 spec 和评论，结合代码生成待审批计划评论 |
 | Agent Publish Tickets | 父 Issue 添加 `agent:publish-tickets` | 批准计划并创建原生子任务和依赖，不启动实现 |
 | Agent Implement | Issue／父 Issue 添加 `agent:implement` | 校验依赖；父需求选择就绪子票；父需求复用共享分支和草稿 PR，全部子票完成后请求整体审查；独立 Issue 单独创建 PR |
+| Agent Implement Spec | 父 Issue 添加 `agent:implement-spec` | 使用已有原生子 Issue 和依赖，在单次 Codex 会话内以子代理并行实现、整体审查并交付 PR；不拆票 |
 | Agent Promote Queued | Issue 以 completed 关闭 | 检查直接依赖该 Issue 的排队任务并转交就绪任务，不运行模型 |
 | Agent Review | PR 添加 `agent:review` | 按关联 Issue 和 diff 审查；允许修复并提交，发布评论和回复，标记 Ready |
 | Agent Implement PR | PR 留下反馈后添加 `agent:implement` | 修改代码或回复反馈；若既无提交也无评论则失败 |
@@ -75,6 +76,14 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 
 共享 PR 不会自动合并。
 
+### 使用 implement-spec
+
+父 Issue 正文和评论提供 spec，先准备真实的子 Issue 和原生阻塞关系，再添加 `agent:implement-spec`。执行时不能同时给父票或子票添加 `agent:implement`、`agent:queued`、`agent:in-progress` 或 `agent:blocked`。父票和子票的外部前置必须已以 completed 关闭；子任务须全部开放，依赖不得成环。
+
+该标签授权单次 Codex 会话按仓库内 `implement-spec` 启动并行子代理和独立 worktree，合并到 `agent/spec-父票编号` 集成分支。首项合并后创建草稿 PR，完成整体审查及检查后标记 Ready。PR 包含父票和子票的关闭引用，在合并时由 GitHub 关闭。运行中会推送集成分支和创建草稿 PR；认证回存及最终检查完成后才标记 Ready。
+
+如果运行失败或取消，请查看运行日志和已有分支、PR，手工核查进度。为避免重放已有工作，存在同名远程分支时本流程拒绝重新启动；该流程目前不自动恢复部分完成的运行。移除标签可以撤销等待中的任务；运行中的任务须在 Actions 中取消。
+
 日常仍使用标签。各任务 workflow 的 `workflow_dispatch` 是队列 worker 的内部执行入口，需要有效的 `queue_request_id`；用户从标签入口提交任务。失败后查看队列请求评论中的 Actions 链接，解决原因，再重新添加对应标签。分支有冲突时先使用 `agent:update-branch`。
 
 ## 执行与订阅维护
@@ -102,6 +111,7 @@ gh label create 'agent:explore' --color 5319E7 --description '批量调查 Issue
 gh label create 'agent:to-issues' --color 5319E7 --description '父 Issue：生成待审批的拆票计划' --force
 gh label create 'agent:publish-tickets' --color 0E8A16 --description '父 Issue：批准计划，创建子任务和原生依赖' --force
 gh label create 'agent:queued' --color FEF2C0 --description 'Issue／父 Issue：等待前置依赖完成后自动启动' --force
+gh label create 'agent:implement-spec' --color 5319E7 --description '父 Issue：并行实现已有子任务' --force
 gh label create 'agent:in-progress' --color FBCA04 --description 'Agent 当前轮任务执行中' --force
 ```
 
