@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runAgent } from '../src/query/agent.js';
+import { BackgroundAgentTasks } from '../src/tools/AgentTool/background-agent-tasks.js';
 import type { ResolvedConfig } from '../src/services/settings/config.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 
@@ -566,5 +567,87 @@ describe('只读 Explore 委派', () => {
 
     await expect(runAgent(config, '委派调查', { smokeTool: false })).rejects.toMatchObject({ code: 'TIMEOUT' });
     expect(fixture.requests).toHaveLength(2);
+  });
+});
+
+describe('后台子 Agent 启动', () => {
+  let workspace: string;
+  let closeFixture: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    await closeFixture?.();
+    closeFixture = undefined;
+    if (workspace) await rm(workspace, { recursive: true, force: true });
+  });
+
+  it('立即返回任务和启动调用 ID，并在主 Agent 继续处理时保留独立任务', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-background-agent-'));
+    let finishChild!: () => void;
+    const childGate = new Promise<void>((resolve) => { finishChild = resolve; });
+    const fixture = await startLocalOpenAIModel(async (request, index) => {
+      const userText = request.messages.filter(({ role }) => role === 'user').map(({ content }) => content).join('\n');
+      if (userText.includes('任务：后台子任务')) {
+        await childGate;
+        return { content: '后台结果已完成。' };
+      }
+      if (index === 1) return { calls: [{ id: 'launch-background-task', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '后台调查', prompt: '后台子任务', background: true }),
+      } }] };
+      return { content: '主 Agent 已继续。' };
+    });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 5,
+    };
+    const backgroundTasks = new BackgroundAgentTasks();
+
+    const result = await runAgent(config, '启动后台子任务后继续', { smokeTool: false, backgroundTasks });
+
+    expect(result.text).toContain('主 Agent 已继续');
+    expect(fixture.requests).toHaveLength(3);
+    const parentContinuation = fixture.requests.find((request) => request.messages.some(({ role, content }) => role === 'user' && content.includes('启动后台子任务后继续')) && request.messages.some(({ role }) => role === 'tool'));
+    expect(parentContinuation).toBeDefined();
+    const toolOutput = JSON.stringify(parentContinuation?.messages.find(({ role }) => role === 'tool')?.content);
+    expect(toolOutput).toContain('launch-background-task');
+    expect(toolOutput).toContain('taskId');
+    expect(toolOutput).toContain('避免');
+    expect(backgroundTasks.runningCount).toBe(1);
+    finishChild();
+  });
+
+  it('同一任务池最多运行十个后台任务，完成后可再次启动', async () => {
+    const tasks = new BackgroundAgentTasks();
+    const completions: Array<() => void> = [];
+    for (let index = 0; index < 10; index += 1) {
+      tasks.launch(`launch-${index}`, () => new Promise<string>((resolve) => {
+        completions.push(() => resolve(`报告 ${index}`));
+      }));
+    }
+
+    expect(tasks.runningCount).toBe(10);
+    expect(() => tasks.launch('launch-over-limit', async () => '不应启动'))
+      .toThrow('后台子 Agent 任务已达上限（10 个）');
+    completions[0]!();
+    await vi.waitFor(() => expect(tasks.runningCount).toBe(9));
+    expect(tasks.launch('launch-after-completion', async () => '可再次启动').launchCallId)
+      .toBe('launch-after-completion');
+  });
+
+  it('CLI 退出时向仍运行的后台任务发送取消信号', async () => {
+    const tasks = new BackgroundAgentTasks();
+    let wasAborted = false;
+    tasks.launch('launch-during-exit', (signal) => new Promise<string>((_resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        wasAborted = true;
+        reject(signal.reason);
+      }, { once: true });
+    }));
+
+    tasks.abortAll();
+
+    expect(wasAborted).toBe(true);
+    await vi.waitFor(() => expect(tasks.runningCount).toBe(0));
   });
 });

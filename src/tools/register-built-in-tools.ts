@@ -9,12 +9,14 @@ import { registerFileWriteTool } from './FileWriteTool/FileWriteTool.js';
 import { registerBashTool } from './BashTool/BashTool.js';
 import { registerAgentTool } from './AgentTool/AgentTool.js';
 import type { ApprovalControl } from './tool-approval.js';
+import type { BackgroundAgentTasks } from './AgentTool/background-agent-tasks.js';
 
 export interface BuiltInToolContext {
   config: ResolvedConfig;
   probe: string;
   allowAgent?: boolean;
   approvalControl?: ApprovalControl;
+  backgroundTasks?: BackgroundAgentTasks;
   fileBaselines?: WorkspaceFileBaselines;
   fileWriteCallbacks: {
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
@@ -30,5 +32,5 @@ export function registerBuiltInTools(registry: ToolRegistry, context: BuiltInToo
   registerGrepTool(registry, context);
   registerFileWriteTool(registry, context);
   registerBashTool(registry, context);
-  if (context.allowAgent !== false) registerAgentTool(registry, context.config, context.approvalControl);
+  if (context.allowAgent !== false) registerAgentTool(registry, context.config, context.approvalControl, context.backgroundTasks);
 }

@@ -17,6 +17,7 @@ import { registerRemoteMCP } from '../services/mcp/remote-mcp.js';
 import { DEFAULT_CONTEXT } from '../services/settings/config.js';
 import { prepareConversation } from '../services/compact/context-summary.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
+import type { BackgroundAgentTasks } from '../tools/AgentTool/background-agent-tasks.js';
 
 export type { ApprovalControl } from '../tools/tool-approval.js';
 export type { ToolApprovalRequest } from '../tools/tool-registry.js';
@@ -61,6 +62,7 @@ export async function runAgent(
     /** general-purpose 子 Agent 使用独立循环，但不公布 agent 工具。 */
     generalPurposeSubagent?: boolean;
     modelOverride?: string;
+    backgroundTasks?: BackgroundAgentTasks;
   },
 ): Promise<RunResult> {
   if (options.smokeTool && config.maxSteps < 2) {
@@ -129,6 +131,7 @@ export async function runAgent(
     probe,
     allowAgent: !options.generalPurposeSubagent,
     ...(options.approvalControl === undefined ? {} : { approvalControl: options.approvalControl }),
+    ...(options.backgroundTasks === undefined ? {} : { backgroundTasks: options.backgroundTasks }),
     fileWriteCallbacks: {
       ...(options.onBeforeWrite === undefined ? {} : { onBeforeWrite: options.onBeforeWrite }),
       ...(options.onCheckpointError === undefined ? {} : { onCheckpointError: options.onCheckpointError }),

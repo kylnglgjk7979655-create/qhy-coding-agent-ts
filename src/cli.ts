@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { runAgent } from './query/agent.js';
+import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession } from './tools/AgentTool/background-agent-tasks.js';
 import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
 import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveLegacyConversation, startSessionRound } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
@@ -313,6 +314,7 @@ async function main(): Promise<void> {
     });
     process.exitCode = failure.exitCode;
   } finally {
+    abortAllBackgroundAgentTasks();
     input?.close();
     await releaseSession?.().catch(() => undefined);
     process.removeListener('SIGINT', cancel);
@@ -358,6 +360,7 @@ async function runTurn(
       history,
       summaryCoverageBase,
       fileBaselines,
+      ...(!smokeTool ? { backgroundTasks: backgroundAgentTasksForSession(conversationId) } : {}),
       onText: async (chunk) => {
         if (!smokeTool && roundId) await appendRoundText(userHome, conversationId, roundId, chunk);
         process.stdout.write(chunk);
