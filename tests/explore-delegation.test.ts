@@ -18,12 +18,76 @@ describe('只读 Explore 委派', () => {
     if (outside) await rm(outside, { recursive: true, force: true });
   });
 
+  it('省略类型时启动独立 general-purpose，上下文隔离并沿用工具拒绝策略', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-general-purpose-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1) return { calls: [{ id: 'delegate-general-purpose', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '创建结果文件', prompt: '尝试创建 result.txt' }),
+      } }] };
+      if (index === 2) return { calls: [{ id: 'denied-subagent-write', type: 'function', function: {
+        name: 'write_file', arguments: JSON.stringify({ path: 'result.txt', content: '不应写入' }),
+      } }] };
+      if (index === 3) return { content: '写入被拒绝，未创建文件。' };
+      return { content: '子 Agent 已报告权限拒绝。' };
+    });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [{ toolName: 'write_file', action: 'deny' }], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 6,
+    };
+
+    await runAgent(config, '请完成文件任务', { smokeTool: false,
+      history: [{ role: 'assistant', content: '主对话私有历史标记' }],
+    });
+
+    expect(fixture.requests).toHaveLength(4);
+    const child = fixture.requests[1]!;
+    expect(child.tools.map(({ function: fn }) => fn.name)).toEqual(expect.arrayContaining(['Bash', 'write_file', 'read_file']));
+    expect(child.tools.map(({ function: fn }) => fn.name)).not.toContain('agent');
+    expect(child.messages.map(({ role }) => role)).toEqual(['system', 'user']);
+    expect(JSON.stringify(child.messages)).not.toContain('主对话私有历史标记');
+    expect(child.messages[0]!.content).toContain('同一批');
+    const rejected = JSON.parse(fixture.requests[2]!.messages.find(({ role }) => role === 'tool')!.content);
+    expect(rejected).toMatchObject({ is_error: true, error: { code: 'PERMISSION_DENIED' } });
+    await expect(readFile(join(workspace, 'result.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('general-purpose 的写入调用通过外层人工审批控制后执行', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-general-purpose-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1) return { calls: [{ id: 'delegate-approved-write', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '创建结果文件', prompt: '创建 result.txt' }),
+      } }] };
+      if (index === 2) return { calls: [{ id: 'approved-subagent-write', type: 'function', function: {
+        name: 'write_file', arguments: JSON.stringify({ path: 'result.txt', content: '已批准写入' }),
+      } }] };
+      if (index === 3) return { content: '文件已创建。' };
+      return { content: '子 Agent 已创建文件。' };
+    });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'human', rules: [], timeoutMs: 30_000, humanTimeoutMs: 1000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 6,
+    };
+    const approvals: string[] = [];
+
+    await runAgent(config, '请创建文件', { smokeTool: false, approvalControl: async (call) => {
+      approvals.push(call.toolName);
+      return 'approve';
+    } });
+
+    expect(approvals).toEqual(['write_file']);
+    await expect(readFile(join(workspace, 'result.txt'), 'utf8')).resolves.toBe('已批准写入');
+  });
+
   it('通过 agent 启动独立 Explore，多轮搜索读取后把报告交回主 Agent', async () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     await writeFile(join(workspace, 'module.ts'), 'export const answer = 42;\n');
     const fixture = await startLocalOpenAIModel((_request, index) => {
       if (index === 1) return { calls: [{ id: 'delegate', type: 'function', function: {
-        name: 'agent', arguments: JSON.stringify({ description: '查找 answer 的定义', prompt: '查找 answer 的定义并报告文件位置。' }),
+        name: 'agent', arguments: JSON.stringify({ description: '查找 answer 的定义', prompt: '查找 answer 的定义并报告文件位置。', subagent_type: 'Explore' }),
       } }] };
       if (index === 2) return { calls: [{ id: 'explore-grep', type: 'function', function: {
         name: 'grep', arguments: JSON.stringify({ pattern: 'answer' }),
@@ -70,7 +134,7 @@ describe('只读 Explore 委派', () => {
     await writeFile(join(workspace, 'nested', 'AGENTS.md'), 'NESTED_EXPLORE_INSTRUCTIONS');
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [{ id: 'configured-delegate', type: 'function', function: { name: 'agent', arguments: JSON.stringify({
-        description: '调查配置', prompt: '检查配置行为', ...(callModel === undefined ? {} : { model: callModel }),
+        description: '调查配置', prompt: '检查配置行为', subagent_type: 'Explore', ...(callModel === undefined ? {} : { model: callModel }),
       }) } }] }
       : { content: index === 2 ? '配置调查完成。' : '已根据报告回答。' });
     closeFixture = fixture.close;
@@ -93,7 +157,7 @@ describe('只读 Explore 委派', () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [{ id: 'missing-agents-delegate', type: 'function', function: { name: 'agent', arguments: JSON.stringify({
-        description: '调查缺失指令', prompt: '检查项目',
+        description: '调查缺失指令', prompt: '检查项目', subagent_type: 'Explore',
       }) } }] }
       : { content: '调查完成。' });
     closeFixture = fixture.close;
@@ -113,9 +177,9 @@ describe('只读 Explore 委派', () => {
   it('同一主对话中的每次 Explore 都从空白上下文开始', async () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     const fixture = await startLocalOpenAIModel((_request, index) => {
-      if (index === 1) return { calls: [{ id: 'first-explore', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: '调查甲', prompt: '调查标记甲' }) } }] };
+      if (index === 1) return { calls: [{ id: 'first-explore', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: '调查甲', prompt: '调查标记甲', subagent_type: 'Explore' }) } }] };
       if (index === 2) return { content: '甲报告含有内部标记 FIRST_EXPLORE_ONLY。' };
-      if (index === 3) return { calls: [{ id: 'second-explore', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: '调查乙', prompt: '调查标记乙' }) } }] };
+      if (index === 3) return { calls: [{ id: 'second-explore', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: '调查乙', prompt: '调查标记乙', subagent_type: 'Explore' }) } }] };
       if (index === 4) return { content: '乙报告。' };
       return { content: '两次调查已完成。' };
     });
@@ -138,7 +202,7 @@ describe('只读 Explore 委派', () => {
   });
 
   it.each([
-    ['unknown type', { description: '调查代码', prompt: '检查实现', subagent_type: 'Builder' }, 'TOOL_EXECUTION_ERROR', '可用类型：Explore'],
+    ['unknown type', { description: '调查代码', prompt: '检查实现', subagent_type: 'Builder' }, 'TOOL_EXECUTION_ERROR', '可用类型：general-purpose、Explore'],
     ['missing required prompt', { description: '调查代码' }, 'INVALID_TOOL_ARGUMENTS', '工具参数无效'],
   ])('对 %s 返回可识别的错误', async (_caseName, input, errorCode, message) => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
@@ -162,7 +226,7 @@ describe('只读 Explore 委派', () => {
   it('外层 agent 拒绝策略阻止 Explore 请求', async () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
-      ? { calls: [{ id: 'denied-delegate', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查实现' }) } }] }
+      ? { calls: [{ id: 'denied-delegate', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查实现', subagent_type: 'Explore' }) } }] }
       : { content: '权限拒绝已处理。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
@@ -184,7 +248,7 @@ describe('只读 Explore 委派', () => {
   it('外层 agent 的审批要求生效', async () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
-      ? { calls: [{ id: 'approved-delegate', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查实现' }) } }] }
+      ? { calls: [{ id: 'approved-delegate', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查实现', subagent_type: 'Explore' }) } }] }
       : index === 2 ? { content: '已完成只读调查。' } : { content: '已根据报告回答。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
@@ -209,7 +273,7 @@ describe('只读 Explore 委派', () => {
     await writeFile(join(outside, 'secret.txt'), '工作区外秘密');
     await symlink(join(outside, 'secret.txt'), join(workspace, 'secret-link.txt'));
     const fixture = await startLocalOpenAIModel((_request, index) => {
-      if (index === 1) return { calls: [{ id: 'boundary-delegate', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: '检查边界', prompt: '读取 secret-link.txt 并报告结果' }) } }] };
+      if (index === 1) return { calls: [{ id: 'boundary-delegate', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: '检查边界', prompt: '读取 secret-link.txt 并报告结果', subagent_type: 'Explore' }) } }] };
       if (index === 2) return { calls: [{ id: 'boundary-read', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'secret-link.txt' }) } }] };
       if (index === 3) return { content: '读取失败，目标不在工作区内。' };
       return { content: 'Explore 未能读取工作区外文件。' };
@@ -233,7 +297,7 @@ describe('只读 Explore 委派', () => {
     await writeFile(join(workspace, 'module.ts'), 'export const answer = 42;\n');
     const fixture = await startLocalOpenAIModel((_request, index) => {
       if (index === 1) return { calls: [{ id: 'delegate-after-failure', type: 'function', function: {
-        name: 'agent', arguments: JSON.stringify({ description: '调查 answer', prompt: '查找 answer 的定义' }),
+        name: 'agent', arguments: JSON.stringify({ description: '调查 answer', prompt: '查找 answer 的定义', subagent_type: 'Explore' }),
       } }] };
       if (index === 2) return { calls: [
         { id: 'failed-read', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'missing.ts' }) } },
@@ -267,7 +331,7 @@ describe('只读 Explore 委派', () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     const fixture = await startLocalOpenAIModel((_request, index) => {
       if (index === 1) return { calls: [{ id: 'delegate-boundary', type: 'function', function: {
-        name: 'agent', arguments: JSON.stringify({ description: '检查权限边界', prompt: '确认 Explore 工具权限' }),
+        name: 'agent', arguments: JSON.stringify({ description: '检查权限边界', prompt: '确认 Explore 工具权限', subagent_type: 'Explore' }),
       } }] };
       if (index === 2) return { calls: [
         { id: 'forbidden-write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'forbidden.txt', content: 'no' }) } },
@@ -306,7 +370,7 @@ describe('只读 Explore 委派', () => {
       writeFile(join(workspace, 'many', `file-${index}.ts`), 'const value = 1;\n')));
     const fixture = await startLocalOpenAIModel((_request, index) => {
       if (index === 1) return { calls: [{ id: 'delegate-truncated-search', type: 'function', function: {
-        name: 'agent', arguments: JSON.stringify({ description: '检查搜索结果', prompt: '搜索并核实目标定义' }),
+        name: 'agent', arguments: JSON.stringify({ description: '检查搜索结果', prompt: '搜索并核实目标定义', subagent_type: 'Explore' }),
       } }] };
       if (index === 2) return { calls: [{ id: 'wide-search', type: 'function', function: {
         name: 'glob', arguments: JSON.stringify({ pattern: '*.ts', path: 'many' }),
@@ -340,7 +404,7 @@ describe('只读 Explore 委派', () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [{ id: 'delegate-empty-report', type: 'function', function: {
-        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码' }),
+        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码', subagent_type: 'Explore' }),
       } }] }
       : index === 2 ? { content: '   ' } : { content: 'Explore 未返回报告。' });
     closeFixture = fixture.close;
@@ -361,7 +425,7 @@ describe('只读 Explore 委派', () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     const fixture = await startLocalOpenAIModel((_request, index) => {
       if (index === 1) return { calls: [{ id: 'delegate-empty-after-tools', type: 'function', function: {
-        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码' }),
+        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码', subagent_type: 'Explore' }),
       } }] };
       if (index === 2) return { calls: [{ id: 'explore-tool-before-empty', type: 'function', function: {
         name: 'glob', arguments: JSON.stringify({ pattern: '*.ts' }),
@@ -387,7 +451,7 @@ describe('只读 Explore 委派', () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [{ id: 'delegate-model-failure', type: 'function', function: {
-        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码' }),
+        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码', subagent_type: 'Explore' }),
       } }] }
       : index === 2 ? { status: 500, content: 'Explore provider unavailable' } : { content: '调查暂不可用。' });
     closeFixture = fixture.close;
@@ -408,7 +472,7 @@ describe('只读 Explore 委派', () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [{ id: 'delegate-cancel-explore', type: 'function', function: {
-        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码' }),
+        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码', subagent_type: 'Explore' }),
       } }] }
       : { frames: [{ delta: { content: '缓慢' }, delayMs: 500 }, { delta: {}, finish_reason: 'stop' }] });
     closeFixture = fixture.close;
@@ -430,7 +494,7 @@ describe('只读 Explore 委派', () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [{ id: 'delegate-timeout-explore', type: 'function', function: {
-        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码' }),
+        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码', subagent_type: 'Explore' }),
       } }] }
       : { frames: [{ delta: { content: '缓慢' }, delayMs: 500 }, { delta: {}, finish_reason: 'stop' }] });
     closeFixture = fixture.close;

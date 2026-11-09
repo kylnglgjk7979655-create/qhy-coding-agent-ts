@@ -8,10 +8,13 @@ import { registerGrepTool } from './GrepTool/GrepTool.js';
 import { registerFileWriteTool } from './FileWriteTool/FileWriteTool.js';
 import { registerBashTool } from './BashTool/BashTool.js';
 import { registerAgentTool } from './AgentTool/AgentTool.js';
+import type { ApprovalControl } from './tool-approval.js';
 
 export interface BuiltInToolContext {
   config: ResolvedConfig;
   probe: string;
+  allowAgent?: boolean;
+  approvalControl?: ApprovalControl;
   fileWriteCallbacks: {
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;
@@ -26,5 +29,5 @@ export function registerBuiltInTools(registry: ToolRegistry, context: BuiltInToo
   registerGrepTool(registry, context);
   registerFileWriteTool(registry, context);
   registerBashTool(registry, context);
-  registerAgentTool(registry, context.config);
+  if (context.allowAgent !== false) registerAgentTool(registry, context.config, context.approvalControl);
 }

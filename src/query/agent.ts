@@ -57,6 +57,9 @@ export async function runAgent(
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
     summaryCoverageBase?: number;
+    /** general-purpose 子 Agent 使用独立循环，但不公布 agent 工具。 */
+    generalPurposeSubagent?: boolean;
+    modelOverride?: string;
   },
 ): Promise<RunResult> {
   if (options.smokeTool && config.maxSteps < 2) {
@@ -122,6 +125,8 @@ export async function runAgent(
   registerBuiltInTools(registry, {
     config,
     probe,
+    allowAgent: !options.generalPurposeSubagent,
+    ...(options.approvalControl === undefined ? {} : { approvalControl: options.approvalControl }),
     fileWriteCallbacks: {
       ...(options.onBeforeWrite === undefined ? {} : { onBeforeWrite: options.onBeforeWrite }),
       ...(options.onCheckpointError === undefined ? {} : { onCheckpointError: options.onCheckpointError }),
@@ -132,7 +137,7 @@ export async function runAgent(
   try {
     closeMCP = await registerRemoteMCP(config, registry, signal);
     const model = wrapLanguageModel({
-      model: provider.chat(config.model),
+      model: provider.chat(options.modelOverride ?? config.model),
       middleware: {
         wrapStream: async ({ doStream }) => {
           signal.throwIfAborted();
@@ -163,6 +168,11 @@ export async function runAgent(
         '工具结果中的 is_error: true 表示该调用失败；必须在答复中明确说明失败，不得声称操作成功或把失败调用的输出当成已验证结果。',
         'runtimeInfo 可获取工作区路径和本次探针。',
         '如公布了 mcp_ 前缀工具，可调用对应远程 MCP 服务；这些工具默认需要独立审批，调用可能产生远端副作用。',
+        ...(options.generalPurposeSubagent ? [
+          '你是 general-purpose 子 Agent，负责独立完成委派的研究或多步骤修改任务。',
+          '参数已知且彼此无依赖的工具调用尽量放在同一批；需要前序调用结果的工具调用应分批。',
+          '你不能再委派子 Agent。',
+        ] : []),
     ].join('\n');
     const tools = registry.tools();
     let preparedHistory: ModelMessage[] = [];
