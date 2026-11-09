@@ -12,6 +12,7 @@ describe('configuration', () => {
   it('uses defaults, resolves the workspace and references an environment variable', async () => {
     const config = await loadConfig({ cwd, workspace: '.', env: { OPENAI_API_KEY: 'test-secret' } });
     expect(config).toMatchObject({ provider: 'openai', maxSteps: 20, timeoutMs: 60_000, apiKey: 'test-secret' });
+    expect(config.explore).toBeUndefined();
     expect(config.workspace).toMatch(/qhy-config-/);
     expect(loggableConfig(config)).not.toHaveProperty('apiKey');
     expect(JSON.stringify(loggableConfig(config))).not.toContain('test-secret');
@@ -30,6 +31,8 @@ describe('configuration', () => {
     { apiKeyEnv: 'invalid-name' }, { baseURL: 'ftp://example.com' },
     { baseURL: 'https://user:password@example.com' },
     { baseURL: 'https://example.com/?api_key=secret' },
+    { explore: { model: ' ' } }, { explore: { loadRootAgents: 'true' } },
+    { explore: { unsupported: true } },
   ])('rejects invalid or unknown configuration: %j', (raw) => {
     expect(configSchema.safeParse(raw).success).toBe(false);
   });
@@ -43,6 +46,19 @@ describe('configuration', () => {
       capacityTokens: 128_000, answerReserveTokens: 8192,
       triggerRatio: 0.8, targetRatio: 0.5, keepRecentTurns: 2,
     });
+  });
+
+  it('接受有效的 Explore 模型与根目录指令选项', () => {
+    expect(configSchema.parse({ explore: { model: ' explore-model ', loadRootAgents: true } }).explore)
+      .toEqual({ model: 'explore-model', loadRootAgents: true });
+    expect(configSchema.parse({ explore: {} }).explore?.loadRootAgents).toBe(false);
+  });
+
+  it('在加载配置阶段拒绝无效的 Explore 选项', async () => {
+    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({ explore: { model: ' ' } }));
+
+    await expect(loadConfig({ cwd, workspace: '.', env: { OPENAI_API_KEY: 'key' } }))
+      .rejects.toMatchObject({ code: 'CONFIG_ERROR' });
   });
 
   it('rejects nonexistent workspaces and files used as directories', async () => {

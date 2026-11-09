@@ -7,6 +7,7 @@ import { registerGlobTool } from '../tools/GlobTool/GlobTool.js';
 import { registerGrepTool } from '../tools/GrepTool/GrepTool.js';
 import type { BuiltInToolContext } from '../tools/register-built-in-tools.js';
 import { ToolRegistry } from '../tools/tool-registry.js';
+import { readWorkspaceFile } from '../tools/workspace-files.js';
 
 const exploreInstructions = [
   '你是只读 Explore 调查 Agent。使用独立的新对话，只调查用户指定的工作区问题。',
@@ -17,7 +18,14 @@ const exploreInstructions = [
   '不得把部分搜索、失败读取或尚未解决的问题描述为完整核实。最终报告说明结论、相关文件位置和所有重要调查限制。',
 ].join('\n');
 
-export async function runExplore(config: ResolvedConfig, description: string, prompt: string, signal?: AbortSignal): Promise<string> {
+export async function runExplore(
+  config: ResolvedConfig,
+  description: string,
+  prompt: string,
+  modelOverride?: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted();
   const provider = createOpenAI({
     apiKey: config.apiKey,
     fetch: validatedOpenAIFetch,
@@ -34,9 +42,19 @@ export async function runExplore(config: ResolvedConfig, description: string, pr
   registerGlobTool(registry, context);
   registerFileReadTool(registry, context);
 
+  let instructions = exploreInstructions;
+  if (config.explore?.loadRootAgents) {
+    try {
+      const rootInstructions = await readWorkspaceFile(config.workspace, 'AGENTS.md');
+      instructions += `\n\n工作区根目录 AGENTS.md 指令：\n${rootInstructions}`;
+    } catch {
+      // 根目录文件不存在或不可安全读取时，继续只读调查。
+    }
+  }
+
   const agent = new ToolLoopAgent({
-    model: provider.chat(config.model),
-    instructions: exploreInstructions,
+    model: provider.chat(modelOverride ?? config.explore?.model ?? config.model),
+    instructions,
     tools: registry.tools(),
     toolCallConcurrency: 1,
     stopWhen: isStepCount(config.maxSteps),

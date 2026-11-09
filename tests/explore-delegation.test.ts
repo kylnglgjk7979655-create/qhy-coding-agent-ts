@@ -59,6 +59,57 @@ describe('只读 Explore 委派', () => {
     expect(returnedReport).toContain('answer 定义为 42');
   });
 
+  it.each([
+    { name: '默认不加载根目录指令并使用主模型', explore: undefined, callModel: undefined, expectedModel: 'fixture', includeRoot: false },
+    { name: '配置加载根目录指令并使用 Explore 模型', explore: { model: 'explore-config-model', loadRootAgents: true }, callModel: undefined, expectedModel: 'explore-config-model', includeRoot: true },
+    { name: '单次调用模型覆盖配置模型', explore: { model: 'explore-config-model', loadRootAgents: true }, callModel: 'explore-call-model', expectedModel: 'explore-call-model', includeRoot: true },
+  ])('$name', async ({ explore, callModel, expectedModel, includeRoot }) => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
+    await mkdir(join(workspace, 'nested'), { recursive: true });
+    await writeFile(join(workspace, 'AGENTS.md'), 'ROOT_EXPLORE_INSTRUCTIONS');
+    await writeFile(join(workspace, 'nested', 'AGENTS.md'), 'NESTED_EXPLORE_INSTRUCTIONS');
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'configured-delegate', type: 'function', function: { name: 'agent', arguments: JSON.stringify({
+        description: '调查配置', prompt: '检查配置行为', ...(callModel === undefined ? {} : { model: callModel }),
+      }) } }] }
+      : { content: index === 2 ? '配置调查完成。' : '已根据报告回答。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
+      ...(explore === undefined ? {} : { explore }),
+    };
+
+    await runAgent(config, '委派配置调查', { smokeTool: false });
+
+    expect(fixture.requests[1]!.model).toBe(expectedModel);
+    const instructions = fixture.requests[1]!.messages[0]!.content;
+    expect(instructions.includes('ROOT_EXPLORE_INSTRUCTIONS')).toBe(includeRoot);
+    expect(instructions).not.toContain('NESTED_EXPLORE_INSTRUCTIONS');
+  });
+
+  it('开启根目录指令但文件缺失时仍可完成调查', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'missing-agents-delegate', type: 'function', function: { name: 'agent', arguments: JSON.stringify({
+        description: '调查缺失指令', prompt: '检查项目',
+      }) } }] }
+      : { content: '调查完成。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
+      explore: { loadRootAgents: true },
+    };
+
+    const result = await runAgent(config, '委派缺失指令调查', { smokeTool: false });
+
+    expect(result.text).toContain('调查完成');
+    expect(fixture.requests).toHaveLength(3);
+  });
+
   it('同一主对话中的每次 Explore 都从空白上下文开始', async () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     const fixture = await startLocalOpenAIModel((_request, index) => {

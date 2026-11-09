@@ -96,7 +96,11 @@ pnpm dev --workspace ./demo
   "baseURL": "https://ark.cn-beijing.volces.com/api/coding/v3",
   "workspace": "./demo",
   "timeoutMs": 60000,
-  "maxSteps": 20
+  "maxSteps": 20,
+  "explore": {
+    "model": "doubao-seed-2-0-mini",
+    "loadRootAgents": false
+  }
 }
 ```
 
@@ -109,6 +113,8 @@ pnpm dev --workspace ./demo
 | `workspace` | 默认 `./demo`；CLI 可覆盖 |
 | `timeoutMs` | 1–3,600,000ms；每轮独立计时，覆盖该轮的生成与工具循环；人工审批等待单独计时，超时通过 AbortSignal 中止请求 |
 | `maxSteps` | 1–100，默认 20；每轮独立计步，达到上限仍在调用工具时该轮失败，交互模式继续等待输入 |
+| `explore.model` | 可选；Explore 默认模型，未配置时使用主 Agent 的 `model`。`agent` 单次调用可用 `model` 覆盖；连接地址和凭据沿用主 Agent |
+| `explore.loadRootAgents` | 可选，默认 `false`；设为 `true` 后向 Explore 提供工作区根目录的 `AGENTS.md`，文件缺失时继续调查，不自动加载子目录中的同名文件 |
 | `bash.timeoutMs` | 可选，默认 30,000ms，范围 1–3,600,000ms；单次命令上限，同时受整轮剩余时限约束；`bash` 只接受此字段 |
 
 未知字段、无效类型及越界数值会在网络请求前报错。自动重试关闭，避免鉴权失败反复请求。Ctrl+C 会中止当前请求。
