@@ -26,7 +26,7 @@ export async function approveToolCall(
   const actions = config.approval.rules.filter(({ toolName }) => toolName === call.toolName).map(({ action }) => action);
   if (actions.includes('deny')) return false;
   if (actions.includes('allow')) return true;
-  if (!actions.includes('ask') && ['read_file', 'glob', 'grep', 'runtimeInfo'].includes(call.toolName)) return true;
+  if (!actions.includes('ask') && ['read_file', 'glob', 'grep', 'runtimeInfo', 'agent'].includes(call.toolName)) return true;
 
   if (config.approval.mode === 'human') {
     if (!control) return false;

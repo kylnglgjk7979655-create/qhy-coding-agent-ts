@@ -376,7 +376,7 @@ async function runTurn(
       onCheckpointError: () => {
         log({ event: 'checkpoint.backup_failed', conversationId, message: 'write_file 原状态备份失败，继续写入。' });
       },
-      onToolEvent: ({ toolName, status }) => {
+      onToolEvent: ({ toolName, description, status }) => {
         if (toolName === 'Bash' && status === 'failed') bashFailed = true;
         const label = {
           started: '开始',
@@ -384,6 +384,15 @@ async function runTurn(
           failed: '失败',
           rejected: '拒绝',
         }[status];
+        const shortDescription = description
+          ?.replace(/[\u0000-\u001f\u007f]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 120);
+        if (toolName === 'agent' && shortDescription) {
+          process.stdout.write(`\n[Explore] ${shortDescription}：${label}\n`);
+          return;
+        }
         process.stdout.write(`\n[工具] ${toolName}：${label}\n`);
       },
       signal,

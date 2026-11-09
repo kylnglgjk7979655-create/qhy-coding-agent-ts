@@ -7,6 +7,7 @@ import { registerGlobTool } from './GlobTool/GlobTool.js';
 import { registerGrepTool } from './GrepTool/GrepTool.js';
 import { registerFileWriteTool } from './FileWriteTool/FileWriteTool.js';
 import { registerBashTool } from './BashTool/BashTool.js';
+import { registerAgentTool } from './AgentTool/AgentTool.js';
 
 export interface BuiltInToolContext {
   config: ResolvedConfig;
@@ -25,4 +26,5 @@ export function registerBuiltInTools(registry: ToolRegistry, context: BuiltInToo
   registerGrepTool(registry, context);
   registerFileWriteTool(registry, context);
   registerBashTool(registry, context);
+  registerAgentTool(registry, context.config);
 }

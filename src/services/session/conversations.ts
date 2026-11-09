@@ -433,7 +433,7 @@ function deriveTitleFromText(text: string): string {
 function isModelConfig(value: unknown): value is ModelConfig {
   if (typeof value !== 'object' || value === null) return false;
   const config = value as Partial<ModelConfig>;
-  const fields = ['provider', 'model', 'apiKeyEnv', 'baseURL', 'workspace', 'timeoutMs', 'maxSteps', 'context', 'mcp', 'bash', 'approval'];
+  const fields = ['provider', 'model', 'apiKeyEnv', 'baseURL', 'workspace', 'timeoutMs', 'maxSteps', 'explore', 'context', 'mcp', 'bash', 'approval'];
   return Object.keys(value).every((field) => fields.includes(field))
     && config.provider === 'openai'
     && typeof config.model === 'string'
@@ -441,6 +441,10 @@ function isModelConfig(value: unknown): value is ModelConfig {
     && typeof config.workspace === 'string'
     && typeof config.timeoutMs === 'number'
     && typeof config.maxSteps === 'number'
+    && (config.explore === undefined || (typeof config.explore === 'object' && config.explore !== null
+      && Object.keys(config.explore).every((field) => ['model', 'loadRootAgents'].includes(field))
+      && (config.explore.model === undefined || (typeof config.explore.model === 'string' && config.explore.model.trim() !== ''))
+      && (config.explore.loadRootAgents === undefined || typeof config.explore.loadRootAgents === 'boolean')))
     && typeof config.approval === 'object' && config.approval !== null;
 }
 
