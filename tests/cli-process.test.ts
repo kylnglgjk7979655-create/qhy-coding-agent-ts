@@ -754,6 +754,75 @@ describe('compiled CLI process driver', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('does not invent a tool result when Ctrl+C interrupts a running tool', async () => {
+    const cwd = await directory('recovery-cancelled-tool-cwd');
+    const userDir = await directory('recovery-cancelled-tool-user');
+    const model = await startLocalOpenAIModel(() => ({ calls: [{ id: 'cancelled-tool-call', type: 'function', function: {
+      name: 'Bash', arguments: JSON.stringify({ command: 'sleep 5' }),
+    } }] }));
+    try {
+      await configure(cwd, model.baseURL);
+      let output = '';
+      const interrupted = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      interrupted.send('运行可取消工具\n');
+      await waitForOutput(() => output, '[工具] Bash：开始', 1);
+      const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!id) throw new Error('中断会话尚未持久化');
+      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
+      interrupted.child.kill('SIGINT');
+      await interrupted.done;
+
+      const record = JSON.parse(await readFile(recordPath, 'utf8')) as {
+        transcript: Array<{ role: string; content: unknown }>;
+        rounds: Array<{ status: string }>;
+      };
+      expect(record.rounds.map(({ status }) => status)).toEqual(['cancelled']);
+      expect(JSON.stringify(record.transcript)).toContain('cancelled-tool-call');
+      expect(record.transcript.some(({ role, content }) => role === 'tool' && JSON.stringify(content).includes('cancelled-tool-call'))).toBe(false);
+    } finally {
+      await model.close();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('recovers saved context after SIGTERM without replaying an unfinished tool call', async () => {
+    const cwd = await directory('recovery-sigterm-cwd');
+    const userDir = await directory('recovery-sigterm-user');
+    const model = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'sigterm-tool-call', type: 'function', function: {
+        name: 'Bash', arguments: JSON.stringify({ command: 'sleep 5' }),
+      } }] }
+      : { content: '已从中断会话恢复。' });
+    try {
+      await configure(cwd, model.baseURL);
+      let output = '';
+      const interrupted = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      interrupted.send('SIGTERM 前已保存的消息\n');
+      await waitForOutput(() => output, '[工具] Bash：开始', 1);
+      const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!id) throw new Error('中断会话尚未持久化');
+      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
+      interrupted.child.kill('SIGTERM');
+      await interrupted.done;
+
+      const record = JSON.parse(await readFile(recordPath, 'utf8')) as {
+        transcript: Array<{ role: string; content: unknown }>;
+        rounds: Array<{ status: string; error?: { code: string; message: string } }>;
+      };
+      expect(record.rounds.map(({ status }) => status)).toEqual(['cancelled']);
+      expect(JSON.stringify(record.transcript)).toContain('SIGTERM 前已保存的消息');
+      expect(record.rounds[0]?.error?.code).toBe('CANCELLED');
+      expect(record.transcript.some(({ role, content }) => role === 'tool' && JSON.stringify(content).includes('sigterm-tool-call'))).toBe(false);
+
+      const resumed = startCLI({ cwd, userDir, conversationId: id, env: { TEST_MODEL_API_KEY: secret } });
+      resumed.end('继续对话\n/exit\n');
+      expect((await resumed.done).code).toBe(0);
+      expect(JSON.stringify(model.requests[1])).toContain('SIGTERM 前已保存的消息');
+      expect(JSON.stringify(model.requests[1])).not.toContain('sigterm-tool-call');
+    } finally {
+      await model.close();
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('reuses a saved tool result with its call ID and marks the final answer as unobserved', async () => {
     const cwd = await directory('recovery-partial-cwd');
     const userDir = await directory('recovery-partial-user');

@@ -58,7 +58,7 @@ describe.skipIf(process.platform === 'win32')('CLI 会话占用与轮次中断',
     }
   });
 
-  it('处理中断当前工具调用，记录精确结果并允许同进程下一轮', async () => {
+  it('处理中断当前工具调用，不伪造结果并允许同进程下一轮', async () => {
     const cwd = await directory('cancel-cwd');
     const userDir = await directory('cancel-user');
     const model = await startLocalOpenAIModel((_request, index) => index === 1
@@ -79,8 +79,9 @@ describe.skipIf(process.platform === 'win32')('CLI 会话占用与轮次中断',
       child.end('/exit\n');
       expect((await child.done).code).toBe(0);
       expect(model.requests).toHaveLength(2);
-      expect(JSON.stringify(model.requests[1])).toContain('Interrupt by user');
-      expect(JSON.stringify(model.requests[1])).toContain('interrupt-call');
+      expect(JSON.stringify(model.requests[1])).toContain('运行可中断工具');
+      expect(JSON.stringify(model.requests[1])).not.toContain('Interrupt by user');
+      expect(JSON.stringify(model.requests[1])).not.toContain('interrupt-call');
 
       const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
       if (!id) throw new Error('会话尚未持久化');
@@ -90,17 +91,16 @@ describe.skipIf(process.platform === 'win32')('CLI 会话占用与轮次中断',
       };
       expect(record.rounds.map(({ status }) => status)).toEqual(['cancelled', 'succeeded']);
       expect(record.rounds[0]?.error?.message).toBe('Interrupt by user');
-      expect(JSON.stringify(record.transcript)).toContain('Interrupt by user');
       expect(JSON.stringify(record.transcript)).toContain('interrupt-call');
       const toolResult = record.transcript.flatMap(({ role, content }) => role === 'tool' && Array.isArray(content) ? content : [])
         .find(({ toolCallId }) => toolCallId === 'interrupt-call');
-      expect(toolResult?.output).toBe('Interrupt by user');
+      expect(toolResult).toBeUndefined();
     } finally {
       await model.close();
     }
   });
 
-  it('重启后将用户中断的工具结果恢复到模型上下文', async () => {
+  it('重启后恢复已保存上下文但不重放未完成工具调用', async () => {
     const cwd = await directory('cancel-resume-cwd');
     const userDir = await directory('cancel-resume-user');
     const model = await startLocalOpenAIModel((_request, index) => index === 1
@@ -123,8 +123,9 @@ describe.skipIf(process.platform === 'win32')('CLI 会话占用与轮次中断',
 
       const resumed = startCLI({ cwd, userDir, conversationId: id, env: { TEST_MODEL_API_KEY: secret }, input: '继续恢复\n/exit\n' });
       expect((await resumed.done).code).toBe(0);
-      expect(JSON.stringify(model.requests[1])).toContain('Interrupt by user');
-      expect(JSON.stringify(model.requests[1])).toContain('interrupted-before-restart');
+      expect(JSON.stringify(model.requests[1])).toContain('运行后重启恢复的工具');
+      expect(JSON.stringify(model.requests[1])).not.toContain('Interrupt by user');
+      expect(JSON.stringify(model.requests[1])).not.toContain('interrupted-before-restart');
     } finally {
       await model.close();
     }

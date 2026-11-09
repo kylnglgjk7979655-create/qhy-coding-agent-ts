@@ -334,7 +334,6 @@ async function runTurn(
 ): Promise<ModelMessage[]> {
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
-  const pendingToolCalls = new Map<string, { toolName: string; input: unknown }>();
   let bashFailed = false;
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
@@ -359,7 +358,6 @@ async function runTurn(
         process.stdout.write(chunk);
       },
       onToolCallStart: async ({ callId, toolName, input }) => {
-        pendingToolCalls.set(callId, { toolName, input });
         if (!smokeTool && roundId) {
           await appendRoundMessages(userHome, conversationId, roundId, [{
             role: 'assistant', content: [{ type: 'tool-call', toolCallId: callId, toolName, input }],
@@ -369,7 +367,6 @@ async function runTurn(
       onStepMessages: async (content) => {
         if (smokeTool || !roundId) return;
         const results = content.filter((part): part is Record<string, unknown> => typeof part === 'object' && part !== null && (part as { type?: string }).type === 'tool-result');
-        for (const result of results) if (typeof result.toolCallId === 'string') pendingToolCalls.delete(result.toolCallId);
         if (results.length > 0) await appendRoundMessages(userHome, conversationId, roundId, [{ role: 'tool', content: results } as unknown as ModelMessage]);
       },
       onBeforeWrite: async (snapshot: WorkspaceFileSnapshot) => {
@@ -417,11 +414,6 @@ async function runTurn(
     const failure = publicError(error);
     const interrupted = failure.code === 'CANCELLED' && failure.message === 'Interrupt by user';
     if (interrupted && !smokeTool && roundId) {
-      const results = [...pendingToolCalls].map(([toolCallId, call]) => ({
-        type: 'tool-result', toolCallId, toolName: call.toolName, input: call.input,
-        output: 'Interrupt by user',
-      }));
-      if (results.length > 0) await appendRoundMessages(userHome, conversationId, roundId, [{ role: 'tool', content: results } as unknown as ModelMessage]);
       await finishSessionRound(userHome, conversationId, roundId, {
         status: 'cancelled', error: { code: 'CANCELLED', message: 'Interrupt by user' },
       }).catch(() => undefined);

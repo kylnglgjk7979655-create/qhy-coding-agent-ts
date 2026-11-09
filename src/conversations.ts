@@ -100,7 +100,7 @@ export function reconstructSessionHistory(session: SessionRecord): { history: Mo
     .filter((round) => !round.recovered
       && round.transcriptStart !== undefined
       && (round.status === 'running'
-        || (round.status === 'cancelled' && round.error?.code === 'CANCELLED' && round.error.message === 'Interrupt by user')))
+        || (round.status === 'cancelled' && round.error?.code === 'CANCELLED')))
     .sort((left, right) => left.transcriptStart! - right.transcriptStart!);
   const history = [...session.effectiveHistory];
   for (const [index, round] of pendingRounds.entries()) {
