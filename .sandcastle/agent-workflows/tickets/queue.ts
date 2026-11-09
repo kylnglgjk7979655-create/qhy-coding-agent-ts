@@ -1,6 +1,5 @@
 import { GitHub, hasLabel } from './github.js';
 import type { Issue } from './github.js';
-import { PLAN_MARKER } from './plan.js';
 
 interface Pull {
   number: number; body: string | null; base: { ref: string }; head?: { ref: string; repo?: { full_name: string } }; draft?: boolean; labels?: { name: string }[];
@@ -9,7 +8,7 @@ export const closesIssue = (body: string, number: number): boolean =>
   new RegExp(`\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+#${number}\\b`, 'iu').test(body);
 export const completed = (issue: Issue): boolean => issue.state === 'closed' && issue.state_reason === 'completed';
 const paused = (issue: Issue): boolean => issue.state !== 'open'
-  || ['agent:blocked', 'agent:to-issues', 'agent:publish-tickets'].some((label) => hasLabel(issue, label));
+  || ['agent:blocked', 'agent:to-issues'].some((label) => hasLabel(issue, label));
 
 export class Queue {
   private readonly pulls: Pull[];
@@ -35,8 +34,9 @@ export class Queue {
 
   /** 只选择，不启动模型；每个父需求最多一个活动子任务。 */
   select(root: Issue): Issue | undefined {
-    if (!this.eligible(root)) return undefined;
     const children = this.github.children(root.number);
+    // 父需求的共享 PR 现在关闭父票；它是交付容器，不阻塞本需求后续子票。
+    if (!this.eligible(root, children.length ? root.number : undefined)) return undefined;
     if (!children.length) return root;
     if (children.some((child) => hasLabel(child, 'agent:in-progress') || this.hasPull(child.number, root.number))) return undefined;
     for (const child of children.sort((a, b) => a.number - b.number)) {
@@ -60,10 +60,7 @@ export class Queue {
     const fresh = this.github.issue(number);
     const children = this.github.children(number);
     const parent = this.github.parent(number);
-    if (['agent:to-issues', 'agent:publish-tickets'].some((label) => hasLabel(fresh, label))
-      || (!children.length && this.github.comments(number).some((comment) => comment.user.login === 'github-actions[bot]' && comment.body.startsWith(PLAN_MARKER)))) {
-      throw new Error('拆票计划尚未完成审批发布，拒绝直接实现整份规格。');
-    }
+    if (hasLabel(fresh, 'agent:to-issues')) throw new Error('拆票尚未完成，拒绝实现整份规格。');
     if (parent !== null && children.length) throw new Error('暂不支持嵌套父 Issue。');
     if (parent !== null) {
       const ancestor = this.github.issue(parent);

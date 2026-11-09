@@ -2,7 +2,7 @@
 
 Review PR #{{PR_NUMBER}} on branch `{{BRANCH}}`.
 
-使用 $code-review skill 审查本 PR，比较基准为 `main`。
+使用 $code-review skill 审查本 PR。向 skill 明确传入固定比较基准 `main`、下方 LINKED ISSUE 的完整需求上下文作为 Spec，以及根目录 `CODING_STANDARDS.md` 作为规范来源。父需求的 Spec 包含父 PRD 和全部子票，不以某一张子票替代整体需求。
 
 PR title: {{PR_TITLE}}
 Linked issue: #{{ISSUE_NUMBER}} {{ISSUE_TITLE}}
@@ -28,7 +28,7 @@ You are an expert code reviewer. Your job is not just to comment. Actively impro
 # REVIEW PROCESS
 
 1. Read the diff carefully.
-2. Verify the PR satisfies the linked issue.
+2. 对照父 PRD 的整体目标、范围和全部子票逐项验收，引用票号指出遗漏、部分实现及越界行为。独立 Issue 按其验收标准审查。
 3. Stress-test edge cases and add tests where useful.
 4. Improve clarity, maintainability, and consistency while preserving behavior.
 5. Respond to unresolved human review threads when useful:
@@ -36,9 +36,9 @@ You are an expert code reviewer. Your job is not just to comment. Actively impro
    - Decline: do not change code, reply with why
    - Defer: no reply, only for stale/context-only comments
 
-Read `GLOSSARY.md`, relevant ADRs, and `.sandcastle/CODING_STANDARDS.md`.
+Read `GLOSSARY.md`, relevant ADRs, and `CODING_STANDARDS.md`.
 
-Before committing, run `pnpm typecheck` and `pnpm test` and ensure both pass.
+Before committing, run `pnpm check` and ensure it passes. Fix failures and rerun before declaring completion.
 
 If you make changes, commit them as a single conventional commit.
 If the code is already clean and there is nothing to answer, make no commit.

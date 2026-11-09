@@ -1,32 +1,33 @@
 # Issue 分类与执行标签
 
-仓库使用默认五种 triage 标签，与上游 skills 及 Sandcastle 官方领域文档保持同名：
+## 分诊标签
 
 | 标签 | 含义 |
 | --- | --- |
 | `needs-triage` | 等待维护者判断 |
 | `needs-info` | 等待报告者补充信息 |
-| `ready-for-agent` | 需求明确，适合 Agent 实现；仅表示准备状态 |
+| `ready-for-agent` | 需求明确，适合 Agent；仅表示准备状态 |
 | `ready-for-human` | 需要人工判断或实现 |
 | `wontfix` | 不处理 |
 
-## GitHub workflow 标签
+## 工作流标签
 
-| 标签 | 作用对象与行为 |
+| 标签 | 作用 |
 | --- | --- |
-| `agent:explore` | 批量调查全部开放的 explore Issue；转交明确任务，关闭重复项 |
-| `agent:to-issues` | 父 Issue：从 GitHub spec 生成待审批的拆票计划评论，不创建子任务 |
-| `agent:publish-tickets` | 父 Issue：人工批准已生成的计划，创建原生子 Issue 和阻塞依赖，不启动实现 |
-| `agent:implement` | 父 Issue：授权逐票执行；独立／子 Issue：依赖满足后启动实现；PR：处理反馈 |
+| `agent:to-issues` | 父 Issue：拆分后自动创建子 Issue 和原生依赖 |
+| `agent:implement` | Issue：开始或恢复实现；PR：处理已有反馈 |
 | `agent:implement-spec` | 父 Issue：对已有子任务按 `implement-spec` 并行实现并交付集成 PR，不拆票 |
-| `agent:queued` | Issue／父 Issue：授权在前置依赖完成、没有冲突的活动任务后启动；直接前置 Issue 以 completed 关闭时检查 |
-| `agent:review` | PR 审查，可修复代码，发布 COMMENT 并标记 Ready |
-| `agent:update-branch` | 同仓库 PR 合并基准分支，处理冲突 |
-| `agent:in-progress` | 该轮任务执行中 |
-| `agent:blocked` | 运行失败、人工暂停，或 Explore 判断存在外部阻塞；队列不会自动重试 |
+| `agent:queued` | Issue／父 Issue：保留实现授权，等待依赖或下一张子票 |
+| `agent:review` | PR：整体审查、允许修复、发布 COMMENT 并标记 Ready |
+| `agent:update-branch` | 同仓库 PR：合并基准分支并处理冲突 |
+| `agent:explore` | 批量调查开放的 explore Issue，识别重复并转交 |
+| `agent:in-progress` | 当前任务执行中 |
+| `agent:blocked` | 运行失败、人工暂停或存在外部阻塞，等待处理 |
 
-`ready-for-agent` 不自动执行。Explore 的 `easy-call` 结论会换成 `agent:implement`，有 `AGENT_PAT` 时立即通过标签事件接续，没有时须人工移除并重新添加该标签；`needs-a-human` 换成 `ready-for-human`，`blocked` 换成 `agent:blocked`。结论值本身不是 GitHub 标签。
+`agent:publish-tickets` 已停用；`agent:to-issues` 直接完成创建，不再审核计划。已有旧计划需要重新添加 `agent:to-issues`；若已有子票，先核对并清理旧关系，避免重复拆分。
 
-拆票、审批发布和依赖队列是参考 course-video-manager 增加的项目适配。父需求保留 `agent:queued` 以便子任务提交到共享草稿 PR 后继续推进；每个父需求最多有一个活动子任务，全部完成后整体审查，由维护者验收父需求。正文中的依赖文字不代替 GitHub 原生阻塞关系。
+父需求子票提交到共享 Draft PR 后自动接续，全部完成后整体审查。PR 合并到 main 后自动关闭父 Issue。暂停父需求可添加 `agent:blocked`；已运行的 Actions 需另行取消，恢复时重新添加 `agent:implement`。
 
-依赖关闭后的转交可使用内置 `GITHUB_TOKEN` 的内部 dispatch 或 `AGENT_PAT` 标签事件；父需求子票接续需要 `AGENT_PAT`；`agent:queued` 是执行授权，不是纯展示标签。暂停父需求时添加 `agent:blocked`，恢复时重新添加 `agent:implement`；正在执行的 Actions 需要另行取消。`source:architecture-review` 仍没有入口。配置和重试见 [GitHub Actions](github-actions.md)。
+Explore 的 verdict 是输出字段，不是标签：easy-call 转交 implement，needs-a-human 转 ready-for-human，blocked 转 agent:blocked；重复 Issue 被评论并关闭。
+
+持久队列、PAT 配置和失败恢复见 [GitHub Actions](github-actions.md)。正文的依赖文字不代替原生依赖，关闭前置必须为 completed。

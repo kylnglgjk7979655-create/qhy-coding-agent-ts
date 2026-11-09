@@ -50,7 +50,6 @@ function harness() {
     ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, TICKET_FIXTURE: stateFile,
     GH_TOKEN: 'github-token', AGENT_PAT: 'dispatch-token', GH_REPO: 'owner/repo', ISSUE_NUMBER: '23',
     OUTPUT_DIR: root, GITHUB_ENV: envFile, GITHUB_OUTPUT: outputFile, SOURCE_FILE: sourceFile, PLAN_FILE: planFile,
-    APPROVED_AT: '2026-11-07T07:00:00Z',
     GIT_CONFIG_GLOBAL: join(root, 'gitconfig'),
   };
   const run = (mode: string, extra: Record<string, string> = {}) => {
@@ -68,32 +67,26 @@ function harness() {
     ok('snapshot');
     const source = JSON.parse(readFileSync(sourceFile, 'utf8')) as { source_hash: string };
     writeFileSync(planFile, JSON.stringify(planFromDraft(draft, 23, source.source_hash)));
-    ok('record'); ok('finish-plan');
   };
-  const approve = () => update((state) => { state.issues[23]!.labels.push('agent:publish-tickets'); });
-  const publish = () => { plan(); approve(); ok('publish'); };
-  return { root, env, read, update, run, ok, plan, approve, publish, sourceFile, planFile };
+  const publish = () => { plan(); ok('publish'); ok('finish-plan'); };
+  return { root, env, read, update, run, ok, plan, publish, sourceFile, planFile };
 }
 
-describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
-  it('只生成待审批评论；未审批、伪造计划或需求变化不能发布', () => {
+describe('GitHub 自动拆票和依赖队列的真实控制脚本', () => {
+  it('自动创建子票前核对来源快照，需求变化时不产生副作用', () => {
     const h = harness(); h.plan();
     expect(Object.keys(h.read().issues)).toEqual(['23']);
-    expect(h.read().comments[23]?.[0]?.body).toContain('待审批的拆票计划');
-    expect(h.run('publish').status).toBe(1);
-    h.approve();
     h.update((state) => { state.issues[23]!.body += ' 新的需求。'; });
     const failed = h.run('publish');
     expect(failed.status).toBe(1); expect(failed.stderr).toContain('变化');
     expect(Object.keys(h.read().issues)).toEqual(['23']);
-    h.update((state) => { state.comments[23]![0]!.user = { login: 'reporter', type: 'User' }; });
-    expect(h.run('publish').stderr).toContain('没有可用的机器人');
   });
 
-  it('拒绝审批后被改写的计划；依赖循环和不存在的前置不能发布', () => {
-    const h = harness(); h.plan(); h.approve();
-    h.update((state) => { state.comments[23]![0]!.updated_at = '2026-11-07T08:00:00Z'; });
-    expect(h.run('publish').stderr).toContain('审批后发生修改');
+  it('输出来源不匹配、依赖循环和不存在的前置不能发布', () => {
+    const h = harness(); h.plan();
+    const plan = JSON.parse(readFileSync(h.planFile, 'utf8')) as { source_hash: string };
+    plan.source_hash = '0'.repeat(64); writeFileSync(h.planFile, JSON.stringify(plan));
+    expect(h.run('publish').stderr).toContain('不匹配');
     const bad = planFromDraft(draft, 23, 'a'.repeat(64));
     bad.tickets[0]!.blocked_by = ['resume'];
     expect(() => parsePlan(bad)).toThrow('前置');
@@ -102,18 +95,21 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(Object.keys(h.read().issues)).toHaveLength(1);
   });
 
-  it('验收正文中的原型 JSON 代码块不会被误读成机器计划', () => {
+  it('无需审批即创建原生子票及依赖，原型 JSON 代码块保持原样', () => {
     const h = harness(); h.ok('snapshot');
     const source = JSON.parse(readFileSync(h.sourceFile, 'utf8')) as { source_hash: string };
     const prototype = structuredClone(draft);
     prototype.slices[0]!.whatToBuild += '\n\n原型确认的状态：\n```json\n{"state":"ready"}\n```';
     writeFileSync(h.planFile, JSON.stringify(planFromDraft(prototype, 23, source.source_hash)));
-    h.ok('record'); h.ok('finish-plan'); h.approve(); h.ok('publish');
+    h.ok('publish'); h.ok('finish-plan');
     expect(h.read().issues[24]!.body).toContain('{"state":"ready"}');
+    expect(h.read().parents).toEqual({ 24: 23, 25: 23 });
+    expect(h.read().blockers[25]).toEqual([24]);
+    expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
   });
 
   it('创建后挂接失败可重试，补齐原生父子关系和依赖而不重复建票', () => {
-    const h = harness(); h.plan(); h.approve();
+    const h = harness(); h.plan();
     h.update((state) => { state.failNext = 'GET issues/23/sub_issues'; });
     // 先在只读预检失败，不产生副作用。
     expect(h.run('publish').status).toBe(1);
@@ -131,7 +127,7 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(state.issues[24]!.labels).toEqual(['ready-for-agent']);
     expect(state.issues[25]!.body).toContain('## Acceptance criteria');
     expect(state.issues[23]!.state).toBe('open');
-    h.approve(); h.ok('publish');
+    h.ok('publish');
     expect(Object.keys(h.read().issues)).toHaveLength(3);
     expect(h.read().blockers[25]).toEqual([24]);
   }, 30_000);
@@ -142,7 +138,7 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
     expect(h.ok('prepare').environment).toMatch(/ISSUE_NUMBER<<[^\n]+\n24\n/u);
     h.update((state) => {
       state.issues[24]!.labels = []; state.issues[24]!.state = 'closed'; state.issues[24]!.state_reason = 'completed';
-      state.pulls = [{ number: 80, body: 'Closes #24', base: { ref: 'main' }, head: { ref: 'agent/parent-23', repo: { full_name: 'owner/repo' } } }];
+      state.pulls = [{ number: 80, body: 'Closes #23', base: { ref: 'main' }, head: { ref: 'agent/parent-23', repo: { full_name: 'owner/repo' } } }];
     });
     h.ok('continue-parent', { ISSUE_NUMBER: '24', PARENT_NUMBER: '23' });
     expect(h.ok('prepare').environment).toMatch(/ISSUE_NUMBER<<[^\n]+\n25\n/u);
@@ -255,7 +251,7 @@ describe('GitHub 拆票、审批和依赖队列的真实控制脚本', () => {
   it('发布未完成的父需求阻止子票抢跑', () => {
     const h = harness(); h.publish();
     h.update((state) => {
-      state.issues[23]!.labels.push('agent:publish-tickets'); state.issues[24]!.labels.push('agent:implement');
+      state.issues[23]!.labels.push('agent:to-issues'); state.issues[24]!.labels.push('agent:implement');
     });
     expect(h.ok('prepare', { ISSUE_NUMBER: '24' }).output).toBe('proceed=false\n');
   }, 30_000);

@@ -4,7 +4,6 @@ const issueRoutes = {
   'agent:implement': ['implement', 'agent-implement.yml'],
   'agent:implement-spec': ['implement-spec', 'agent-implement-spec.yml'],
   'agent:to-issues': ['split', 'agent-to-issues.yml'],
-  'agent:publish-tickets': ['publish-tickets', 'agent-publish-tickets.yml'],
   'agent:explore': ['explore', 'agent-explore.yml'],
 };
 const prRoutes = {
@@ -53,7 +52,6 @@ async function route({ github, context }) {
     ...(kind === 'explore' ? { issue_number: String(number), dry_run: 'false' }
       : isIssue ? {
         issue_number: String(number),
-        ...(kind === 'publish-tickets' ? { approved_at: item.updated_at } : {}),
       } : { pr_number: String(number) }),
     ...(isPullRequest ? { expected_head_sha: item.head.sha } : {}),
   };

@@ -42,6 +42,25 @@ describe('user-level session storage', () => {
       .not.toContain('credential-value');
   });
 
+  it('preserves Explore options when a session is resumed', async () => {
+    const home = await makeUserDirectory();
+    const config = {
+      provider: 'openai' as const,
+      model: 'fixture-model',
+      apiKeyEnv: 'TEST_API_KEY',
+      workspace: '/work/project',
+      timeoutMs: 60_000,
+      maxSteps: 20,
+      explore: { model: 'explore-model', loadRootAgents: true },
+      approval: { mode: 'model' as const, rules: [], timeoutMs: 30_000 },
+    };
+
+    await createSession(home, { id: 'explore-session', workspace: '/work/project', config });
+
+    expect((await loadSession(home, 'explore-session')).config.explore)
+      .toEqual({ model: 'explore-model', loadRootAgents: true });
+  });
+
   it('derives and persists a title from the first user message, while upgrading older records on save', async () => {
     const home = await makeUserDirectory();
     const config = {

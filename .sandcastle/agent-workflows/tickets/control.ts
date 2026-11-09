@@ -1,7 +1,7 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { GitHub, hasLabel } from './github.js';
-import { approvedPlan, parsePlan, renderPlan, sourceHash } from './plan.js';
+import { parsePlan, sourceHash } from './plan.js';
 import { publishTickets } from './publish.js';
 import { Queue } from './queue.js';
 import { fail, required, writeJson } from '../shared/common.js';
@@ -41,24 +41,18 @@ try {
       if (process.env.GITHUB_OUTPUT) output('started', 'true');
       break;
     }
-    case 'record': {
+    case 'publish': {
       const plan = parsePlan(JSON.parse(readFileSync(required('PLAN_FILE'), 'utf8')));
       const snapshot = JSON.parse(readFileSync(required('SOURCE_FILE'), 'utf8')) as { issue: { number: number }; source_hash: string };
-      const issue = github.issue(number());
-      if (plan.parent !== issue.number || snapshot.issue.number !== issue.number || plan.source_hash !== snapshot.source_hash
-        || sourceHash(issue, github.comments(issue.number)) !== snapshot.source_hash) throw new Error('拆票期间需求发生变化或输出来源不匹配，请重新拆票。');
-      if (issue.state !== 'open' || !hasLabel(issue, 'agent:in-progress') || github.children(issue.number).length) throw new Error('来源状态已变化，拒绝保存计划。');
-      github.comment(issue.number, renderPlan(plan));
+      if (plan.parent !== number() || snapshot.issue.number !== number() || plan.source_hash !== snapshot.source_hash) {
+        throw new Error('拆票输出与来源快照不匹配，拒绝创建子任务。');
+      }
+      publishTickets(github, plan);
+      github.removeLabel(github.issue(number()), 'agent:blocked');
       break;
     }
     case 'finish-plan': {
       github.removeLabel(github.issue(number()), 'agent:in-progress');
-      break;
-    }
-    case 'publish': {
-      const plan = approvedPlan(github.comments(number()), required('APPROVED_AT'));
-      if (plan.parent !== number()) throw new Error('计划不属于当前父 Issue。');
-      publishTickets(github, plan);
       break;
     }
     case 'prepare': {
@@ -86,7 +80,7 @@ try {
       }
       const root = github.issue(parent);
       if (root.state !== 'open' || !hasLabel(root, 'agent:queued')
-        || ['agent:blocked', 'agent:to-issues', 'agent:publish-tickets', 'agent:implement'].some((label) => hasLabel(root, label))) break;
+        || ['agent:blocked', 'agent:to-issues', 'agent:implement'].some((label) => hasLabel(root, label))) break;
       if (!github.children(parent).some((issue) => issue.state === 'open')) break;
       if (process.env.AGENT_PAT) {
         new GitHub(github.repo, process.env.AGENT_PAT).addLabels(parent, ['agent:implement']);

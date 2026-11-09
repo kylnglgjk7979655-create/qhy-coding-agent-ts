@@ -6,6 +6,7 @@ export interface ToolExecutionEvent {
   callId: string;
   toolName: string;
   status: 'started' | 'succeeded' | 'failed' | 'rejected';
+  description?: string;
   errorCode?: 'INVALID_TOOL_ARGUMENTS' | 'UNKNOWN_TOOL' | 'TOOL_EXECUTION_ERROR' | 'PERMISSION_DENIED';
 }
 
@@ -49,32 +50,36 @@ export class ToolRegistry {
       description,
       inputSchema,
       execute: async (input, execution) => {
+        const eventDetails = name === 'agent' && typeof input === 'object' && input !== null
+          && 'description' in input && typeof input.description === 'string'
+          ? { description: input.description }
+          : {};
         execution.abortSignal?.throwIfAborted();
         let prepared;
         try {
           prepared = prepare ? await prepare(input) : { input };
         } catch {
           execution.abortSignal?.throwIfAborted();
-          this.report({ callId: execution.toolCallId, toolName: name, status: 'rejected', errorCode: 'INVALID_TOOL_ARGUMENTS' });
+          this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'rejected', errorCode: 'INVALID_TOOL_ARGUMENTS' });
           return { is_error: true as const, error: { code: 'INVALID_TOOL_ARGUMENTS' as const, message: '工具参数无效：操作目标不可用或越出工作区。' } };
         }
         execution.abortSignal?.throwIfAborted();
         await this.options.beforeTool?.({ callId: execution.toolCallId, toolName: name, input });
         execution.abortSignal?.throwIfAborted();
         if (this.options.approve && !await this.options.approve({ callId: execution.toolCallId, toolName: name, input, ...(prepared.details ? { details: prepared.details } : {}) }, execution.abortSignal)) {
-          this.report({ callId: execution.toolCallId, toolName: name, status: 'rejected', errorCode: 'PERMISSION_DENIED' });
+          this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'rejected', errorCode: 'PERMISSION_DENIED' });
           return { is_error: true as const, error: { code: 'PERMISSION_DENIED' as const, message: '本次工具调用未获权限批准。' } };
         }
         execution.abortSignal?.throwIfAborted();
-        this.report({ callId: execution.toolCallId, toolName: name, status: 'started' });
+        this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'started' });
         try {
           const output = await execute(prepared.input, execution);
-          this.report({ callId: execution.toolCallId, toolName: name, status: 'succeeded' });
+          this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'succeeded' });
           return { is_error: false as const, output };
         } catch (error) {
           execution.abortSignal?.throwIfAborted();
           const message = error instanceof Error ? error.message : '工具执行失败。';
-          this.report({ callId: execution.toolCallId, toolName: name, status: 'failed', errorCode: 'TOOL_EXECUTION_ERROR' });
+          this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'failed', errorCode: 'TOOL_EXECUTION_ERROR' });
           return { is_error: true as const, error: { code: 'TOOL_EXECUTION_ERROR' as const, message },
             ...(error instanceof ToolExecutionError ? { output: error.output } : {}) };
         }

@@ -47,6 +47,10 @@ const reviewModelSchema = z.strictObject({
   apiKeyEnv: apiKeyEnvSchema.optional(),
   baseURL: baseURLSchema.optional(),
 });
+const exploreConfigSchema = z.strictObject({
+  model: z.string().trim().min(1).optional(),
+  loadRootAgents: z.boolean().default(false),
+});
 
 export const configSchema = z.strictObject({
   provider: z.literal('openai').default('openai'),
@@ -56,6 +60,7 @@ export const configSchema = z.strictObject({
   workspace: z.string().trim().min(1).default('./demo'),
   timeoutMs: z.number().int().min(1).max(3_600_000).default(60_000),
   maxSteps: z.number().int().min(1).max(100).default(20),
+  explore: exploreConfigSchema.optional(),
   context: contextSchema.optional(),
   mcp: z.strictObject({
     servers: z.array(mcpServerSchema).refine((servers) => new Set(servers.map(({ name }) => name)).size === servers.length, 'MCP 服务名称重复'),
@@ -199,5 +204,6 @@ export function loggableConfig(config: ResolvedConfig): Omit<ModelConfig, 'appro
     workspace: config.workspace,
     timeoutMs: config.timeoutMs,
     maxSteps: config.maxSteps,
+    ...(config.explore === undefined ? {} : { explore: config.explore }),
   };
 }

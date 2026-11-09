@@ -69,6 +69,15 @@ describe('订阅 Agent 持久化队列', () => {
     expect(workflow).toContain('ref: ${{ github.workflow_sha }}');
   });
 
+  it('旧 publish-tickets 标签不再入队或触发工作流', async () => {
+    const h = fixture();
+    await expect(ingress.route({ github: h.github, context: {
+      ...context, eventName: 'issues', payload: { action: 'labeled', label: { name: 'agent:publish-tickets' }, issue: { number: 11 } },
+    } })).resolves.toEqual({ ignored: true });
+    expect(h.github.rest.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(h.comments.size).toBe(0);
+  });
+
   it('spec 标签进入独立工作流并持久化授权', async () => {
     const h = fixture();
     await ingress.route({ github: h.github, context: {
@@ -267,8 +276,7 @@ describe('订阅 Agent 持久化队列', () => {
     expect(coordinator).toContain("cron: '*/5 * * * *'");
     for (const name of [
       'agent-implement.yml', 'agent-implement-pr.yml', 'agent-review.yml',
-      'agent-update-branch.yml', 'agent-explore.yml', 'agent-to-issues.yml', 'agent-publish-tickets.yml',
-      'agent-implement-spec.yml',
+      'agent-update-branch.yml', 'agent-explore.yml', 'agent-to-issues.yml', 'agent-implement-spec.yml',
     ]) {
       const workflow = readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8');
       expect(workflow).toContain('queue_request_id');

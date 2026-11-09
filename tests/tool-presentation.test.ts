@@ -91,6 +91,47 @@ describe('CLI 工具状态、历史与冒烟', () => {
     expect(fixture.requests).toHaveLength(3);
   });
 
+  it('以任务说明展示 Explore 启动和成功状态，并隐藏内部搜索事件', async () => {
+    const fixture = await setup((_request, index) => {
+      if (index === 1) return { calls: [{ id: 'delegate-success', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '定位用户认证入口', prompt: '搜索认证路由并读取定义。' }),
+      } }] };
+      if (index === 2) return { calls: [{ id: 'explore-search', type: 'function', function: {
+        name: 'grep', arguments: JSON.stringify({ pattern: 'auth' }),
+      } }] };
+      if (index === 3) return { content: '认证入口位于 src/auth.ts。' };
+      return { content: '认证入口位于 src/auth.ts。' };
+    });
+
+    const result = await run('查找认证入口\n/exit\n');
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('[Explore] 定位用户认证入口：开始');
+    expect(result.stdout).toContain('[Explore] 定位用户认证入口：成功');
+    expect(result.stdout).not.toContain('[工具] grep');
+    expect(result.stdout).toContain('认证入口位于 src/auth.ts。');
+    expect(fixture.requests).toHaveLength(4);
+  });
+
+  it('Explore 执行失败时展示失败终态并继续输出主 Agent 答复', async () => {
+    const fixture = await setup((_request, index) => {
+      if (index === 1) return { calls: [{ id: 'delegate-failure', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '调查构建入口', prompt: '定位构建脚本。' }),
+      } }] };
+      if (index === 2) return { status: 500, content: 'internal-error-secret' };
+      return { content: 'Explore 暂时不可用，无法确认构建入口。' };
+    });
+
+    const result = await run('定位构建入口\n/exit\n');
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('[Explore] 调查构建入口：开始');
+    expect(result.stdout).toContain('[Explore] 调查构建入口：失败');
+    expect(result.stdout).toContain('Explore 暂时不可用，无法确认构建入口。');
+    expect(result.stdout).not.toContain('internal-error-secret');
+    expect(fixture.requests).toHaveLength(3);
+  });
+
   it('保留旧历史原文，并保存、重载及续聊新的工具结果', async () => {
     const fixture = await setup((_request, index) => index === 1
       ? { calls: [{ id: 'read-new', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'note.txt' }) } }] }

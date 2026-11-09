@@ -6,21 +6,16 @@
 
 ## 项目适配
 
-- 用 `shared/common.ts` 的 `codexAgent()` 替换官方 `claudeAgent()`；沿用现有 ChatGPT 订阅登录、模型配置和会话目录，禁止 API Key 回退。
-- `.github/actions/codex-auth-restore/`、`codex-auth-save/` 及 `.github/scripts/subscription.cjs` 负责恢复、加密回存登录。所有模型流程共用 workflow 级并发组，回存完成后才发布和触发下一轮。回存也在任务失败时尝试执行；不传递明文认证 artifact。
-- 使用仓库锁定的 Node/pnpm、`pnpm build` 和 `pnpm typecheck`；相对导入增加 `.js`，并适配 `exactOptionalPropertyTypes`，兼容本项目 TypeScript 配置。
-- 项目编码规范见 `CODING_STANDARDS.md`。阶段 prompt 和结构化输出沿用上游，不再固定拼接 skills 或运行自定义的双轴审查。
-
-普通实现由 Agent 提交，workflow 推送并创建草稿 PR。项目扩展支持父需求按原生依赖逐票实施，当前子票及父需求正文、评论共同提供上下文。审查、反馈修改、冲突处理和 Explore 沿用“先工作，再恢复会话提取结果”的方式。Explore 的发布 job 校验计划后才写入 GitHub。
+- `shared/common.ts` 的 `codexAgent()` 使用 Codex 订阅，认证由 `.github/actions/codex-auth-restore/`、`codex-auth-save/` 与 `.github/scripts/subscription.cjs` 管理。
+- 标签入口先写入持久队列，队列持有仓库级订阅锁串行分发。登录态回存成功后才推送和发布；失败时也尝试回存。
+- 阶段 prompt 调用仓库固定版本的 `$to-tickets`、`$implement`、`$pr` 和 `$code-review`；项目规范统一在仓库根目录 `CODING_STANDARDS.md`。详细职责见 [skill-execution.md](../docs/agents/skill-execution.md)。
+- 实现会话末尾用 `$pr` 编写文案，workflow 创建或更新 Draft PR；没有独立的 write-pr 模型会话。
+- 父需求按原生依赖逐票实施，共享分支与 PR。整体审查读取父需求及全部子票；合并 PR 后关闭父 Issue。
 
 ## 拆票与依赖扩展
 
-参考 [`mattpocock/course-video-manager@1558f6f`](https://github.com/mattpocock/course-video-manager/tree/1558f6fe107c9aba7d51d251d3b89c7c17c04404) 的拆票 prompt 和标签入口，增加 `agent:to-issues`、`agent:publish-tickets`、`agent:queued`。新增脚本位于 `agent-workflows/tickets/`；prompt 使用英文，通过 `gh issue view` 读取 GitHub PRD，输出与参考仓库一致的 slices 字段，并增加稳定 key 与 blockedBy。
+参考 [`mattpocock/course-video-manager@1558f6f`](https://github.com/mattpocock/course-video-manager/tree/1558f6fe107c9aba7d51d251d3b89c7c17c04404)，`agent:to-issues` 直接创建原生子 Issue，并保留本项目的稳定 key、blockedBy、来源指纹与幂等恢复。已取消独立 publish-tickets 审批入口；创建子票后仍由维护者给父 Issue 加 `agent:implement` 开始实现。
 
-与参考仓库的直接创建、同分支累积总 PR 不同，本项目先发布计划评论等待人工批准，确定性发布原生子 Issue 与依赖，每票独立 PR，合并后推进。计划来源指纹、拓扑校验及发布幂等由脚本处理；订阅认证仍先回存再发布。研究与固定源码链接见[调查记录](../docs/notes/course-video-manager-ticket-workflows.md)。
+有 PAT 时通过标签转交；没有时由内置 Token 写入持久队列并 dispatch。队列请求保存于来源 Issue/PR 的状态评论，立即调度和五分钟定时扫描均可恢复等待请求。
 
-依赖关闭后的队列转交、实现后检查和 PR 审查可通过内置 `GITHUB_TOKEN` 的 `workflow_dispatch` 自动接续；父需求子票接续需要 `AGENT_PAT`。配置 PAT 时沿用标签事件，避免同时 dispatch。内部实现入口复查执行标签，审查入口额外核验开放状态和同仓库 PR；认证恢复与回存仍使用现有的 Secret 配置。
-
-旧的统一任务协议、同分支 PRD 累积实现、定时架构提案没有恢复。历史 Issue 和标签不自动删除。
-
-配置和入口见 [GitHub Actions](../docs/agents/github-actions.md)。更新上游时对照现有适配和本节扩展迁移。
+定时架构提案未启用。配置、迁移与恢复见 [GitHub Actions](../docs/agents/github-actions.md)。旧调查结论保留在 [notes](../docs/notes/course-video-manager-ticket-workflows.md)，不作为当前操作步骤。

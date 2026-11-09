@@ -4,7 +4,7 @@
 
 ## 首次配置
 
-将迁移后的配置合入默认分支 `main`，标签事件才会使用新 workflow。已有 PR 先更新到包含新脚本的版本，再使用 PR 标签入口。
+将迁移后的配置合入默认分支 `main`，标签事件才会使用新 workflow。已有 PR 或父需求共享分支，先在 PR 添加 `agent:update-branch` 同步到包含新脚本的 main，再继续实现或审查；运行阶段脚本来自所检出的任务分支。
 
 ### 订阅认证
 
@@ -36,89 +36,66 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 
 ## 日常入口
 
-| workflow | 触发 | 行为 |
-| --- | --- | --- |
-| Agent Explore | Issue 添加 `agent:explore`；或 Actions 手动运行 | 先进入持久队列，再一次调查所有开放的 explore Issue，识别重复、给出结论，独立 apply job 校验后发布 |
-| Agent To Issues | 父 Issue 添加 `agent:to-issues` | 从 GitHub 读取 spec 和评论，结合代码生成待审批计划评论 |
-| Agent Publish Tickets | 父 Issue 添加 `agent:publish-tickets` | 批准计划并创建原生子任务和依赖，不启动实现 |
-| Agent Implement | Issue／父 Issue 添加 `agent:implement` | 校验依赖；父需求选择就绪子票；父需求复用共享分支和草稿 PR，全部子票完成后请求整体审查；独立 Issue 单独创建 PR |
-| Agent Implement Spec | 父 Issue 添加 `agent:implement-spec` | 使用已有原生子 Issue 和依赖，在单次 Codex 会话内以子代理并行实现、整体审查并交付 PR；不拆票 |
-| Agent Promote Queued | Issue 以 completed 关闭 | 检查直接依赖该 Issue 的排队任务并转交就绪任务，不运行模型 |
-| Agent Review | PR 添加 `agent:review` | 按关联 Issue 和 diff 审查；允许修复并提交，发布评论和回复，标记 Ready |
-| Agent Implement PR | PR 留下反馈后添加 `agent:implement` | 修改代码或回复反馈；若既无提交也无评论则失败 |
-| Agent Update Branch | 同仓库 PR 添加 `agent:update-branch` | 合并基准分支，发生冲突时才调用 Codex；推送并评论 |
+所有标签由 `Agent Queue Ingress` 写入持久队列，`Agent Queue` 按入队时间分发；用户使用标签，任务 workflow 的 dispatch 是带 queue_request_id 的内部入口。
 
-标签入口统一由 `Agent Queue Ingress` 保存请求，再由 `Agent Queue` 按入队时间串行分发；模型任务运行期间，队列协调器持有仓库级订阅锁。Explore 的手动入口默认 `dry_run=true`，请求同样先进入队列，只展示计划；取消勾选才实际发布。添加 `agent:explore` 会直接应用结果：`easy-call` 转 `agent:implement`，`needs-a-human` 转 `ready-for-human`，`blocked` 转 `agent:blocked`；重复 Issue 被评论并关闭。这三个 verdict 是输出字段，不是 GitHub 标签。没有 `AGENT_PAT` 时，Explore 转交的实现任务也会写入持久队列。
+| 入口 | 行为 |
+| --- | --- |
+| 父 Issue：`agent:to-issues` | 调用 `$to-tickets`，校验需求后自动创建子 Issue 和原生依赖 |
+| Issue／父 Issue：`agent:implement` | 调用 `$implement`；完成后同会话调用 `$pr`，workflow 推送并创建／更新 Draft PR |
+| 父 Issue：`agent:implement-spec` | 使用已有原生子 Issue 和依赖，在单次 Codex 会话内并行委派实现、整体审查并交付 PR；不拆票 |
+| PR：`agent:review` | 调用 `$code-review`，读取父 PRD 和全部子票，发布 COMMENT 并标记 Ready |
+| PR：评论后加 `agent:implement` | 处理反馈，需要改代码时调用 `$implement` |
+| PR：`agent:update-branch` | 合并最新基准；有冲突时调用 Agent |
+| Issue：`agent:explore` | 批量调查全部开放的 explore Issue，识别重复、发布结论和转交 |
+| Issue 以 completed 关闭 | Promote Queued 检查直接依赖它的排队任务，不运行模型 |
 
-`ready-for-agent` 仅表示准备完成，不触发执行。拆票审批与依赖队列是参考 course-video-manager 的项目扩展，详细差异见[调查记录](../notes/course-video-manager-ticket-workflows.md)。定时架构审查仍未启用；历史 Issue 和子 Issue 不自动删除。
+`ready-for-agent` 只表示准备完成。Explore 的手动入口默认 dry-run；标签入口会实际应用结果。定时架构审查未启用。
 
-## 从 spec 到按依赖实现
+## 从 Spec 到交付
 
-1. 将 spec 上传到一个 GitHub 父 Issue 正文，补充要求写在评论。拆票 prompt 直接执行 `gh issue view <编号> --comments`；不依赖本地 spec 副本。
-2. 添加 `agent:to-issues`。预检通过后移除 `agent:to-issues` 并添加 `agent:in-progress`，只读 Agent 调查代码并输出 slices；来源快照在 Agent 运行前保存，认证回存成功后，由独立 job 校验并发布完整计划评论。发布或失败后清除 `agent:in-progress`；此时没有子任务，也不执行实现。
-3. 在父 Issue 评论中检查每票行为、验收标准和阻塞关系。需要修改时留言，再重新添加 `agent:to-issues`。认可后添加 `agent:publish-tickets`：它批准贴标时已存在的最新有效机器人计划。
-4. 发布脚本创建真正的 GitHub 子 Issue，添加 `ready-for-agent`，设置原生父子及 blocked-by 关系，返回带真实票号的评论。发布阶段不调用模型，也不启动实现。
-5. 给父 Issue 添加 `agent:implement`。父需求保留 `agent:queued`，每次选择一个依赖已完成的开放子票。第一张子票从 main 创建父需求共享分支和草稿 PR；后续子票在同一分支继续并更新同一个 PR。提交并更新 PR 后关闭该子票为 completed，全部子票完成后对共享 PR 请求整体审查。
-6. 子票提交至共享 PR 并关闭后，使用 `AGENT_PAT` 给父 Issue 重新添加 `agent:implement`；下一轮检查依赖后选择就绪票，无需等待 PR 合并；原生依赖而不是标题编号或正文文字决定能否执行。每个父需求最多一个活动子任务。全部子票完成后，移除父需求的排队标签并评论，由维护者验收父需求，脚本不自动关闭它。
+1. 将 Spec 放在 GitHub 父 Issue 正文，补充要求写在评论。
+2. 添加 `agent:to-issues`。预检后移除触发标签，父 Issue 标记 in-progress；只读 Agent 输出 slices，认证回存成功后，由独立发布 job 校验来源快照，自动创建真实子 Issue、ready-for-agent 标签和原生父子／阻塞关系。完成后清除 in-progress。没有人工拆票审批。
+3. 检查子票后，给父 Issue 添加 `agent:implement` 开始实现；拆票本身不会写代码。父需求保留 agent:queued，每次选择一个依赖已完成的开放子票，共用 `agent/parent-父编号` 分支和一个 Draft PR。父内、父间均由订阅队列串行调度。
+4. Agent 使用 `$implement` 写代码、运行 `pnpm check` 并提交；同一会话调用 `$pr` 编写 Summary、Evidence、Merge Danger。文案必须区分已交付与待实现内容；只报告真实验证证据，人工 QA 不冒充通过。
+5. workflow 验证 PR 元数据、保存刷新登录态、复查依赖后推送，创建或更新 PR。共享 PR 的正文包含 `Closes #父编号`；独立 Issue 的 PR 关闭自身。旧共享分支先更新到包含新脚本的 main，下一轮实现才会更新正文。若旧 PR 已完成所有实现，合并前需确认正文已含父票关闭指令。
+6. 子票提交到共享 PR 后以 completed 关闭，然后自动接续下一票。有 PAT 时重新贴父票 implement；未配置时直接记录持久队列请求。同父共享 PR 不阻塞后续票，其他开放实现 PR 仍可能阻塞依赖。
+7. 全部子票 completed 后移除父需求 queued，请求整体 CR。审查上下文通过原生父子关系显式读取父 PRD、全部子票及评论；旧 PR 首条 Closes 指向子票时同样会定位父需求。
+8. Review 发布 COMMENT 并标记 PR Ready；Check 独立执行 `pnpm check` 和 `pnpm demo:test`。维护者决定合并，合入 main 后 GitHub 自动关闭父 Issue，无需再单独验收关闭父票。共享 PR 不自动合并。
 
-独立 Issue 或单个子 Issue 也可以在前置完成前添加 `agent:queued` 预约执行，或直接添加 `agent:implement`；直接执行仍检查本票、父需求的原生依赖和兄弟活动任务。前置票必须以 `completed` 关闭；同父需求的共享 PR 可以保持开放，其他开放实现 PR 仍会阻塞；`not_planned` 不算完成。明确以 completed 关闭人工交付票同样可解锁依赖，仅创建 PR、审查完成或提交代码不会解锁。
+## 使用 implement-spec
 
-### 重新规划、失败与暂停
+父 Issue 正文和评论提供 spec；先准备真实的子 Issue 和原生阻塞关系，再添加 `agent:implement-spec`。父票和子票不能同时带有 `agent:implement`、`agent:queued`、`agent:in-progress` 或 `agent:blocked`。父票及子票的外部前置必须以 completed 关闭，子任务须全部开放，依赖不得成环。
 
-- 规格正文、标题或人工评论变化会使旧计划失效，必须重新生成再批准。审批后改写的计划也不能发布；人工仿造的计划评论不被接受。只支持一层父子关系，已有其他子任务的父需求不能混入新计划。
-- 发布中途失败时，修复原因后重新添加 `agent:publish-tickets`。稳定发布标记能找回已创建但尚未挂接的票，补齐挂接和依赖，避免重复创建。父需求正文不改写、不关闭。
-- 实现失败标记当前票 `agent:blocked`，不会自动重试。处理原因后给该票重新添加 `agent:implement`；父需求中其他满足依赖的任务仍可推进。共享 PR 已存在时重试会继续使用原分支和 PR。
-- 暂停父需求时添加 `agent:blocked`；暂停独立任务可移除 `agent:queued`。已开始的 Actions 另行取消，恢复时重新添加 `agent:implement`。子票执行后、推送前还会复查票状态和依赖。
-- 持久队列请求保存在来源 Issue/PR 的状态评论中，记录请求类型、等待/执行/终态和关联 Actions 运行，不包含认证信息。重复投递按请求 ID 合并；队列每五分钟扫描一次，也会在新请求到达时立即启动，用于恢复调度中断。
-- 队列分发前再次核验来源开放状态、授权标签和 PR 分支 SHA；具体任务仍执行原有 Issue 依赖与发布前检查。撤销标签、关闭来源或更新 PR 分支会取消旧请求，修正后重新添加标签即可生成新请求。
-- 普通任务失败后队列继续处理其他请求。订阅恢复或回存步骤失败时队列暂停；更新 `CODEX_AUTH_JSON` 或 `CODEX_AUTH_STORE_PAT` 后，调度器检测到 Secret 指纹变化并恢复等待请求。调度中断若无法确认子 workflow 状态，不会自动重放；请求会标记失败并说明查看 Actions 与重新授权的方式。
-- 已排队依赖任务仍只在直接前置 Issue 以 completed 关闭时变为就绪；若此前置的实现 PR 尚未合并，或排队发生在关闭之后，需要在条件满足后人工重新添加 `agent:implement`。
+该标签授权单次 Codex 会话按仓库内 `implement-spec` 启动并行子代理和独立 worktree，合并到 `agent/spec-父票编号` 集成分支。首项合并后创建 Draft PR；整体审查和检查完成后标记 Ready。PR 包含父票和子票的关闭引用，合并时由 GitHub 关闭。它作为一个队列任务运行；队列仍串行持有仓库级订阅锁。
 
-共享 PR 不会自动合并。
+运行失败或取消后，查看运行日志和已有分支、PR并手工核查进度。为避免重放已有工作，存在同名远程分支时流程拒绝重新启动；目前不自动恢复部分完成的运行。移除标签可撤销等待中的任务；运行中的任务须在 Actions 中取消。
 
-### 使用 implement-spec
+## 失败、暂停与恢复
 
-父 Issue 正文和评论提供 spec，先准备真实的子 Issue 和原生阻塞关系，再添加 `agent:implement-spec`。执行时不能同时给父票或子票添加 `agent:implement`、`agent:queued`、`agent:in-progress` 或 `agent:blocked`。父票和子票的外部前置必须已以 completed 关闭；子任务须全部开放，依赖不得成环。
+- 旧 `agent:publish-tickets` 标签和独立工作流已停用。尚未创建子票的旧计划，重新添加 agent:to-issues；已有子票时先核对并清理旧关系，避免重复拆分。
+- 拆票时需求正文、标题或人工评论变化，来源校验会拒绝创建。需要基于新需求重新拆票。
+- 创建子票中途失败时，查看失败运行并重新运行失败的发布 job：它复用该运行的来源和计划 artifact，稳定标记能找回已创建但未挂接的票，补齐依赖而不重复创建。若需换一份计划，先处理已有子票。失败时标记父票 blocked；成功恢复后清除。
+- 实现失败不会自动重试。处理原因后重新给当前票加 agent:implement，继续原分支和共享 PR。队列继续处理其他普通请求；CI 测试失败也不会自动唤醒修复 Agent，需在 PR 评论说明问题并重新加 agent:implement。
+- 暂停父需求可加 agent:blocked；已运行的 Actions 需另外取消，恢复时重新添加 agent:implement。推送前会重新检查票状态及依赖。
+- 依赖以前置 Issue 以 completed 关闭为准；not_planned 不算完成。依赖推进仅检查关闭票的直接排队依赖；若排队晚于关闭、或外部前置 PR 当时仍开放，条件满足后需重新添加 implement。
+- 持久队列请求在来源 Issue/PR 的机器人评论中记录 waiting、running、completed、failed、cancelled、paused 及关联运行；不含认证信息。请求到达即调度，每五分钟扫描等待请求。定时扫描不是失败自动重试，也不是重新扫描所有依赖标签。
+- 分发前重新核验来源开放状态、执行标签和 PR SHA。撤销标签、关闭来源或更新 PR 分支会取消旧请求；需要继续时重新加标签。
+- 调度中断后先查询关联运行；无法确认时标记失败供人工核查，不盲目重放。认证恢复或回存失败会暂停队列，修复认证 Secret 后根据指纹变化恢复等待请求。
 
-该标签授权单次 Codex 会话按仓库内 `implement-spec` 启动并行子代理和独立 worktree，合并到 `agent/spec-父票编号` 集成分支。首项合并后创建草稿 PR，完成整体审查及检查后标记 Ready。PR 包含父票和子票的关闭引用，在合并时由 GitHub 关闭。运行中会推送集成分支和创建草稿 PR；认证回存及最终检查完成后才标记 Ready。
+## 订阅与检查职责
 
-如果运行失败或取消，请查看运行日志和已有分支、PR，手工核查进度。为避免重放已有工作，存在同名远程分支时本流程拒绝重新启动；该流程目前不自动恢复部分完成的运行。移除标签可以撤销等待中的任务；运行中的任务须在 Actions 中取消。
+队列协调器持有 `codex-subscription-仓库名` 的 workflow 级锁，等待子工作流完成后才分发下一项。锁覆盖认证恢复、模型运行、刷新回存和发布。
 
-日常仍使用标签。各任务 workflow 的 `workflow_dispatch` 是队列 worker 的内部执行入口，需要有效的 `queue_request_id`；用户从标签入口提交任务。失败后查看队列请求评论中的 Actions 链接，解决原因，再重新添加对应标签。分支有冲突时先使用 `agent:update-branch`。
+`codex-auth-restore` 恢复专用登录、核验 Secret 版本并注册日志遮罩；`codex-auth-save` 在 Agent 返回后（包括失败）检查登录文件，只有内容变化时才加密回存 Secret，随后清理临时登录。回存成功后才发布，不经 artifact 或队列评论传递明文认证。队列新任务在运行时读取最新 Secret。
 
-## 执行与订阅维护
+项目规范的唯一入口是根目录 [CODING_STANDARDS.md](../../CODING_STANDARDS.md)，AGENTS.md 和阶段 prompt 均引用它。skill 调用与交付边界见 [skill-execution.md](skill-execution.md)。普通实现不要求最终回复为 JSON；PR 文案通过仓库外的元数据文件交付。审查、反馈修改、冲突处理、Explore 沿用工作后同会话提取，格式失败只修复输出。
 
-每条核心流程保留官方独立 job：标签和上下文准备 → 检出与构建 → Agent → 推送、PR、评论。Agent 使用 `noSandbox()` 在临时 Runner 当前分支执行并提交。运行 job 具有官方所声明的 GitHub 权限；仓库维护者需信任任务和所检出的代码。
+## 标签与本地调试
 
-普通实现使用普通 `run()`，不同时要求 JSON。审查、反馈修改、冲突处理及 Explore 先执行工作，再恢复同一会话提取结构化结果；格式修复按官方次数重试，不重做整个任务。拆票 prompt 与参考仓库对齐，直接输出 slices，由同会话格式修复处理无效输出，来源指纹由包装脚本维护。prompt 要求提交前 typecheck 和相关聚焦测试；`Check` 独立执行 `pnpm check`、`pnpm demo:test`，普通实施脚本本身只检查产生提交。审查不拆成 Standards/Spec 两个固定会话，也不固定加载项目 skills。
-
-[OpenAI 官方 CI/CD 认证说明](https://learn.chatgpt.com/docs/auth/ci-cd-auth) 要求让 Codex 正常刷新登录文件、保存更新结果，并避免并行刷新同一份登录。本项目仅为此保留以下适配：
-
-1. workflow 级 `codex-subscription-仓库名` 并发组覆盖认证、运行、回存和发布。
-2. `codex-auth-restore` 验证凭据版本、恢复订阅文件并注册日志遮罩；排队后 Secret 已更新的运行拒绝使用旧快照。
-3. `codex-auth-save` 在 Agent 返回后（包括失败）加密刷新文件，比较版本；仅在登录文件内容变化时回存 Secret，始终清理临时登录。内容未变化时不重写 Secret，避免仅因 `updated_at` 改变就让排队任务被误判为旧快照。成功路径必须完成此检查及必要的回存，才推送或触发下一轮。
-
-队列在上一项完成并回存后才 dispatch 下一项，因此新任务在执行时读取最新 `CODEX_AUTH_JSON`。认证恢复仍会比较 workflow 创建时间与 Secret 版本；若 Secret 在任务 run 创建后、恢复前被外部改写，任务会在调用 Codex 前失败，核对回存日志并重新添加授权标签即可安全重试。
-
-认证 Secret 写入 Token 仅用于恢复和回存步骤；不通过队列评论或 artifact 传递明文认证。队列协调器串行等待每个子 workflow 完成，锁覆盖认证恢复、模型运行、认证回存及发布。取消或超时后，定时调度会先查询关联运行；无法确认的请求进入失败状态供人工核查，不会盲目重放模型或发布动作。回存失败会暂停队列；确认并修复认证后重新添加对应授权标签继续。
-
-## 标签准备和本地调试
-
-保留既有五种 triage 标签和执行标签，完整列表见 [triage-labels.md](triage-labels.md)。新仓库需先在 GitHub Labels 创建这些标签；本仓库已有核心标签，扩展标签可用以下命令准备：
+标签含义见 [triage-labels.md](triage-labels.md)。本地调试时准备独立 checkout、工作分支及可读仓库的 gh 环境，例如：
 
 ```bash
-gh label create 'agent:explore' --color 5319E7 --description '批量调查 Issue，识别重复并转交'
-gh label create 'agent:to-issues' --color 5319E7 --description '父 Issue：生成待审批的拆票计划' --force
-gh label create 'agent:publish-tickets' --color 0E8A16 --description '父 Issue：批准计划，创建子任务和原生依赖' --force
-gh label create 'agent:queued' --color FEF2C0 --description 'Issue／父 Issue：等待前置依赖完成后自动启动' --force
-gh label create 'agent:implement-spec' --color 5319E7 --description '父 Issue：并行实现已有子任务' --force
-gh label create 'agent:in-progress' --color FBCA04 --description 'Agent 当前轮任务执行中' --force
+ISSUE_NUMBER=42 ISSUE_TITLE='修复空输入' BRANCH='agent/issue-42' GH_REPO='owner/repo' pnpm agent:implement
 ```
 
-本地调试使用官方各阶段所需的环境变量，例如在独立 Git 副本、已创建工作分支且 `gh` 可读该仓库时：
-
-```bash
-ISSUE_NUMBER=42 ISSUE_TITLE='修复空输入' BRANCH='agent/issue-42-fix' GH_REPO='owner/repo' pnpm agent:implement
-```
-
-本地命令会修改代码并提交，推送和 PR 操作由 GitHub workflow 负责。旧的 `ISSUE_CONTEXT_PATH`、`agent:task` 和 prompt dry-run 入口已移除。来源及全部适配项见 [.sandcastle/README.md](../../.sandcastle/README.md)。
+该命令会提交代码，并要求 Agent 使用 `$pr` 写出 PR 文案；推送及 GitHub 发布由工作流负责。来源与适配见 [.sandcastle/README.md](../../.sandcastle/README.md)。

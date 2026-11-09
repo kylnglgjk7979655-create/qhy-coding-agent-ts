@@ -35,7 +35,8 @@ it('跨进程复用已保存摘要，保留摘要覆盖的完整 transcript 和�
   await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
     model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL,
     workspace: '.', timeoutMs: 3000, maxSteps: 10,
-    context: { capacityTokens: 6000, answerReserveTokens: 1000, triggerRatio: 0.8, targetRatio: 0.75, keepRecentTurns: 1 },
+    // 工具定义进入上下文预算后，留出空间让本例仍在第 4 轮触发一次摘要。
+    context: { capacityTokens: 7000, answerReserveTokens: 1000, triggerRatio: 0.8, targetRatio: 0.75, keepRecentTurns: 1 },
   }));
 
   let output = '';

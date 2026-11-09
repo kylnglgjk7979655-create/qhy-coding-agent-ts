@@ -16,7 +16,7 @@ Read the project's domain and architecture docs before changing code:
 
 - `GLOSSARY.md`
 - `docs/adr/` if relevant
-- `.sandcastle/CODING_STANDARDS.md`
+- `CODING_STANDARDS.md`
 
 Explore the repo and relevant tests before editing.
 
@@ -31,7 +31,7 @@ Where a test seam already exists, or a new one is being proposed, do red-green-r
 
 Do not improvise new test seams, such as extracting out a function so that it can be tested in isolation. This creates spaghetti tests.
 
-Before committing, run `pnpm typecheck` and `pnpm test` and ensure both pass.
+Before committing, run `pnpm check` and ensure it passes. Fix failures and rerun before declaring completion.
 
 # COMMIT
 
@@ -42,4 +42,20 @@ Do not close the issue.
 Do not edit labels.
 Do not create or edit PRs.
 
-When complete, output `<promise>COMPLETE</promise>`.
+# PR 文案
+
+代码实现、完整检查和提交完成后，在当前会话调用仓库的 $pr skill；读取 `.agents/skills/pr/SKILL.md`，按其中模板撰写中文标题和正文。
+
+若有父 PRD，标题和总结围绕整个父需求，并通过 `gh api repos/$GH_REPO/issues/{{PR_ISSUE_NUMBER}}/sub_issues` 核对全部子票。清楚区分本轮已实现、之前已完成与仍待实现的内容；草稿 PR 不代表所有子任务已完成。
+
+Evidence 引用本会话实际执行的命令及结果；未获得修改前的运行证据时如实注明，不能把未运行、失败或未完成的检查写成通过。保留人工 QA 的待验证状态。Merge Danger 依 skill 说明回滚难度和影响范围。
+
+把结果写入 `{{PR_METADATA_PATH}}`（位于仓库之外），JSON 格式为：
+
+```json
+{"prTitle":"fix: 简洁的改动标题","prDescription":"按 pr skill 模板生成的完整 Markdown 正文"}
+```
+
+标题为单行，最多 70 字符。自动关闭 Issue 的指令由包装脚本绑定 #{{PR_ISSUE_NUMBER}}；文案中只使用普通票号链接。文案文件由 workflow 读取以创建或更新共享 Draft PR。
+
+确认文件已写入后，输出 `<promise>COMPLETE</promise>`。
