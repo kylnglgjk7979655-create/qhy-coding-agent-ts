@@ -34,7 +34,7 @@ For each actionable comment or unresolved thread:
 - Decline clearly when the requested change is wrong or out of scope.
 - Ignore stale/context-only comments.
 
-Before committing, run `pnpm typecheck` and `pnpm test` and ensure both pass.
+Before committing, run `pnpm check` and ensure it passes. Fix failures and rerun before declaring completion.
 
 If you change code, commit with a conventional commit message.
 

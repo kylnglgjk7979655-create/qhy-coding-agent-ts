@@ -57,8 +57,12 @@ it('真实 Sandcastle 用订阅 Codex 接口完成提交、审查和同会话提
 const args = process.argv.slice(2);
 if (args[0] === 'issue') console.log('Issue #1: implement fixture');
 else if (args[0] === 'pr') console.log(JSON.stringify({title:'Fixture PR',body:'Closes #1',comments:[]}));
+else if (args[1] === 'graphql' && args.some(arg => arg.includes('parent{number}'))) console.log(JSON.stringify({data:{repository:{issue:{parent:null}}}}));
 else if (args[1] === 'graphql') console.log(JSON.stringify({data:{repository:{pullRequest:{reviewThreads:{nodes:[{id:'thread',isResolved:false,comments:{nodes:[{id:'known-comment',path:'a.txt',line:2,body:'Please check',author:{login:'human'}}]}}]}}}}}));
-else if (args[0] === 'api') console.log('[]');
+else if (args[0] === 'api') {
+  if (args.includes('repos/owner/repo/issues/1')) console.log(JSON.stringify({id:1,number:1,title:'Fixture',body:'完成 fixture',state:'open',state_reason:null,labels:[],user:{login:'human'}}));
+  else console.log(args.includes('--paginate') ? '[[]]' : '[]');
+}
 else throw new Error('Unexpected gh command');
 `, { mode: 0o755 });
     await writeFile(join(bin, 'codex'), `#!/usr/bin/env node
@@ -82,6 +86,7 @@ if (phase === 'implement') {
   fs.appendFileSync('a.txt', 'implemented\\n');
   cp.execFileSync('git', ['add','a.txt']);
   cp.execFileSync('git', ['commit','-m','fix: implement fixture']);
+  fs.writeFileSync(path.join(process.env.OUTPUT_DIR,'pr-metadata.json'),JSON.stringify({prTitle:'fix: fixture',prDescription:'## Summary\\n\\n修复 fixture。\\n\\n## Evidence\\n\\nBefore: 未记录。After: fixture 验证。\\n\\n## Merge Danger\\n\\nDoor: two-way; Blast Radius: fixture'}));
 } else if (phase === 'extract') {
   const result = prior.some(e => e.phase === 'extract') ? {
     summary:'已审查并验证。',
@@ -106,6 +111,7 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,cached_i
     ], { cwd: work, env, timeout: 30_000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     run('implement');
     expect(git('log', '-1', '--format=%s')).toBe('fix: implement fixture');
+    expect(await readFile(join(output, 'pr_description.txt'), 'utf8')).toContain('Closes #1');
     run('review');
     const events = (await readFile(calls, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as {
       phase: string; args: string[]; home: string; apiKey: string; openaiKey: string;

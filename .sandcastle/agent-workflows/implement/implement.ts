@@ -1,7 +1,9 @@
+import { rmSync } from "node:fs";
+import { publishPrMetadata } from "../shared/pr-metadata.js";
 import * as path from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { noSandbox } from "@ai-hero/sandcastle/sandboxes/no-sandbox";
-import { codexAgent, fail, gh, required, sh } from "../shared/common.js";
+import { codexAgent, fail, gh, outputDir, required, sh } from "../shared/common.js";
 
 const ISSUE_NUMBER = required("ISSUE_NUMBER");
 const ISSUE_TITLE = required("ISSUE_TITLE");
@@ -15,6 +17,8 @@ try {
     issueContext += `\n\n# PARENT ISSUE #${parent} (context and constraints; implement only the current child ticket)\n\n${gh(['issue', 'view', parent, '--comments'])}`;
   }
 
+  const prMetadataPath = path.join(outputDir(), "pr-metadata.json");
+  rmSync(prMetadataPath, { force: true });
   const result = await sandcastle.run({
     name: `implement-#${ISSUE_NUMBER}`,
     agent: codexAgent(),
@@ -26,6 +30,8 @@ try {
       ISSUE_TITLE,
       BRANCH,
       ISSUE_CONTEXT: issueContext,
+      PR_METADATA_PATH: prMetadataPath,
+      PR_ISSUE_NUMBER: parent || ISSUE_NUMBER,
     },
   });
 
@@ -33,6 +39,8 @@ try {
   if (!Number.isFinite(commitsAhead) || commitsAhead === 0) {
     fail("Agent finished but no commits were made on the branch.");
   }
+
+  publishPrMetadata(prMetadataPath, Number(parent || ISSUE_NUMBER));
 
   console.log(`Implementation produced ${commitsAhead} commit(s).`);
   console.log(`Commits this run: ${result.commits.length}.`);

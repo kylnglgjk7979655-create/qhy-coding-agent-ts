@@ -3,8 +3,7 @@
 使用 $to-tickets skill 拆分下述 PRD。
 
 You are breaking a PRD into a flat list of native GitHub sub-issues. You do
-**not** create the issues yourself. You emit a structured plan for human
-approval; after approval, the wrapping script creates and attaches the
+**not** create the issues yourself. You emit a structured plan; after source validation, the wrapping script creates and attaches the
 sub-issues and their blocking dependencies deterministically.
 
 - **PRD:** #{{PRD_NUMBER}} — {{PRD_TITLE}}
@@ -96,6 +95,5 @@ Field rules:
 
 Do NOT include a `Closes` directive in any ticket body. Do not create or
 modify issues, labels, dependencies, or PRs. Do not commit or push code.
-The workflow posts this plan for review; a human adds
-`agent:publish-tickets` to approve publication, then adds
-`agent:implement` to the parent to start implementation.
+The workflow automatically creates the sub-issues and native dependencies.
+Implementation starts only when a human adds `agent:implement` to the parent.

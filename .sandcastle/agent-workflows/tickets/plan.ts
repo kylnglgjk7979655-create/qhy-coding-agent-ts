@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Comment, Issue } from './github.js';
 
-export const PLAN_MARKER = '<!-- agent-ticket-plan:v1 -->';
 const ticketSchema = z.object({
   key: z.string().regex(/^[a-z][a-z0-9-]{0,39}$/u),
   title: z.string().trim().min(1).max(200),
@@ -49,36 +48,6 @@ export function parsePlan(value: unknown): Plan {
     seen.add(ticket.key);
   }
   return plan;
-}
-
-export function renderPlan(plan: Plan): string {
-  const body = [PLAN_MARKER, '## 待审批的拆票计划', '',
-    '请检查粒度、验收标准及阻塞关系。确认后添加 `agent:publish-tickets`；需要修改时留言并重新添加 `agent:to-issues`。',
-    '发布只创建子 Issue 和依赖；发布后给父 Issue 添加 `agent:implement` 才授权执行。', '',
-    ...plan.tickets.flatMap((ticket, index) => [
-      `### ${index + 1}. ${ticket.title}`, '',
-      `标识：\`${ticket.key}\`；阻塞于：${ticket.blocked_by.map((key) => `\`${key}\``).join('、') || '无'}。`, '', ticket.body, '',
-    ]),
-    '<details><summary>机器可读计划（修改计划请重新生成）</summary>', '',
-    '```json', JSON.stringify(plan, null, 2), '```', '', '</details>',
-  ].join('\n');
-  if (body.length > 60_000) throw new Error('计划超出单条 GitHub 评论长度，请减少票数或正文。');
-  return body;
-}
-
-export function approvedPlan(comments: Comment[], approvedAt: string): Plan {
-  const cutoff = Date.parse(approvedAt);
-  if (!Number.isFinite(cutoff)) throw new Error('缺少审批事件时间，拒绝发布。');
-  const comment = comments.filter((entry) => entry.user.login === 'github-actions[bot]'
-    && entry.body.startsWith(PLAN_MARKER) && Date.parse(entry.created_at) <= cutoff)
-    .sort((a, b) => b.id - a.id)[0];
-  if (!comment) throw new Error('审批时没有可用的机器人拆票计划，请先添加 agent:to-issues。');
-  if (Date.parse(comment.updated_at) > cutoff) throw new Error('计划在审批后发生修改，请重新审核并添加发布标签。');
-  const heading = '<details><summary>机器可读计划（修改计划请重新生成）</summary>\n\n';
-  const start = comment.body.lastIndexOf(heading);
-  const json = start < 0 ? undefined : /^```json\n([\s\S]*)\n```\n\n<\/details>$/u.exec(comment.body.slice(start + heading.length))?.[1];
-  if (!json) throw new Error('计划 JSON 缺失。');
-  return parsePlan(JSON.parse(json));
 }
 
 export const ticketMarker = (plan: Plan, key: string): string => `<!-- agent-ticket:${plan.parent}:${digest(plan)}:${key} -->`;

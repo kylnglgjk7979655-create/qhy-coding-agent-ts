@@ -1,24 +1,23 @@
-# 仓库 skill 与官方 workflow 的执行约定
+# 仓库 skill 与 workflow 的执行约定
 
-`.agents/skills/UPSTREAM.json` 固定 skill 来源和版本，上游原文完整保存；本地快照的用户定制单独记录在 `localSnapshots`。用户选择以 Sandcastle 官方 GitHub workflow 为准，继续使用 Codex 订阅；本文件据此替代旧的项目调度约定。
+执行仓库内 `.agents/skills/` 的固定版本，来源及本地定制见 `UPSTREAM.json`；CI 不临时下载。需求跟踪见 [issue-tracker.md](issue-tracker.md)，操作与恢复见 [github-actions.md](github-actions.md)。
 
-## 本地 skills
+## 阶段职责
 
-需求跟踪使用 GitHub Issues，操作约定见 [issue-tracker.md](issue-tracker.md)。手动调用 skills 时使用仓库固定版本，不在 CI 临时下载；领域词汇来自 `GLOSSARY.md`，相关决策来自 `docs/adr/`。
+- **拆票**：父 Spec 放在 GitHub Issue 正文，补充要求写评论。`agent:to-issues` 调用 `$to-tickets`，输出带稳定 key 和 blockedBy 的 slices。认证回存成功后，独立发布 job 校验需求未变化，自动创建原生子 Issue 与阻塞关系；无需审批标签。拆票不会启动实现。
+- **实现**：`agent:implement` 调用 `$implement`，支持独立 Issue、子 Issue 和父需求。父需求按原生依赖逐票实施，共用一个分支和 Draft PR。每张子票成功推送后以 completed 关闭，下一票无需等待 PR 合并。
+- **PR 文案**：实现会话在代码、检查及提交完成后调用 `$pr`。按 skill 的 Summary、Evidence、Merge Danger 模板写出中文 PR 元数据文件；证据来自实际执行，未运行的检查和人工 QA 如实注明。workflow 校验文件并创建或更新 PR。父需求共享 PR 始终包含 `Closes #父编号`，合并到 main 后由 GitHub 自动关闭父 Issue。
+- **整体审查**：全部子票 completed 后排队调用 `$code-review`，比较基准为 main。上下文显式包含父 PRD、全部子票的正文、状态与评论，按整份需求验收；独立 Issue 按自身验收。审查可修复并提交，发布 COMMENT 后把 PR 标记 Ready。
+- **PR 反馈修改**：PR 评论后加 `agent:implement`；需要改代码时调用 `$implement`，workflow 发布提交与回复。
+- **分支更新**：`agent:update-branch` 合并最新基准；有冲突才调用 Agent。
+- **Explore**：批量调查开放的 explore Issue，独立 apply job 校验、发布结论及转交。手动入口默认 dry-run。
 
-`ready-for-agent` 表示准备完成，不触发 GitHub 实现。`ready-for-human` 表示需要人工处理。本地规格编写、拆票和人工 QA 可以继续使用 skills；云端由固定 prompt 实现下述标签审批流程，不要求在无人值守运行中向用户发问。
+## 规范与交付
 
-## GitHub workflow
+新增、修改和审查代码统一读取根目录 [CODING_STANDARDS.md](../../CODING_STANDARDS.md)，领域词汇来自 `GLOSSARY.md`，相关决策来自 `docs/adr/`。完成前执行 `pnpm check` 并修复失败；CI 另外运行 `pnpm demo:test`。代码检查不代表人工 QA 已执行。
 
-云端使用 `.sandcastle/agent-workflows/` 内固定版本的官方阶段脚本和 prompt，不固定拼接 skills，不添加自定义的 Standards/Spec 独立审查会话。各阶段 prompt 明确当前任务、项目上下文、验证和交付方式。
+Agent 负责代码与提交；workflow 负责推送、PR、标签和评论。PR 仍由维护者决定合并，本次取消的是拆票审批和父 Issue 的单独关闭验收，不是 PR 合并控制。
 
-- 父 spec 放在 GitHub Issue 正文和评论。`agent:to-issues` 读取 GitHub 需求与代码，只生成待审批评论；`agent:publish-tickets` 是人工批准，确定性创建子任务和原生阻塞关系。
-- `agent:implement` 支持独立 Issue、子 Issue 及父需求。父需求选择依赖已完成的子票，子票依次提交到同一分支和草稿 PR；全部完成后整体审查，不将整份父需求交给普通实现。
-- `agent:queued` 持久化实现授权，直接前置 Issue 以 completed 关闭时检查并推进；前置票须以 completed 关闭；同一父需求的共享草稿 PR 不阻塞后续子票，其他开放实现 PR 仍阻塞。失败票留待人工重试，not_planned 不算完成，父需求不自动关闭。
-- 实现、审查、反馈修改由 Agent 在当前分支提交；workflow 负责推送、PR、标签和评论。
-- 普通实现不要求结构化 JSON；审查、反馈修改、冲突处理及 Explore 先完成工作，再恢复会话提取结果。拆票按参考仓库直接输出 slices，校验失败在同会话修正；计划来源指纹由包装脚本维护，不交给模型生成。
-- Explore 批量只读调查，独立 apply job 校验并发布评论、转交标签和关闭重复 Issue；添加 `agent:explore` 即授权这一完整流程。手动入口默认 dry-run。
-- 提交前按官方 prompt 运行 `pnpm typecheck` 和相关聚焦测试；完整项目验证由 `Check` 执行。人工 QA 仍需人实际执行，代码检查不代表人工 QA 已通过。
-- PR 审查发布 COMMENT 并标记 Ready，由人决定是否合并。普通实现 PR 的 `Closes #编号` 在合并时关闭 Issue。
+## 调度
 
-Codex 订阅的认证恢复、刷新回存和串行使用保持现有适配，具体配置见 [github-actions.md](github-actions.md)。拆票与队列是在官方流程上恢复的有限扩展；旧的统一任务协议、外层提交发布、定时架构提案没有恢复。
+所有标签请求由持久队列保存，仓库级订阅锁串行执行认证恢复、模型运行、登录态回存及发布。父需求最多一个活动子票；不通过 implement-spec 并行调度。`ready-for-agent` 只表示需求准备完成；`agent:queued` 表示依赖等待及执行授权。not_planned 不算依赖完成；失败需人工重新授权。PAT 不可用或未配置时的处理见操作文档。

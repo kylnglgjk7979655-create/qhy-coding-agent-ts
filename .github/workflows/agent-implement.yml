@@ -82,7 +82,7 @@ jobs:
           auth-json: ${{ secrets.CODEX_AUTH_JSON }}
           store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
 
-      - name: Run implementation agent
+      - name: Implement and draft PR with skills
         if: steps.route.outputs.proceed == 'true'
         run: pnpm exec tsx .sandcastle/agent-workflows/implement/implement.ts
 
@@ -108,28 +108,11 @@ jobs:
         run: |
           set -euo pipefail
           pr_number=$(gh pr list --state open --head "$BRANCH" --base main --json number --jq '.[0].number // empty')
-          body_file="$RUNNER_TEMP/pr-body.md"
+          title=$(cat "$RUNNER_TEMP/pr_title.txt")
+          body_file="$RUNNER_TEMP/pr_description.txt"
           if [ -n "$pr_number" ]; then
-            gh pr view "$pr_number" --json body --jq .body > "$body_file"
-            if ! grep -Eq "(^|[[:space:]])(Closes|Fixes|Resolves) #${ISSUE_NUMBER}([^0-9]|$)" "$body_file"; then
-              printf '\nCloses #%s\n' "$ISSUE_NUMBER" >> "$body_file"
-              gh pr edit "$pr_number" --body-file "$body_file"
-            fi
+            gh pr edit "$pr_number" --title "$title" --body-file "$body_file"
           else
-            title="Fix #$ISSUE_NUMBER: $ISSUE_TITLE"
-            if [ -n "$PARENT_NUMBER" ]; then
-              title="Implement parent issue #$PARENT_NUMBER"
-            fi
-            title="${title:0:256}"
-            {
-              echo "Closes #$ISSUE_NUMBER"
-              if [ -n "$PARENT_NUMBER" ]; then
-                echo
-                echo "Parent: #$PARENT_NUMBER"
-              fi
-              echo
-              echo "Implemented by the Sandcastle agent workflow."
-            } > "$body_file"
             pr_url=$(gh pr create --draft --base main --head "$BRANCH" --title "$title" --body-file "$body_file" | tail -n1)
             pr_number="${pr_url##*/}"
           fi
@@ -165,7 +148,7 @@ jobs:
         if: steps.route.outputs.proceed == 'true' && steps.completion.outputs.review == 'true' && env.PARENT_NUMBER != '' && success()
         run: |
           gh issue edit "$PARENT_NUMBER" --remove-label "agent:queued"
-          gh issue comment "$PARENT_NUMBER" --body '所有子任务已完成，父 Issue 保持开放，等待维护者验收。'
+          gh issue comment "$PARENT_NUMBER" --body '所有子任务已完成，已请求整体审查；共享 PR 合并到 main 后将自动关闭本父 Issue。'
 
       - name: Check intermediate shared branch
         if: steps.route.outputs.proceed == 'true' && steps.completion.outputs.review == 'false' && success()

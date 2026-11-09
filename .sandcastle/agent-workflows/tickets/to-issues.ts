@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { Output, run } from '@ai-hero/sandcastle';
 import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
 import { codexAgent, fail, required, standardSchema, writeJson } from '../shared/common.js';
-import { planFromDraft, renderPlan } from './plan.js';
+import { planFromDraft } from './plan.js';
 
 try {
   const source = JSON.parse(readFileSync(required('SOURCE_FILE'), 'utf8')) as {
@@ -17,7 +17,6 @@ try {
     completionSignal: '</output>',
     output: Output.object({ tag: 'output', maxRetries: 2, schema: standardSchema((value) => {
       const plan = planFromDraft(value, source.issue.number, source.source_hash);
-      renderPlan(plan);
       return plan;
     }) }),
   });
