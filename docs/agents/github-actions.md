@@ -23,22 +23,22 @@ gh secret set CODEX_AUTH_JSON --repo kylnglgjk7979655-create/qhy-coding-agent-ts
 
 Settings → Actions → General 中启用 **Allow GitHub Actions to create and approve pull requests**。实际审查发布 COMMENT，PR 仍由人决定合并。
 
-父需求共享 PR 的子任务之间使用 `AGENT_PAT` 重新给父 Issue 添加 `agent:implement` 接续；未配置 PAT 时实现后显式调度分支的 `Check` 和同仓库 PR 的 `Agent Review`，审查产生新提交时再对新版本调度 `Check`，避免机器人推送或贴标签不触发下一条 workflow。GitHub 官方将 dispatch 列为该限制的例外，来源见[调查记录](../notes/course-video-manager-ticket-workflows.md#无-agent_pat-时的内部接续)。
+父需求共享 PR 的子任务之间优先使用 `AGENT_PAT` 重新给父 Issue 添加 `agent:implement` 接续；未配置 PAT 时，完成脚本直接把父票接续写入持久队列。内置 Token 推送后仍显式调度分支的 `Check` 和同仓库 PR 的 `Agent Review`，审查产生新提交时再对新版本调度 `Check`。GitHub 官方将 dispatch 列为 GITHUB_TOKEN 不触发后续 workflow 的例外，来源见[调查记录](../notes/course-video-manager-ticket-workflows.md#无-agent_pat-时的内部接续)。
 
-配置 `AGENT_PAT`：权限至少为本仓库 **Contents、Issues、Pull requests → Read and write**，推送 workflow 修改时另需 **Workflows → Read and write**。配置后使用该 Token 推送和贴接续标签，不再为同一次转交重复 dispatch。没有 PAT 时，父需求的直接接续会失败并保留队列；Explore 转交的实现标签需要人工移除并重新添加。
+配置 `AGENT_PAT`：权限至少为本仓库 **Contents、Issues、Pull requests → Read and write**，推送 workflow 修改时另需 **Workflows → Read and write**。配置后使用该 Token 推送和贴接续标签，由 ingress 记录队列请求。没有 PAT 时，内置 Token 通过持久队列完成内部接续；对不会触发后续 workflow 的推送，脚本会显式 dispatch 检查流程。
 
 | Secret / Variable | 用途 |
 | --- | --- |
 | Secret `CODEX_AUTH_JSON` | 必需，CI 专用订阅登录文件 |
 | Secret `CODEX_AUTH_STORE_PAT` | 必需，认证版本检查和刷新后回存 |
-| Secret `AGENT_PAT` | 父需求子任务直接接续必需；使用 PAT 推送和贴标签接续；其他队列入口可在未配置时使用内置 Token dispatch |
+| Secret `AGENT_PAT` | 可选，用于推送和贴接续标签；未配置时，内部任务通过持久队列和内置 Token dispatch |
 | Variable `CODEX_MODEL` | 可选；优先使用该值，未配置时从 `codex debug models` 选择首个可用模型，探测失败回退 `gpt-6-luna` |
 
 ## 日常入口
 
 | workflow | 触发 | 行为 |
 | --- | --- | --- |
-| Agent Explore | Issue 添加 `agent:explore`；或 Actions 手动运行 | 一次调查所有开放的 explore Issue，识别重复、给出结论，独立 apply job 校验后发布 |
+| Agent Explore | Issue 添加 `agent:explore`；或 Actions 手动运行 | 先进入持久队列，再一次调查所有开放的 explore Issue，识别重复、给出结论，独立 apply job 校验后发布 |
 | Agent To Issues | 父 Issue 添加 `agent:to-issues` | 从 GitHub 读取 spec 和评论，结合代码生成待审批计划评论 |
 | Agent Publish Tickets | 父 Issue 添加 `agent:publish-tickets` | 批准计划并创建原生子任务和依赖，不启动实现 |
 | Agent Implement | Issue／父 Issue 添加 `agent:implement` | 校验依赖；父需求选择就绪子票；父需求复用共享分支和草稿 PR，全部子票完成后请求整体审查；独立 Issue 单独创建 PR |
@@ -47,7 +47,7 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 | Agent Implement PR | PR 留下反馈后添加 `agent:implement` | 修改代码或回复反馈；若既无提交也无评论则失败 |
 | Agent Update Branch | 同仓库 PR 添加 `agent:update-branch` | 合并基准分支，发生冲突时才调用 Codex；推送并评论 |
 
-Explore 的手动入口默认 `dry_run=true`，只展示计划；取消勾选才实际发布。添加 `agent:explore` 会直接应用结果：`easy-call` 转 `agent:implement`，`needs-a-human` 转 `ready-for-human`，`blocked` 转 `agent:blocked`；重复 Issue 被评论并关闭。这三个 verdict 是输出字段，不是 GitHub 标签。
+标签入口统一由 `Agent Queue Ingress` 保存请求，再由 `Agent Queue` 按入队时间串行分发；模型任务运行期间，队列协调器持有仓库级订阅锁。Explore 的手动入口默认 `dry_run=true`，请求同样先进入队列，只展示计划；取消勾选才实际发布。添加 `agent:explore` 会直接应用结果：`easy-call` 转 `agent:implement`，`needs-a-human` 转 `ready-for-human`，`blocked` 转 `agent:blocked`；重复 Issue 被评论并关闭。这三个 verdict 是输出字段，不是 GitHub 标签。没有 `AGENT_PAT` 时，Explore 转交的实现任务也会写入持久队列。
 
 `ready-for-agent` 仅表示准备完成，不触发执行。拆票审批与依赖队列是参考 course-video-manager 的项目扩展，详细差异见[调查记录](../notes/course-video-manager-ticket-workflows.md)。定时架构审查仍未启用；历史 Issue 和子 Issue 不自动删除。
 
@@ -68,11 +68,14 @@ Explore 的手动入口默认 `dry_run=true`，只展示计划；取消勾选才
 - 发布中途失败时，修复原因后重新添加 `agent:publish-tickets`。稳定发布标记能找回已创建但尚未挂接的票，补齐挂接和依赖，避免重复创建。父需求正文不改写、不关闭。
 - 实现失败标记当前票 `agent:blocked`，不会自动重试。处理原因后给该票重新添加 `agent:implement`；父需求中其他满足依赖的任务仍可推进。共享 PR 已存在时重试会继续使用原分支和 PR。
 - 暂停父需求时添加 `agent:blocked`；暂停独立任务可移除 `agent:queued`。已开始的 Actions 另行取消，恢复时重新添加 `agent:implement`。子票执行后、推送前还会复查票状态和依赖。
-- 不再扫描队列或补偿丢失的事件。已排队任务仅在直接前置 Issue 以 completed 关闭时检查；若此前置的实现 PR 尚未合并，或排队发生在关闭之后，需要在条件满足后人工重新添加 `agent:implement`。
+- 持久队列请求保存在来源 Issue/PR 的状态评论中，记录请求类型、等待/执行/终态和关联 Actions 运行，不包含认证信息。重复投递按请求 ID 合并；队列每五分钟扫描一次，也会在新请求到达时立即启动，用于恢复调度中断。
+- 队列分发前再次核验来源开放状态、授权标签和 PR 分支 SHA；具体任务仍执行原有 Issue 依赖与发布前检查。撤销标签、关闭来源或更新 PR 分支会取消旧请求，修正后重新添加标签即可生成新请求。
+- 普通任务失败后队列继续处理其他请求。订阅恢复或回存步骤失败时队列暂停；更新 `CODEX_AUTH_JSON` 或 `CODEX_AUTH_STORE_PAT` 后，调度器检测到 Secret 指纹变化并恢复等待请求。调度中断若无法确认子 workflow 状态，不会自动重放；请求会标记失败并说明查看 Actions 与重新授权的方式。
+- 已排队依赖任务仍只在直接前置 Issue 以 completed 关闭时变为就绪；若此前置的实现 PR 尚未合并，或排队发生在关闭之后，需要在条件满足后人工重新添加 `agent:implement`。
 
 共享 PR 不会自动合并。
 
-日常仍使用标签。Implement 和 Review 的 `workflow_dispatch` 输入分别为 `issue_number`、`pr_number`，供内部接续；Implement 必须仍携带执行标签，Review 必须为开放、同仓库且仍携带审查标签的 PR，输入编号本身不能绕过授权。失败后查看 Actions 链接，解决原因，再重新添加对应标签。分支有冲突时先使用 `agent:update-branch`。
+日常仍使用标签。各任务 workflow 的 `workflow_dispatch` 是队列 worker 的内部执行入口，需要有效的 `queue_request_id`；用户从标签入口提交任务。失败后查看队列请求评论中的 Actions 链接，解决原因，再重新添加对应标签。分支有冲突时先使用 `agent:update-branch`。
 
 ## 执行与订阅维护
 
@@ -84,9 +87,11 @@ Explore 的手动入口默认 `dry_run=true`，只展示计划；取消勾选才
 
 1. workflow 级 `codex-subscription-仓库名` 并发组覆盖认证、运行、回存和发布。
 2. `codex-auth-restore` 验证凭据版本、恢复订阅文件并注册日志遮罩；排队后 Secret 已更新的运行拒绝使用旧快照。
-3. `codex-auth-save` 在 Agent 返回后（包括失败）加密刷新文件，比较版本并回存 Secret，始终清理临时登录。成功路径必须回存完成，才推送或触发下一轮。
+3. `codex-auth-save` 在 Agent 返回后（包括失败）加密刷新文件，比较版本；仅在登录文件内容变化时回存 Secret，始终清理临时登录。内容未变化时不重写 Secret，避免仅因 `updated_at` 改变就让排队任务被误判为旧快照。成功路径必须完成此检查及必要的回存，才推送或触发下一轮。
 
-认证 Secret 写入 Token 仅用于恢复和回存步骤；不通过 artifact 传递明文认证。回存与执行在同一 job，不再使用旧的五阶段发布框架。GitHub 并发组只有一个待运行槽，不是 FIFO 队列；不要同时启动多个订阅任务。被替换的请求不会自动恢复，需人工重新添加对应标签。取消、超时或回存失败后，可能需要重新登录并更新 `CODEX_AUTH_JSON`；不要重跑使用旧凭据的运行。
+队列在上一项完成并回存后才 dispatch 下一项，因此新任务在执行时读取最新 `CODEX_AUTH_JSON`。认证恢复仍会比较 workflow 创建时间与 Secret 版本；若 Secret 在任务 run 创建后、恢复前被外部改写，任务会在调用 Codex 前失败，核对回存日志并重新添加授权标签即可安全重试。
+
+认证 Secret 写入 Token 仅用于恢复和回存步骤；不通过队列评论或 artifact 传递明文认证。队列协调器串行等待每个子 workflow 完成，锁覆盖认证恢复、模型运行、认证回存及发布。取消或超时后，定时调度会先查询关联运行；无法确认的请求进入失败状态供人工核查，不会盲目重放模型或发布动作。回存失败会暂停队列；确认并修复认证后重新添加对应授权标签继续。
 
 ## 标签准备和本地调试
 

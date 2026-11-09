@@ -7,12 +7,14 @@ import type { ModelMessage } from 'ai';
 import { z } from 'zod';
 import type { ResolvedConfig } from './config.js';
 import { AgentError, publicError } from './errors.js';
+import { validatedOpenAIFetch } from './openai-sse-fetch.js';
 import { readWorkspaceFile, writeWorkspaceFile } from './workspace-files.js';
 import type { WorkspaceFileSnapshot } from './workspace-files.js';
 import { approveToolCall } from './tool-approval.js';
 import type { ApprovalControl } from './tool-approval.js';
 import { ToolRegistry } from './tool-registry.js';
 import { prepareBashInput, runHostBash } from './host-bash.js';
+import { globWorkspace, grepWorkspace, validateSearchRoot } from './workspace-search.js';
 import { registerRemoteMCP } from './remote-mcp.js';
 import { DEFAULT_CONTEXT } from './config.js';
 import { prepareConversation } from './context-summary.js';
@@ -39,133 +41,6 @@ function modelStreamError(error: unknown): AgentError {
   if (error instanceof AgentError) return error;
   if (APICallError.isInstance(error) || ToolChoiceViolationError.isInstance(error)) return publicError(error);
   return new AgentError('PROVIDER_ERROR', '模型响应流无效，已终止当前对话轮次。');
-}
-
-async function validatedOpenAIFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
-  const response = await fetch(input, init);
-  if (!response.ok || response.body === null) return response;
-  const contentType = response.headers.get('content-type') ?? '';
-  if (contentType.includes('text/event-stream')) {
-    const reader = response.body.getReader();
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
-    const held: string[] = [];
-    let pending = '';
-    let collecting = false;
-    let emittedThisPull = 0;
-    const batch = new Map<number, { id: string; argumentsText: string; argumentsComplete: boolean }>();
-    const batchIds = new Set<string>();
-    function consumePendingEvents(controller: ReadableStreamDefaultController<Uint8Array>): boolean {
-      let boundary: number;
-      while ((boundary = pending.search(/\r?\n\r?\n/)) >= 0) {
-        const separator = pending.slice(boundary).match(/^\r?\n\r?\n/)![0];
-        processEvent(pending.slice(0, boundary + separator.length), controller);
-        pending = pending.slice(boundary + separator.length);
-      }
-      return emittedThisPull > 0;
-    }
-    const stream = new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        try {
-          emittedThisPull = 0;
-          if (consumePendingEvents(controller)) return;
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              pending += decoder.decode();
-              consumePendingEvents(controller);
-              if (pending) processEvent(pending, controller);
-              controller.close();
-              return;
-            }
-            pending += decoder.decode(value, { stream: true });
-            if (consumePendingEvents(controller)) return;
-          }
-        } catch (error) { controller.error(error); }
-      },
-      async cancel(reason) { await reader.cancel(reason); },
-    });
-    function enqueue(controller: ReadableStreamDefaultController<Uint8Array>, event: string): void {
-      controller.enqueue(encoder.encode(event));
-      emittedThisPull += 1;
-    }
-    function processEvent(event: string, controller: ReadableStreamDefaultController<Uint8Array>): void {
-      const data = event.split(/\r?\n/).find((line) => line.startsWith('data:'))?.slice(5).trim();
-      if (!data || data === '[DONE]') {
-        if (collecting) held.push(event);
-        else enqueue(controller, event);
-        return;
-      }
-      let payload: unknown;
-      try { payload = JSON.parse(data); } catch {
-        if (collecting) held.push(event); else enqueue(controller, event);
-        return;
-      }
-      const choices = payload && typeof payload === 'object' && 'choices' in payload && Array.isArray(payload.choices) ? payload.choices : [];
-      let hasToolDelta = false;
-      let completedTools = false;
-      for (const choice of choices) {
-        if (!choice || typeof choice !== 'object') continue;
-        if ('delta' in choice && choice.delta && typeof choice.delta === 'object' && 'tool_calls' in choice.delta && Array.isArray(choice.delta.tool_calls)) {
-          hasToolDelta = true;
-          for (const item of choice.delta.tool_calls) {
-            if (!item || typeof item !== 'object' || typeof item.index !== 'number') {
-              throw new AgentError('PROVIDER_ERROR', '工具批次包含无法识别的调用项，已在执行前终止。');
-            }
-            const existing = batch.get(item.index);
-            const functionDelta = 'function' in item && item.function && typeof item.function === 'object'
-              ? item.function as Record<string, unknown>
-              : undefined;
-            const argumentFragment = typeof functionDelta?.arguments === 'string' ? functionDelta.arguments : '';
-            if (existing) {
-              if ('id' in item && item.id !== existing.id) {
-                throw new AgentError('PROVIDER_ERROR', '同一调用索引出现不同原始 ID，已在执行前终止。');
-              }
-              const isStructuredRestart = argumentFragment.trimStart().startsWith('{') || argumentFragment.trimStart().startsWith('[');
-              if (existing.argumentsComplete && typeof functionDelta?.name === 'string' && isStructuredRestart) {
-                throw new AgentError('PROVIDER_ERROR', '完整工具参数后出现重复的调用起始帧，已在执行前终止。');
-              }
-              if (argumentFragment) {
-                existing.argumentsText += argumentFragment;
-                try { JSON.parse(existing.argumentsText); existing.argumentsComplete = true; } catch { existing.argumentsComplete = false; }
-              }
-              continue;
-            }
-            const id = typeof item.id === 'string' ? item.id : undefined;
-            if (!id?.trim()) {
-              throw new AgentError('PROVIDER_ERROR', '工具调用首次出现时缺少原始调用 ID，已在执行前终止。');
-            }
-            if (batchIds.has(id)) {
-              throw new AgentError('PROVIDER_ERROR', '工具批次包含重复调用 ID，已在执行前终止。');
-            }
-            const argumentsText = argumentFragment;
-            let argumentsComplete = false;
-            if (argumentsText) {
-              try { JSON.parse(argumentsText); argumentsComplete = true; } catch { /* 仍在接收参数分片。 */ }
-            }
-            batch.set(item.index, { id, argumentsText, argumentsComplete });
-            batchIds.add(id);
-          }
-        }
-        if ('finish_reason' in choice && (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'stop')) completedTools = true;
-      }
-      if (hasToolDelta) collecting = true;
-      if (collecting) held.push(event); else enqueue(controller, event);
-      if (completedTools) {
-        const ids = [...batch.values()].map((item) => item.id);
-        if (ids.some((id) => !id.trim()) || new Set(ids).size !== ids.length) {
-          throw new AgentError('PROVIDER_ERROR', '工具批次包含缺失、空或重复的调用 ID，已在执行前终止。');
-        }
-        for (const item of held) enqueue(controller, item);
-        held.length = 0;
-        collecting = false;
-        batch.clear();
-        batchIds.clear();
-      }
-    }
-    return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers });
-  }
-  return response;
 }
 
 export async function runAgent(
@@ -251,6 +126,32 @@ export async function runAgent(
     execute: async ({ path }) => ({ content: await readWorkspaceFile(config.workspace, path) }),
   });
   registry.register({
+    name: 'glob',
+    description: '按 glob 模式查找工作区文件，默认搜索整个工作区；可用 path 限定子目录。包含隐藏目录并遵循 .gitignore。',
+    inputSchema: z.strictObject({ pattern: z.string().min(1), path: z.string().min(1).optional() }),
+    prepare: async (input) => {
+      await validateSearchRoot(config.workspace, input.path);
+      return { input };
+    },
+    execute: (input) => globWorkspace(config.workspace, input),
+  });
+  registry.register({
+    name: 'grep',
+    description: '按正则搜索工作区文件，默认搜索整个工作区；可用 path 限定子目录、glob 限定文件。返回相对路径、行号和命中文本。包含隐藏目录并遵循 .gitignore。',
+    inputSchema: z.strictObject({
+      pattern: z.string().min(1).refine((pattern) => {
+        try { new RegExp(pattern); return true; } catch { return false; }
+      }),
+      path: z.string().min(1).optional(),
+      glob: z.string().min(1).optional(),
+    }),
+    prepare: async (input) => {
+      await validateSearchRoot(config.workspace, input.path);
+      return { input };
+    },
+    execute: (input) => grepWorkspace(config.workspace, input),
+  });
+  registry.register({
     name: 'write_file',
     description: '将工作区内文件完整替换为指定内容；目标不存在时创建文件，不会创建父目录。',
     inputSchema: z.strictObject({ path: z.string().min(1), content: z.string() }),
@@ -305,9 +206,11 @@ export async function runAgent(
     });
     const instructions = [
         '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
+        '搜索文件路径时优先使用 glob，搜索文件内容时优先使用 grep；两者默认搜索整个工作区，也可限定子目录，遵循 .gitignore 并包含隐藏目录。',
         '可使用 read_file 读取工作区文件，使用 write_file 完整替换或创建工作区文件；文件访问仅限配置的工作区。',
         'write_file 和 Bash 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
         'Bash 可运行命令和项目测试，每次使用独立 shell，继承 CLI 环境并以宿主当前用户权限执行；cwd 只约束启动位置，不提供文件系统或网络隔离。',
+        '工具结果中的 is_error: true 表示该调用失败；必须在答复中明确说明失败，不得声称操作成功或把失败调用的输出当成已验证结果。',
         'runtimeInfo 可获取工作区路径和本次探针。',
         '如公布了 mcp_ 前缀工具，可调用对应远程 MCP 服务；这些工具默认需要独立审批，调用可能产生远端副作用。',
     ].join('\n');

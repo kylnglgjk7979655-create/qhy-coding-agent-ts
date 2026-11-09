@@ -1,51 +1,75 @@
 name: Agent Update Branch
 
 on:
-  # pull_request_target rather than pull_request: the standard pull_request
-  # trigger depends on a generated merge commit, which GitHub fails to
-  # produce when the PR has merge conflicts — exactly when this workflow
-  # most needs to run. (An out-of-date but conflict-free PR still fires
-  # pull_request.) pull_request_target runs in the base context and does not
-  # need the merge commit, so the labeled event fires reliably.
-  #
-  # pull_request_target runs with repo secrets and a write token, so the job
-  # below only runs for same-repo PRs: fork PRs never run here, so a fork's
-  # code never runs with repo secrets.
-  pull_request_target:
-    types: [labeled]
-
-# 同一份 Codex 订阅认证必须串行刷新，锁覆盖回存和发布。
-concurrency:
-  group: ${{ (github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:update-branch') && format('codex-subscription-{0}', github.repository) || format('agent-ignored-{0}', github.run_id) }}
-  cancel-in-progress: false
+  # Agent Queue dispatches from the base branch after confirming this is an open same-repository PR.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: '队列中的目标 PR 编号'
+        type: string
+        required: true
+      queue_request_id:
+        description: '由持久化订阅队列分发的请求编号'
+        type: string
+        required: true
+      expected_head_sha:
+        description: '入队时记录的 PR 分支版本'
+        type: string
+        required: false
 
 jobs:
   update-branch:
     # Same-repo PRs only: fork PRs never run here, so a fork's code never runs
     # with repo secrets.
-    if: >-
-      github.event.label.name == 'agent:update-branch' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id != ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: agent-mutate-pr-${{ github.event.pull_request.number }}
+      group: agent-mutate-pr-${{ inputs.pr_number }}
       cancel-in-progress: false
     permissions:
       actions: read
       contents: write
+      issues: read
       pull-requests: write
 
     env:
       CODEX_MODEL: ${{ vars.CODEX_MODEL }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      BRANCH: ${{ github.event.pull_request.head.ref }}
-      BRANCH_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      PR_NUMBER: ${{ inputs.pr_number }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
+      - name: Checkout trusted queue scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Verify queued authorization
+        uses: ./.github/actions/queue-authorization
+        with:
+          queue-request-id: ${{ inputs.queue_request_id }}
+          item-number: ${{ inputs.pr_number }}
+          workflow: agent-update-branch.yml
+          expected-head-sha: ${{ inputs.expected_head_sha }}
+
+      - name: Read and verify same-repository PR
+        id: pr
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+        run: |
+          gh pr view "$PR_NUMBER" --json state,isCrossRepository,headRefName,headRefOid,baseRefName --jq 'select(.state == "OPEN" and .isCrossRepository == false) | [.headRefName, .headRefOid, .baseRefName] | @tsv' > "$RUNNER_TEMP/pr.tsv"
+          if [ ! -s "$RUNNER_TEMP/pr.tsv" ]; then echo "PR must be open and belong to this repository." >&2; exit 1; fi
+          IFS=$'\t' read -r branch head_sha base < "$RUNNER_TEMP/pr.tsv"
+          if [ -n "$EXPECTED_HEAD_SHA" ] && [ "$EXPECTED_HEAD_SHA" != "$head_sha" ]; then
+            echo "PR branch changed after enqueue; please re-add agent:update-branch." >&2; exit 1
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "BRANCH=$branch" >> "$GITHUB_ENV"
+          echo "BRANCH_HEAD_SHA=$head_sha" >> "$GITHUB_ENV"
+          echo "BASE_REF=$base" >> "$GITHUB_ENV"
       - name: Transition labels
         run: |
           gh pr edit "$PR_NUMBER" --remove-label "agent:update-branch" || true
@@ -55,10 +79,13 @@ jobs:
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
+          path: worktree
+          token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Prepare branch
+        working-directory: worktree
         run: |
           git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH"
           git config user.name "sandcastle-agent[bot]"
@@ -68,7 +95,10 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Build
-        run: pnpm build
+        working-directory: worktree
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
 
       - name: Restore Codex subscription
         id: auth
@@ -79,9 +109,12 @@ jobs:
 
       - name: Run update-branch agent
         id: run
+        working-directory: worktree
         env:
           OUTPUT_DIR: ${{ runner.temp }}
-        run: pnpm exec tsx .sandcastle/agent-workflows/update-branch/update-branch.ts
+        run: |
+          export PATH="$GITHUB_WORKSPACE/node_modules/.bin:$PATH"
+          tsx "$GITHUB_WORKSPACE/.sandcastle/agent-workflows/update-branch/update-branch.ts"
 
       - name: Save refreshed Codex subscription
         if: always() && steps.auth.outputs.restored == 'true'
@@ -91,9 +124,12 @@ jobs:
 
       - name: Push branch (abort cleanly if non-fast-forward)
         if: success()
+        working-directory: worktree
         env:
           SHOULD_PUSH_FILE: ${{ runner.temp }}/should_push.txt
         run: |
+          gh pr view "$PR_NUMBER" --json state,headRefOid,labels > "$RUNNER_TEMP/current-pr.json"
+          jq -e --arg sha "$BRANCH_HEAD_SHA" '.state == "OPEN" and .headRefOid == $sha and any(.labels[]; .name == "agent:in-progress") and (all(.labels[]; .name != "agent:blocked"))' "$RUNNER_TEMP/current-pr.json" > /dev/null
           if [ ! -f "$SHOULD_PUSH_FILE" ] || [ "$(cat "$SHOULD_PUSH_FILE")" != "true" ]; then
             echo "Nothing to push."
             exit 0

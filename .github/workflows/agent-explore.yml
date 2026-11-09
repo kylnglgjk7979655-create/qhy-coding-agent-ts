@@ -3,27 +3,42 @@ name: Agent Explore
 # Batch triage. Any `agent:explore` label kicks a run, but each run ignores the
 # event payload and explores EVERY open `agent:explore` issue together.
 on:
-  issues:
-    types: [labeled]
   workflow_dispatch:
     inputs:
       dry_run:
         description: "Write planned comments, label swaps and closes to the run summary instead of applying them"
         type: boolean
         default: true
-
-# One group for every real run: one running, at most one pending, and a newer
-# pending run replaces an older one (fine — each run re-lists the batch).
-# Events for any other label land in a throwaway group so they can never
-# replace a pending explore run.
-concurrency:
-  # Codex 订阅共用认证，所有模型入口串行；批量行为仍按官方流程执行。
-  group: ${{ (github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:explore') && format('codex-subscription-{0}', github.repository) || format('agent-ignored-{0}', github.run_id) }}
-  cancel-in-progress: false
+      issue_number:
+        description: '队列来源 Issue 编号'
+        type: string
+        required: false
+      queue_request_id:
+        description: '由持久化订阅队列分发的请求编号'
+        type: string
+        required: false
 
 jobs:
+  enqueue-manual:
+    if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id == ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const result = await require('./.github/scripts/queue-ingress.cjs').route({ github, context });
+            core.info(JSON.stringify(result));
+
   explore:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent:explore'
+    if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # 任务 Token 只读；认证步骤另用仅有 Secrets 写权限的 Token 回存登录。
@@ -33,10 +48,24 @@ jobs:
       actions: read
     env:
       CODEX_MODEL: ${{ vars.CODEX_MODEL }}
+      ISSUE_NUMBER: ${{ inputs.issue_number }}
     outputs:
       count: ${{ steps.batch.outputs.count }}
 
     steps:
+      - name: Checkout trusted queue scripts
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Verify queued authorization
+        uses: ./.github/actions/queue-authorization
+        with:
+          queue-request-id: ${{ inputs.queue_request_id }}
+          item-number: ${{ inputs.issue_number }}
+          workflow: agent-explore.yml
+
       # Never read issue titles or bodies into shell or `${{ }}` — they are
       # untrusted. They go to a JSON file and only the TS scripts read them.
       - name: List batch
@@ -118,6 +147,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      actions: write
       contents: read
       issues: write
 
@@ -158,7 +188,7 @@ jobs:
           BATCH_FILE: ${{ runner.temp }}/batch/issues.json
           PLAN_FILE: ${{ runner.temp }}/out/plan.json
           OUTPUT_DIR: ${{ runner.temp }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: pnpm exec tsx .sandcastle/agent-workflows/explore/apply.ts
 
       # The run summary isn't readable through the API; this artifact is.

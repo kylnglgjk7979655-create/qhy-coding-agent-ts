@@ -16,6 +16,7 @@ export function newConversationId(): string {
 export interface SessionRecord {
   version: 1;
   id: string;
+  title?: string;
   workspace: string;
   createdAt: string;
   updatedAt: string;
@@ -60,6 +61,7 @@ export async function createSession(home: string, options: {
   const record: SessionRecord = {
     version: 1,
     id: options.id,
+    title: deriveSessionTitle(options.transcript ?? []),
     workspace: resolve(options.workspace),
     createdAt: now,
     updatedAt: now,
@@ -87,7 +89,7 @@ export async function loadSession(home: string, conversationId: string): Promise
   try {
     const value: unknown = JSON.parse(raw);
     if (!isSessionRecord(value) || value.id !== conversationId) throw new Error('Invalid session');
-    return value;
+    return { ...value, title: value.title?.trim() ? value.title : deriveSessionTitle(value.transcript) };
   } catch {
     throw new AgentError('PROVIDER_ERROR', '会话记录格式无效或已损坏，未覆盖原记录。');
   }
@@ -227,6 +229,7 @@ export async function startSessionRound(
   }
   await saveSession(home, {
     ...session,
+    title: !session.title || session.title === '未命名会话' ? deriveTitleFromText(prompt) : session.title,
     transcript: [...session.transcript, { role: 'user', content: prompt }],
     rounds: [...session.rounds, { id: roundId, status: 'running', startedAt: new Date().toISOString(), config, transcriptStart, messages: [], partialText: '' }],
     checkpoints: [...session.checkpoints, { id: randomUUID(), messageId: roundId, createdAt: new Date().toISOString(), files: checkpointFiles }],
@@ -390,10 +393,11 @@ async function writeSessionRecord(home: string, record: SessionRecord, createOnl
 function isSessionRecord(value: unknown): value is SessionRecord {
   if (typeof value !== 'object' || value === null) return false;
   const session = value as Partial<SessionRecord>;
-  const fields = ['version', 'id', 'workspace', 'createdAt', 'updatedAt', 'config', 'transcript', 'effectiveHistory', 'rounds', 'summaries', 'checkpoints', 'backups'];
+  const fields = ['version', 'id', 'title', 'workspace', 'createdAt', 'updatedAt', 'config', 'transcript', 'effectiveHistory', 'rounds', 'summaries', 'checkpoints', 'backups'];
   return Object.keys(value).every((field) => fields.includes(field))
     && session.version === 1
     && typeof session.id === 'string'
+    && (session.title === undefined || typeof session.title === 'string')
     && typeof session.workspace === 'string'
     && typeof session.createdAt === 'string'
     && typeof session.updatedAt === 'string'
@@ -406,6 +410,24 @@ function isSessionRecord(value: unknown): value is SessionRecord {
       && (index === 0 || summary.coversThrough >= session.summaries![index - 1]!.coversThrough))
     && Array.isArray(session.checkpoints) && session.checkpoints.every(isCheckpointRecord)
     && Array.isArray(session.backups) && session.backups.every(isBackupRecord);
+}
+
+function deriveSessionTitle(transcript: ModelMessage[]): string {
+  const firstUserMessage = transcript.find((message) => message.role === 'user');
+  if (!firstUserMessage) return '未命名会话';
+  const content = typeof firstUserMessage.content === 'string'
+    ? firstUserMessage.content
+    : Array.isArray(firstUserMessage.content)
+      ? firstUserMessage.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join(' ')
+      : '';
+  return deriveTitleFromText(content);
+}
+
+function deriveTitleFromText(text: string): string {
+  const readable = text.replace(/\s+/gu, ' ').trim();
+  if (!readable) return '未命名会话';
+  const characters = Array.from(readable);
+  return characters.length > 100 ? `${characters.slice(0, 100).join('')}…` : readable;
 }
 
 function isModelConfig(value: unknown): value is ModelConfig {

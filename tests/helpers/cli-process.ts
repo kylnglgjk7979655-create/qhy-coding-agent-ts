@@ -8,11 +8,24 @@ export function startCLI(options: {
   conversationId?: string;
   args?: string[];
   input?: string;
+  pty?: boolean;
   userDir?: string;
   env: NodeJS.ProcessEnv;
 }, onOutput?: (stdout: string) => void) {
   const args = [...(options.conversationId === undefined ? [] : ['--conversation-id', options.conversationId]), ...(options.args ?? [])];
-  const child = spawn(process.execPath, [cli, ...args], {
+  const command = [process.execPath, cli, ...args].map(shellQuote).join(' ');
+  const child = options.pty
+    ? spawn('script', ['-qefc', command, '/dev/null'], {
+      cwd: options.cwd,
+      env: {
+        ...process.env,
+        ...options.env,
+        HOME: options.userDir ?? options.cwd,
+        USERPROFILE: options.userDir ?? options.cwd,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    : spawn(process.execPath, [cli, ...args], {
     cwd: options.cwd,
     env: {
       ...process.env,
@@ -21,7 +34,7 @@ export function startCLI(options: {
       USERPROFILE: options.userDir ?? options.cwd,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
-  });
+    });
   let stdout = '';
   let stderr = '';
   const done = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
@@ -42,4 +55,8 @@ export function startCLI(options: {
       child.stdin.end(input);
     },
   };
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }

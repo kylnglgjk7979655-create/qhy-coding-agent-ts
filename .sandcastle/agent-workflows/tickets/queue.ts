@@ -112,8 +112,10 @@ export class Queue {
       const writer = this.dispatch ?? this.github;
       writer.addLabels(root.number, ['agent:implement']);
       if (!this.dispatch) {
-        this.github.api('POST', 'actions/workflows/agent-implement.yml/dispatches', {
-          ref: 'main', inputs: { issue_number: String(root.number) },
+        this.github.queueTask({
+          id: `promote-${blocker}-${root.number}-${Math.floor(Date.now() / 1000)}`,
+          kind: 'implement', number: root.number, workflow: 'agent-implement.yml',
+          inputs: { issue_number: String(root.number), authorization_label: 'agent:implement' },
         });
       }
       promoted.push(root.number);

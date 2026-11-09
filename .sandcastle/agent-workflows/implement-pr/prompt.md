@@ -34,9 +34,11 @@ For each actionable comment or unresolved thread:
 - Decline clearly when the requested change is wrong or out of scope.
 - Ignore stale/context-only comments.
 
-Run `pnpm typecheck` before committing. Run focused tests where relevant.
+Before committing, run `pnpm typecheck` and `pnpm test` and ensure both pass.
 
 If you change code, commit with a conventional commit message.
+
+若本轮无需新增提交（反馈已由现有提交解决，或已无待处理反馈），在完成前写出一段可发布到 PR 的说明，供后续提取到 `topLevelComments`：说明无需修改的原因、对应的已有提交（如有），以及本轮实际执行的验证及结果；未执行验证时如实注明。
 
 Do not push.
 Do not edit labels.

@@ -4,7 +4,7 @@
 
 ## 本地 skills
 
-本地需求仍放在 `.scratch/`，布局见 [issue-tracker.md](issue-tracker.md)。手动调用 skills 时使用仓库固定版本，不在 CI 临时下载；领域词汇来自 `GLOSSARY.md`，相关决策来自 `docs/adr/`。
+需求跟踪使用 GitHub Issues，操作约定见 [issue-tracker.md](issue-tracker.md)。手动调用 skills 时使用仓库固定版本，不在 CI 临时下载；领域词汇来自 `GLOSSARY.md`，相关决策来自 `docs/adr/`。
 
 `ready-for-agent` 表示准备完成，不触发 GitHub 实现。`ready-for-human` 表示需要人工处理。本地规格编写、拆票和人工 QA 可以继续使用 skills；云端由固定 prompt 实现下述标签审批流程，不要求在无人值守运行中向用户发问。
 
