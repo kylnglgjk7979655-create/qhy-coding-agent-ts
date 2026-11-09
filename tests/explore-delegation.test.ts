@@ -1,7 +1,7 @@
-import { mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runAgent } from '../src/query/agent.js';
 import type { ResolvedConfig } from '../src/services/settings/config.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
@@ -175,5 +175,157 @@ describe('只读 Explore 委派', () => {
     const internalResult = JSON.parse(fixture.requests[2]!.messages.find(({ role }) => role === 'tool')!.content);
     expect(internalResult).toMatchObject({ is_error: true, error: { code: 'TOOL_EXECUTION_ERROR' } });
     expect(fixture.requests[1]!.tools.map(({ function: fn }) => fn.name).sort()).toEqual(['glob', 'grep', 'read_file']);
+  });
+
+  it('内部读取失败后继续串行搜索，并要求报告说明失败影响', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
+    await writeFile(join(workspace, 'module.ts'), 'export const answer = 42;\n');
+    const fixture = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1) return { calls: [{ id: 'delegate-after-failure', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '调查 answer', prompt: '查找 answer 的定义' }),
+      } }] };
+      if (index === 2) return { calls: [
+        { id: 'failed-read', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'missing.ts' }) } },
+        { id: 'followup-glob', type: 'function', function: { name: 'glob', arguments: JSON.stringify({ pattern: '*.ts' }) } },
+      ] };
+      if (index === 3) return { content: '找到了 module.ts，但 missing.ts 读取失败，因此该文件内容未能核实。' };
+      return { content: '调查已完成，missing.ts 的读取失败限制已说明。' };
+    });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 6,
+    };
+
+    await runAgent(config, '调查 answer', { smokeTool: false });
+
+    const resumed = fixture.requests[2]!;
+    const results = resumed.messages.filter(({ role }) => role === 'tool');
+    expect(results.map(({ content }) => JSON.parse(content).is_error)).toEqual([true, false]);
+    expect(results[1]!.content).toContain('module.ts');
+    expect(fixture.requests[1]!.tools).toHaveLength(3);
+    expect(fixture.requests[1]!.messages[0]!.content).toContain('失败');
+    expect(JSON.parse(fixture.requests[3]!.messages.find(({ role }) => role === 'tool')!.content).output.report)
+      .toContain('missing.ts 读取失败');
+  });
+
+  it('搜索结果被截断时允许缩小范围，系统提示要求报告限制', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
+    await mkdir(join(workspace, 'many'), { recursive: true });
+    await Promise.all(Array.from({ length: 205 }, (_, index) =>
+      writeFile(join(workspace, 'many', `file-${index}.ts`), 'const value = 1;\n')));
+    const fixture = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1) return { calls: [{ id: 'delegate-truncated-search', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '检查搜索结果', prompt: '搜索并核实目标定义' }),
+      } }] };
+      if (index === 2) return { calls: [{ id: 'wide-search', type: 'function', function: {
+        name: 'glob', arguments: JSON.stringify({ pattern: '*.ts', path: 'many' }),
+      } }] };
+      if (index === 3) return { calls: [{ id: 'narrow-search', type: 'function', function: {
+        name: 'glob', arguments: JSON.stringify({ pattern: 'file-000.ts', path: 'many' }),
+      } }] };
+      if (index === 4) return { content: '缩小到 src 后找到目标；首次全局搜索被截断，结论仅覆盖缩小范围。' };
+      return { content: '已根据部分调查回答。' };
+    });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 7,
+    };
+
+    await runAgent(config, '检查搜索', { smokeTool: false });
+
+    expect(fixture.requests).toHaveLength(5);
+    expect(fixture.requests[1]!.messages[0]!.content).toContain('截断');
+    expect(fixture.requests[1]!.messages[0]!.content).toContain('缩小');
+    const firstSearch = fixture.requests[2]!.messages.find(({ role }) => role === 'tool')!.content;
+    expect(JSON.parse(firstSearch)).toMatchObject({ is_error: false, output: { truncated: true } });
+    const report = fixture.requests[4]!.messages.find(({ role }) => role === 'tool')!.content;
+    expect(report).toContain('首次全局搜索被截断');
+    expect(fixture.requests[3]!.messages.some(({ role }) => role === 'tool')).toBe(true);
+  });
+
+  it('没有内部工具调用且报告为空时将 Explore 作为普通工具失败返回', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'delegate-empty-report', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码' }),
+      } }] }
+      : index === 2 ? { content: '   ' } : { content: 'Explore 未返回报告。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
+    };
+
+    await runAgent(config, '委派调查', { smokeTool: false });
+
+    expect(fixture.requests).toHaveLength(3);
+    const failure = JSON.parse(fixture.requests[2]!.messages.find(({ role }) => role === 'tool')!.content);
+    expect(failure).toMatchObject({ is_error: true, error: { code: 'TOOL_EXECUTION_ERROR' } });
+  });
+
+  it('普通 Explore 模型失败作为 agent 工具失败回传', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'delegate-model-failure', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码' }),
+      } }] }
+      : index === 2 ? { status: 500, content: 'Explore provider unavailable' } : { content: '调查暂不可用。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
+    };
+
+    await runAgent(config, '委派调查', { smokeTool: false });
+
+    expect(fixture.requests).toHaveLength(3);
+    expect(JSON.parse(fixture.requests[2]!.messages.find(({ role }) => role === 'tool')!.content))
+      .toMatchObject({ is_error: true, error: { code: 'TOOL_EXECUTION_ERROR' } });
+  });
+
+  it('父轮次取消正在等待模型响应的 Explore，且不再请求后续模型轮次', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'delegate-cancel-explore', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码' }),
+      } }] }
+      : { frames: [{ delta: { content: '缓慢' }, delayMs: 500 }, { delta: {}, finish_reason: 'stop' }] });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 5000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 4,
+    };
+    const cancellation = new AbortController();
+    const run = runAgent(config, '委派调查', { smokeTool: false, signal: cancellation.signal });
+    await vi.waitFor(() => expect(fixture.requests).toHaveLength(2));
+    cancellation.abort();
+
+    await expect(run).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(fixture.requests).toHaveLength(2);
+  });
+
+  it('父轮次超时停止正在执行的 Explore，且不启动后续模型请求', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'delegate-timeout-explore', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码' }),
+      } }] }
+      : { frames: [{ delta: { content: '缓慢' }, delayMs: 500 }, { delta: {}, finish_reason: 'stop' }] });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 200, maxSteps: 4,
+    };
+
+    await expect(runAgent(config, '委派调查', { smokeTool: false })).rejects.toMatchObject({ code: 'TIMEOUT' });
+    expect(fixture.requests).toHaveLength(2);
   });
 });
