@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -228,7 +228,7 @@ describe('只读 Explore 委派', () => {
     expect(fixture.requests[1]!.tools.map(({ function: fn }) => fn.name).sort()).toEqual(['glob', 'grep', 'read_file']);
   });
 
-  it('内部读取失败后继续串行搜索，并要求报告说明失败影响', async () => {
+  it('批量执行只读工具，单项失败后继续调查并要求报告说明失败影响', async () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     await writeFile(join(workspace, 'module.ts'), 'export const answer = 42;\n');
     const fixture = await startLocalOpenAIModel((_request, index) => {
@@ -238,6 +238,7 @@ describe('只读 Explore 委派', () => {
       if (index === 2) return { calls: [
         { id: 'failed-read', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'missing.ts' }) } },
         { id: 'followup-glob', type: 'function', function: { name: 'glob', arguments: JSON.stringify({ pattern: '*.ts' }) } },
+        { id: 'followup-grep', type: 'function', function: { name: 'grep', arguments: JSON.stringify({ pattern: 'answer' }) } },
       ] };
       if (index === 3) return { content: '找到了 module.ts，但 missing.ts 读取失败，因此该文件内容未能核实。' };
       return { content: '调查已完成，missing.ts 的读取失败限制已说明。' };
@@ -253,12 +254,49 @@ describe('只读 Explore 委派', () => {
 
     const resumed = fixture.requests[2]!;
     const results = resumed.messages.filter(({ role }) => role === 'tool');
-    expect(results.map(({ content }) => JSON.parse(content).is_error)).toEqual([true, false]);
+    expect(results.map(({ content }) => JSON.parse(content).is_error)).toEqual([true, false, false]);
     expect(results[1]!.content).toContain('module.ts');
+    expect(results[2]!.content).toContain('answer');
     expect(fixture.requests[1]!.tools).toHaveLength(3);
     expect(fixture.requests[1]!.messages[0]!.content).toContain('失败');
     expect(JSON.parse(fixture.requests[3]!.messages.find(({ role }) => role === 'tool')!.content).output.report)
       .toContain('missing.ts 读取失败');
+  });
+
+  it('Explore 只公布只读工具，并拒绝写入、命令、远程服务和子 Agent 调用', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1) return { calls: [{ id: 'delegate-boundary', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '检查权限边界', prompt: '确认 Explore 工具权限' }),
+      } }] };
+      if (index === 2) return { calls: [
+        { id: 'forbidden-write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'forbidden.txt', content: 'no' }) } },
+        { id: 'forbidden-bash', type: 'function', function: { name: 'Bash', arguments: JSON.stringify({ command: 'touch forbidden.txt' }) } },
+        { id: 'forbidden-mcp', type: 'function', function: { name: 'mcp_remote__write', arguments: '{}' } },
+        { id: 'forbidden-agent', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: 'nested', prompt: 'nested' }) } },
+      ] };
+      if (index === 3) return { content: '所有未公布工具均被拒绝，未执行写入或委派。' };
+      return { content: '权限边界已确认。' };
+    });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 5,
+    };
+
+    await runAgent(config, '检查 Explore 权限', { smokeTool: false });
+
+    expect(fixture.requests[1]!.tools.map(({ function: fn }) => fn.name).sort()).toEqual(['glob', 'grep', 'read_file']);
+    const results = fixture.requests[2]!.messages.filter(({ role }) => role === 'tool');
+    expect(results).toHaveLength(4);
+    expect(results.map(({ content }) => JSON.parse(content).error)).toEqual([
+      expect.stringContaining("unavailable tool 'write_file'"),
+      expect.stringContaining("unavailable tool 'Bash'"),
+      expect.stringContaining("unavailable tool 'mcp_remote__write'"),
+      expect.stringContaining("unavailable tool 'agent'"),
+    ]);
+    await expect(readFile(join(workspace, 'forbidden.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('搜索结果被截断时允许缩小范围，系统提示要求报告限制', async () => {

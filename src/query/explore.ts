@@ -6,7 +6,7 @@ import { registerFileReadTool } from '../tools/FileReadTool/FileReadTool.js';
 import { registerGlobTool } from '../tools/GlobTool/GlobTool.js';
 import { registerGrepTool } from '../tools/GrepTool/GrepTool.js';
 import type { BuiltInToolContext } from '../tools/register-built-in-tools.js';
-import { ToolRegistry } from '../tools/tool-registry.js';
+import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.js';
 import { readWorkspaceFile } from '../tools/workspace-files.js';
 
 const exploreInstructions = [
@@ -56,7 +56,8 @@ export async function runExplore(
     model: provider.chat(modelOverride ?? config.explore?.model ?? config.model),
     instructions,
     tools: registry.tools(),
-    toolCallConcurrency: 1,
+    // Explore 使用独立 registry 和工作池；只读调用可并行，调度上限与主 Agent 一致。
+    toolCallConcurrency: MAX_TOOL_CALL_CONCURRENCY,
     stopWhen: isStepCount(config.maxSteps),
     maxRetries: 0,
   });
