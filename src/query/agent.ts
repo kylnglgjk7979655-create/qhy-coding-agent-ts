@@ -111,7 +111,15 @@ export async function runAgent(
       }
     },
   });
-  registerBuiltInTools(registry, { config, probe, options, bashOperations });
+  registerBuiltInTools(registry, {
+    config,
+    probe,
+    fileWriteCallbacks: {
+      ...(options.onBeforeWrite === undefined ? {} : { onBeforeWrite: options.onBeforeWrite }),
+      ...(options.onCheckpointError === undefined ? {} : { onCheckpointError: options.onCheckpointError }),
+    },
+    bashOperations,
+  });
   let closeMCP: (() => Promise<void>) | undefined;
   try {
     closeMCP = await registerRemoteMCP(config, registry, signal);

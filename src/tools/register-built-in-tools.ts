@@ -11,7 +11,7 @@ import { registerBashTool } from './BashTool/BashTool.js';
 export interface BuiltInToolContext {
   config: ResolvedConfig;
   probe: string;
-  options: {
+  fileWriteCallbacks: {
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;
   };

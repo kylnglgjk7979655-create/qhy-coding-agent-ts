@@ -3,7 +3,7 @@ import { writeWorkspaceFile } from '../workspace-files.js';
 import type { BuiltInToolContext } from '../register-built-in-tools.js';
 import type { ToolRegistry } from '../tool-registry.js';
 
-export function registerFileWriteTool(registry: ToolRegistry, { config, options }: BuiltInToolContext): void {
+export function registerFileWriteTool(registry: ToolRegistry, { config, fileWriteCallbacks }: BuiltInToolContext): void {
   registry.register({
     name: 'write_file',
     description: '将工作区内文件完整替换为指定内容；目标不存在时创建文件，不会创建父目录。',
@@ -13,8 +13,8 @@ export function registerFileWriteTool(registry: ToolRegistry, { config, options 
         config.workspace,
         path,
         content,
-        options.onBeforeWrite,
-        options.onCheckpointError,
+        fileWriteCallbacks.onBeforeWrite,
+        fileWriteCallbacks.onCheckpointError,
       );
       return { success: true as const };
     },
