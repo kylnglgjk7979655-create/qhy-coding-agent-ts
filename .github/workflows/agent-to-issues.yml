@@ -71,7 +71,7 @@ jobs:
         with:
           name: ticket-plan
           path: ${{ runner.temp }}/tickets/plan.json
-  record:
+  publish:
     needs: plan
     if: always() && needs.plan.outputs.started == 'true'
     runs-on: ubuntu-latest
@@ -102,12 +102,19 @@ jobs:
         with:
           name: ticket-plan
           path: ${{ runner.temp }}/plan
-      - name: Validate and post reviewable plan
+      - name: Validate and create sub-issues
         if: needs.plan.result == 'success'
         env:
           SOURCE_FILE: ${{ runner.temp }}/source/source.json
           PLAN_FILE: ${{ runner.temp }}/plan/plan.json
-        run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts record
+        run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts publish
+      - name: Report split or publication failure
+        if: failure() || needs.plan.result != 'success'
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --add-label "agent:blocked"
+          gh issue comment "$ISSUE_NUMBER" --body "拆票或创建子任务失败。请检查 $RUN_URL；发布中断时可重新运行失败的 job，复用同一计划补齐子任务和依赖。需求已变化时需先清理旧子任务，再重新添加 agent:to-issues。"
       - name: Always remove in-progress
         if: always()
         run: gh issue edit "$ISSUE_NUMBER" --remove-label "agent:in-progress"

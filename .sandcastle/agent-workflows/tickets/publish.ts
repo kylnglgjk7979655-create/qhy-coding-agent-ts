@@ -6,8 +6,10 @@ import type { Issue } from './github.js';
 export function publishTickets(github: GitHub, input: Plan): Map<string, Issue> {
   const plan = parsePlan(input);
   const parent = github.issue(plan.parent);
-  if (parent.state !== 'open' || !hasLabel(parent, 'agent:publish-tickets')) throw new Error('父 Issue 已关闭或发布标签已移除。');
-  if (sourceHash(parent, github.comments(parent.number)) !== plan.source_hash) throw new Error('规格或人工评论已变化，请重新拆票和审批。');
+  if (parent.state !== 'open' || ['agent:implement', 'agent:queued'].some((label) => hasLabel(parent, label))) {
+    throw new Error('父 Issue 已关闭或已进入实现，拒绝创建子任务。');
+  }
+  if (sourceHash(parent, github.comments(parent.number)) !== plan.source_hash) throw new Error('规格或人工评论已变化，请重新拆票。');
   if (github.parent(parent.number) !== null) throw new Error('拆票来源必须为顶层父 Issue。');
 
   // 用完整列表找回“创建成功但尚未来得及挂接”的票，避免搜索索引延迟和重试重复创建。
@@ -58,6 +60,5 @@ export function publishTickets(github: GitHub, input: Plan): Map<string, Issue> 
       '', '已设置原生父子关系和阻塞依赖。添加父 Issue 的 `agent:implement` 后按依赖逐票实现；发布本身不启动实现。',
     ].join('\n'));
   }
-  github.removeLabel(parent, 'agent:publish-tickets');
   return mapping;
 }

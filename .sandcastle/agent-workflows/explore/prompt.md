@@ -14,7 +14,7 @@ Ground your assessment in:
 
 - `GLOSSARY.md`
 - `docs/adr/` if relevant
-- `.sandcastle/CODING_STANDARDS.md`
+- `CODING_STANDARDS.md`
 
 # 1. GROUP
 

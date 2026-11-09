@@ -6,7 +6,6 @@ const ROUTES = {
   'update-branch': { workflow: 'agent-update-branch.yml', label: 'agent:update-branch', target: 'pr_number', sha: true },
   explore: { workflow: 'agent-explore.yml', label: 'agent:explore', target: 'issue_number', extra: ['dry_run'] },
   split: { workflow: 'agent-to-issues.yml', label: 'agent:to-issues', target: 'issue_number' },
-  'publish-tickets': { workflow: 'agent-publish-tickets.yml', label: 'agent:publish-tickets', target: 'issue_number', extra: ['approved_at'] },
 };
 
 function encodeRequest(request) {
@@ -47,7 +46,6 @@ function isValidRoute(request) {
     || Object.values(request.inputs).some((value) => typeof value !== 'string')) return false;
   if (route.sha && (!request.inputs.expected_head_sha || !/^[a-f0-9]{40}$/i.test(request.inputs.expected_head_sha))) return false;
   if (request.kind === 'explore' && !['true', 'false'].includes(request.inputs.dry_run)) return false;
-  if (request.kind === 'publish-tickets' && !Number.isFinite(Date.parse(request.inputs.approved_at))) return false;
   return true;
 }
 

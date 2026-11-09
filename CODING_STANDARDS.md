@@ -2,6 +2,12 @@
 
 本规范适用于本仓库的代码新增、修改和审查。
 
+## 项目约定
+
+使用 TypeScript、ESM，沿用现有类型检查配置；相对导入使用 `.js` 后缀。领域词汇来自 `GLOSSARY.md`，相关设计决策来自 `docs/adr/`。
+
+提交使用 conventional commit。云端 Agent 在当前分支提交；推送、PR、标签和评论由 workflow 负责，具体交付协议以各阶段 prompt 为准。
+
 ## 接口设计
 
 ### 深层模块

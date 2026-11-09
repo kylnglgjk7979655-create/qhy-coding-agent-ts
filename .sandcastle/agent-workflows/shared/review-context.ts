@@ -1,4 +1,6 @@
 import { gh, isRecord, safeSh, sh, textOr } from "./common.js";
+import { GitHub } from '../tickets/github.js';
+import { fetchIssueContext } from './issue-context.js';
 import { parseDiffLines } from "./diff-lines.js";
 
 export interface ReviewThreadComment {
@@ -125,13 +127,9 @@ const fetchLinkedIssue = (
   prBody: string,
 ): Pick<PullRequestContext, "issueNumber" | "issueTitle" | "linkedIssue"> => {
   const issueNumber = linkedIssueNumber(prBody);
-  const issueTitle = issueNumber
-    ? safeSh(`gh issue view ${issueNumber} --json title --jq .title`).trim()
-    : "";
-  const linkedIssue = issueNumber
-    ? safeSh(`gh issue view ${issueNumber} --comments`)
-    : "(no linked issue found)";
-  return { issueNumber, issueTitle, linkedIssue };
+  return issueNumber
+    ? fetchIssueContext(Number(issueNumber), new GitHub(process.env.GH_REPO ?? ''))
+    : { issueNumber: '', issueTitle: '', linkedIssue: '(no linked issue found)' };
 };
 
 /** PR conversation comments, review summaries with a body, and threads. */

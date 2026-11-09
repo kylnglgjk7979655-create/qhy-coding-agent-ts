@@ -1,5 +1,8 @@
 # course-video-manager 拆票与依赖执行调查
 
+> 历史调查记录：下文描述的审批发布、每票独立 PR 等方案已经被后续实现替代。当前流程是自动拆票、父需求共享 PR、整体 CR 和合并后关闭父 Issue，操作以 [GitHub Actions](../agents/github-actions.md) 与 [skill 执行约定](../agents/skill-execution.md) 为准。
+
+
 调查日期：2026-11-07。研究对象为参考仓库默认分支 `main` 的固定提交 [`1558f6fe107c9aba7d51d251d3b89c7c17c04404`](https://github.com/mattpocock/course-video-manager/commit/1558f6fe107c9aba7d51d251d3b89c7c17c04404)。本文记录源实现和本仓库需求之间的区别，不代表本仓库已经交付这些能力。
 
 ## 结论
