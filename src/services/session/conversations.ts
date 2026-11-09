@@ -44,6 +44,13 @@ export function sessionStorageRoot(home = homedir()): string {
   return join(home, '.qhy-coding-agents');
 }
 
+export function sessionTaskOutputDirectory(home: string, conversationId: string): string {
+  if (!conversationIdPattern.test(conversationId)) {
+    throw new AgentError('CONFIG_ERROR', 'conversationId 仅允许 1–128 位字母、数字、下划线或连字符。');
+  }
+  return join(sessionStorageRoot(home), 'sessions', conversationId, 'tasks');
+}
+
 export async function createSession(home: string, options: {
   id: string;
   workspace: string;

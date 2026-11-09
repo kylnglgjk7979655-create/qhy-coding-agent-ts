@@ -11,7 +11,7 @@ export function registerAgentTool(registry: ToolRegistry, config: ResolvedConfig
   registry.register({
     name: 'agent',
     concurrency: 'parallel',
-    description: '委派任务给子 Agent；默认 general-purpose，可选只读 Explore。默认前台等待；background=true 仅对 general-purpose 后台启动并立即返回，避免重复任务。',
+    description: '委派子 Agent；默认 general-purpose，可选只读 Explore；background=true 后台启动。',
     inputSchema: z.strictObject({
       description: z.string().trim().min(1),
       prompt: z.string().trim().min(1),
@@ -21,10 +21,22 @@ export function registerAgentTool(registry: ToolRegistry, config: ResolvedConfig
     }),
     execute: async ({ description, prompt, subagent_type, model, background }, execution) => {
       const type = subagent_type?.toLowerCase() ?? 'general-purpose';
+      if (type === 'task-manager') {
+        if (!backgroundTasks) throw new ToolExecutionError('当前调用没有绑定主会话，无法管理后台任务。', undefined);
+        const taskIds = prompt.split(',').map((taskId) => taskId.trim()).filter(Boolean);
+        if (description.toLowerCase() === 'status' && taskIds.length === 1) {
+          return backgroundTasks.get(taskIds[0]!) ?? { taskId: taskIds[0], status: 'not_found', message: '未找到该后台任务。' };
+        }
+        if (description.toLowerCase() === 'wait' && taskIds.length > 0 && taskIds.length <= 10) {
+          return backgroundTasks.wait(taskIds);
+        }
+        if (description.toLowerCase() === 'cancel' && taskIds.length === 1) return backgroundTasks.cancel(taskIds[0]!);
+        throw new ToolExecutionError('task-manager 的 description 使用 status、wait 或 cancel；prompt 填一个任务 ID，wait 可用逗号分隔多个 ID。', undefined);
+      }
       if (type === 'general-purpose') {
         if (background === true) {
           if (!backgroundTasks) throw new ToolExecutionError('当前调用没有绑定主会话，无法启动后台子 Agent。', undefined);
-          const launched = backgroundTasks.launch(execution.toolCallId, async (signal) => {
+          const launched = backgroundTasks.launch(execution.toolCallId, description, async (signal) => {
             const result = await runAgent(config, `任务说明：${description}\n任务：${prompt}`, {
               smokeTool: false,
               generalPurposeSubagent: true,
@@ -32,12 +44,12 @@ export function registerAgentTool(registry: ToolRegistry, config: ResolvedConfig
               ...(approvalControl === undefined ? {} : { approvalControl }),
               ...(model === undefined ? {} : { modelOverride: model }),
             });
-            return result.text;
+            return { report: result.text, usage: result.usage };
           });
           return {
             ...launched,
             status: 'running',
-            collaborationHint: '后台任务仍在运行；请先继续其他工作，避免重复启动相同或重叠任务。',
+            collaborationHint: `后台任务仍在运行；避免重复启动。使用 agent(subagent_type="task-manager", description="status|wait|cancel", prompt="任务 ID") 管理任务；wait 可在 prompt 中用逗号分隔多个 ID。`,
           };
         }
         const result = await runAgent(config, `任务说明：${description}\n任务：${prompt}`, {

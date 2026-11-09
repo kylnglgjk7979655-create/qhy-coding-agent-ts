@@ -621,24 +621,24 @@ describe('后台子 Agent 启动', () => {
     const tasks = new BackgroundAgentTasks();
     const completions: Array<() => void> = [];
     for (let index = 0; index < 10; index += 1) {
-      tasks.launch(`launch-${index}`, () => new Promise<string>((resolve) => {
+      tasks.launch(`launch-${index}`, `调查 ${index}`, () => new Promise<string>((resolve) => {
         completions.push(() => resolve(`报告 ${index}`));
       }));
     }
 
     expect(tasks.runningCount).toBe(10);
-    expect(() => tasks.launch('launch-over-limit', async () => '不应启动'))
+    expect(() => tasks.launch('launch-over-limit', '超出上限', async () => '不应启动'))
       .toThrow('后台子 Agent 任务已达上限（10 个）');
     completions[0]!();
     await vi.waitFor(() => expect(tasks.runningCount).toBe(9));
-    expect(tasks.launch('launch-after-completion', async () => '可再次启动').launchCallId)
+    expect(tasks.launch('launch-after-completion', '完成后的任务', async () => '可再次启动').launchCallId)
       .toBe('launch-after-completion');
   });
 
   it('CLI 退出时向仍运行的后台任务发送取消信号', async () => {
     const tasks = new BackgroundAgentTasks();
     let wasAborted = false;
-    tasks.launch('launch-during-exit', (signal) => new Promise<string>((_resolve, reject) => {
+    tasks.launch('launch-during-exit', '退出时取消', (signal) => new Promise<string>((_resolve, reject) => {
       signal.addEventListener('abort', () => {
         wasAborted = true;
         reject(signal.reason);
@@ -649,5 +649,101 @@ describe('后台子 Agent 启动', () => {
 
     expect(wasAborted).toBe(true);
     await vi.waitFor(() => expect(tasks.runningCount).toBe(0));
+  });
+
+  it('可查询、等待多个终态并从任务池取得最终回复和用量', async () => {
+    const tasks = new BackgroundAgentTasks();
+    const finishers: Array<() => void> = [];
+    const first = tasks.launch('launch-first', '第一项调查', () => new Promise((resolve) => {
+      finishers.push(() => resolve({ report: '第一项结果', usage: { inputTokens: 12, outputTokens: 4 } }));
+    }));
+    const second = tasks.launch('launch-second', '第二项调查', () => new Promise<string>((resolve) => {
+      finishers.push(() => resolve('第二项结果'));
+    }));
+
+    expect(tasks.get(first.taskId)).toMatchObject({ status: 'running', description: '第一项调查' });
+    let settled = false;
+    const waiting = tasks.wait([first.taskId, second.taskId]).then((results) => { settled = true; return results; });
+    finishers[0]!();
+    await vi.waitFor(() => expect(tasks.get(first.taskId)?.status).toBe('succeeded'));
+    expect(settled).toBe(false);
+    finishers[1]!();
+
+    await expect(waiting).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ taskId: first.taskId, status: 'succeeded', result: '第一项结果', usage: { inputTokens: 12, outputTokens: 4 } }),
+      expect.objectContaining({ taskId: second.taskId, status: 'succeeded', result: '第二项结果' }),
+    ]));
+  });
+
+  it('取消只报告请求，任务以取消错误终止后才标记取消', async () => {
+    const tasks = new BackgroundAgentTasks();
+    let observedAbort = false;
+    const launched = tasks.launch('launch-cancel', '可取消调查', (signal) => new Promise<string>((_resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        observedAbort = true;
+        reject(signal.reason);
+      }, { once: true });
+    }));
+
+    expect(tasks.cancel(launched.taskId)).toMatchObject({ requested: true, status: 'running' });
+    expect(observedAbort).toBe(true);
+    await vi.waitFor(() => expect(tasks.get(launched.taskId)?.status).toBe('cancelled'));
+    expect(tasks.get(launched.taskId)?.error).toBeDefined();
+  });
+
+  it('取消信号未能停止执行时保留其真实成功终态', async () => {
+    const tasks = new BackgroundAgentTasks();
+    let finish!: (report: string) => void;
+    const launched = tasks.launch('launch-late-cancel', '不可即时停止的调查', () => new Promise<string>((resolve) => {
+      finish = resolve;
+    }));
+
+    expect(tasks.cancel(launched.taskId)).toMatchObject({ requested: true, status: 'running' });
+    finish('任务仍完成');
+    await expect(tasks.wait([launched.taskId])).resolves.toMatchObject([{ status: 'succeeded', result: '任务仍完成' }]);
+    expect(tasks.get(launched.taskId)?.cancellationRequested).toBe(true);
+  });
+
+  it('普通执行失败记录失败终态和安全失败原因', async () => {
+    const tasks = new BackgroundAgentTasks();
+    const launched = tasks.launch('launch-failure', '失败调查', async () => {
+      throw Object.assign(new Error('上游请求带敏感内容'), { code: 'PROVIDER_ERROR' });
+    });
+
+    await expect(tasks.wait([launched.taskId])).resolves.toMatchObject([{
+      status: 'failed', error: '运行失败，请检查配置及模型服务的兼容性。',
+    }]);
+  });
+
+  it('区分超时终态并将精简结果写入会话任务文件', async () => {
+    const outputDirectory = await mkdtemp(join(tmpdir(), 'qhy-background-output-'));
+    try {
+      const tasks = new BackgroundAgentTasks(outputDirectory);
+      const success = tasks.launch('launch-success-output', '可取得结果的调查', async () => ({
+        report: '最终报告', usage: { inputTokens: 21, outputTokens: 8 },
+      }));
+      await expect(tasks.wait([success.taskId])).resolves.toMatchObject([{
+        status: 'succeeded', result: '最终报告', usage: { inputTokens: 21, outputTokens: 8 },
+      }]);
+      const successFile = JSON.parse(await readFile(join(outputDirectory, `${success.taskId}.json`), 'utf8'));
+      expect(successFile).toMatchObject({
+        taskId: success.taskId, description: '可取得结果的调查', status: 'succeeded',
+        finalReply: '最终报告', usage: { inputTokens: 21, outputTokens: 8 },
+      });
+      expect(successFile).not.toHaveProperty('result');
+      const launched = tasks.launch('launch-timeout', '超时调查', async () => {
+        throw Object.assign(new Error('超时'), { code: 'TIMEOUT' });
+      });
+
+      await vi.waitFor(() => expect(tasks.get(launched.taskId)?.status).toBe('timed_out'));
+      const task = tasks.get(launched.taskId)!;
+      const saved = JSON.parse(await readFile(join(outputDirectory, `${launched.taskId}.json`), 'utf8'));
+      expect(task).toMatchObject({ status: 'timed_out', description: '超时调查' });
+      expect(saved).toMatchObject({ taskId: launched.taskId, description: '超时调查', status: 'timed_out' });
+      expect(saved).not.toHaveProperty('toolCalls');
+      expect(saved).not.toHaveProperty('arguments');
+    } finally {
+      await rm(outputDirectory, { recursive: true, force: true });
+    }
   });
 });
