@@ -108,12 +108,14 @@ describe('工具批次顺序与新增往返配对', () => {
     await expect(readFile(join(workspace, 'blocked.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await readFile(join(workspace, 'note.txt'), 'utf8')).toBe('后续新内容');
     const events = result.stdout.split('\n').filter((line) => line.startsWith('[工具]'));
-    expect(events).toEqual([
+    expect(events.slice(0, 5)).toEqual([
       '[工具] write_file：拒绝', '[工具] missing_tool：拒绝',
       '[工具] write_file：开始', '[工具] write_file：成功',
-      '[工具] read_file：开始', '[工具] read_file：成功',
-      '[工具] runtimeInfo：开始', '[工具] runtimeInfo：成功',
+      '[工具] read_file：开始',
     ]);
+    expect(events.slice(5).sort()).toEqual([
+      '[工具] read_file：成功', '[工具] runtimeInfo：开始', '[工具] runtimeInfo：成功',
+    ].sort());
   });
 
   it('失败写入后读取同一缺失路径也失败，并返回两项结果', async () => {

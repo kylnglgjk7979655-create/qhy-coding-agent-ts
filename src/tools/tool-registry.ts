@@ -19,15 +19,79 @@ export interface ToolApprovalRequest {
 
 type ToolErrorCode = NonNullable<ToolExecutionEvent['errorCode']>;
 type ToolFailure = { is_error: true; error: { code: ToolErrorCode; message: string } };
+export const MAX_TOOL_CALL_CONCURRENCY = 10;
+
+interface ScheduledCall {
+  concurrency: 'parallel' | 'exclusive';
+  signal?: AbortSignal;
+  run: () => Promise<unknown>;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+  onAbort?: () => void;
+}
+
+class ToolCallScheduler {
+  private readonly queued: ScheduledCall[] = [];
+  private active = 0;
+  private exclusiveActive = false;
+
+  run<T>(concurrency: 'parallel' | 'exclusive', signal: AbortSignal | undefined, operation: () => Promise<T>): Promise<T> {
+    signal?.throwIfAborted();
+    return new Promise<T>((resolve, reject) => {
+      const call: ScheduledCall = {
+        concurrency,
+        ...(signal ? { signal } : {}),
+        run: operation,
+        resolve: resolve as (value: unknown) => void,
+        reject,
+      };
+      if (signal) {
+        call.onAbort = () => {
+          const index = this.queued.indexOf(call);
+          if (index < 0) return;
+          this.queued.splice(index, 1);
+          reject(signal.reason ?? new Error('工具调用已取消。'));
+          this.drain();
+        };
+        signal.addEventListener('abort', call.onAbort, { once: true });
+      }
+      this.queued.push(call);
+      if (signal?.aborted) call.onAbort?.();
+      else this.drain();
+    });
+  }
+
+  private drain(): void {
+    while (!this.exclusiveActive && this.queued.length > 0) {
+      const call = this.queued[0]!;
+      if (call.concurrency === 'exclusive' && this.active > 0) return;
+      if (call.concurrency === 'parallel' && this.active >= MAX_TOOL_CALL_CONCURRENCY) return;
+      this.queued.shift();
+      if (call.onAbort) call.signal?.removeEventListener('abort', call.onAbort);
+      this.active += 1;
+      if (call.concurrency === 'exclusive') this.exclusiveActive = true;
+      void Promise.resolve().then(() => {
+        call.signal?.throwIfAborted();
+        return call.run();
+      }).then(call.resolve, call.reject).finally(() => {
+        this.active -= 1;
+        if (call.concurrency === 'exclusive') this.exclusiveActive = false;
+        this.drain();
+      });
+      if (call.concurrency === 'exclusive') return;
+    }
+  }
+}
 
 // 操作失败仍可携带业务输出，例如命令的退出状态和已收集输出。
 export class ToolExecutionError extends Error {
   constructor(message: string, readonly output: unknown) { super(message); }
 }
 
-// SDK 负责参数校验、串行调度和调用 ID；registry 统一适配操作与结果。
+// SDK 负责参数校验、调用 ID 与结果配对；registry 按工具声明调度执行。
 export class ToolRegistry {
   private readonly registered = new Map<string, ToolSet[string]>();
+  private readonly scheduler = new ToolCallScheduler();
 
   constructor(private readonly options: {
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
@@ -39,17 +103,18 @@ export class ToolRegistry {
     name: string;
     description: string;
     inputSchema: FlexibleSchema<Input>;
+    concurrency?: 'parallel' | 'exclusive';
     prepare?: (input: Input) => Promise<{ input: Input; details?: Record<string, string> }>;
     execute: (input: Input, options: ToolExecutionOptions<unknown>) => Promise<Output> | Output;
   }): void {
-    const { name, description, inputSchema, execute, prepare } = definition;
+    const { name, description, inputSchema, execute, prepare, concurrency = 'exclusive' } = definition;
     if (this.registered.has(name)) {
       throw new AgentError('CONFIG_ERROR', `工具名称重复注册：${name}。`);
     }
     this.registered.set(name, tool({
       description,
       inputSchema,
-      execute: async (input, execution) => {
+      execute: async (input, execution) => this.scheduler.run(concurrency, execution.abortSignal, async () => {
         const eventDetails = name === 'agent' && typeof input === 'object' && input !== null
           && 'description' in input && typeof input.description === 'string'
           ? { description: input.description }
@@ -83,7 +148,7 @@ export class ToolRegistry {
           return { is_error: true as const, error: { code: 'TOOL_EXECUTION_ERROR' as const, message },
             ...(error instanceof ToolExecutionError ? { output: error.output } : {}) };
         }
-      },
+      }),
     }));
   }
 

@@ -7,6 +7,7 @@ import type { ToolRegistry } from '../tool-registry.js';
 export function registerAgentTool(registry: ToolRegistry, config: ResolvedConfig): void {
   registry.register({
     name: 'agent',
+    concurrency: 'parallel',
     description: '将只读代码调查委派给 Explore。提供简短任务说明和具体调查 prompt；subagent_type 可省略，当前支持 Explore；model 可指定本次调用的模型。',
     inputSchema: z.strictObject({
       description: z.string().trim().min(1),

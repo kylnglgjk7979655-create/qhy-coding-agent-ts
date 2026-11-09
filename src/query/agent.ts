@@ -11,7 +11,7 @@ import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
 import type { WorkspaceFileSnapshot } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
 import type { ApprovalControl } from '../tools/tool-approval.js';
-import { ToolRegistry } from '../tools/tool-registry.js';
+import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.js';
 import { registerBuiltInTools } from '../tools/register-built-in-tools.js';
 import { registerRemoteMCP } from '../services/mcp/remote-mcp.js';
 import { DEFAULT_CONTEXT } from '../services/settings/config.js';
@@ -78,6 +78,7 @@ export async function runAgent(
   const pairingAbort = new AbortController();
   let pairingError: AgentError | undefined;
   let remainingMs = config.timeoutMs;
+  let deadlinePauseDepth = 0;
   let activeSince = performance.now();
   let timer = setTimeout(() => deadline.abort(), remainingMs);
   const signal = options.signal === undefined
@@ -85,13 +86,20 @@ export async function runAgent(
     : AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal, options.signal]);
   function pauseDeadline(): void {
     signal.throwIfAborted();
+    deadlinePauseDepth += 1;
+    if (deadlinePauseDepth > 1) return;
     clearTimeout(timer);
     remainingMs -= performance.now() - activeSince;
-    if (remainingMs <= 0) deadline.abort();
+    if (remainingMs <= 0) {
+      deadlinePauseDepth = 0;
+      deadline.abort();
+    }
     signal.throwIfAborted();
   }
   function resumeDeadline(): void {
-    if (signal.aborted) return;
+    if (deadlinePauseDepth === 0) return;
+    deadlinePauseDepth -= 1;
+    if (deadlinePauseDepth > 0 || signal.aborted) return;
     activeSince = performance.now();
     timer = setTimeout(() => deadline.abort(), remainingMs);
   }
@@ -167,7 +175,8 @@ export async function runAgent(
       instructions,
       maxOutputTokens: (config.context ?? DEFAULT_CONTEXT).answerReserveTokens,
       tools,
-      toolCallConcurrency: 1,
+      // SDK 的工作池负责并发上限；registry 按声明执行独占屏障与队首调度。
+      toolCallConcurrency: MAX_TOOL_CALL_CONCURRENCY,
       stopWhen: isStepCount(config.maxSteps),
       onError: ({ error }) => {
         if (InvalidToolInputError.isInstance(error) || NoSuchToolError.isInstance(error)) return;
