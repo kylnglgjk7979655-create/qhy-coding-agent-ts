@@ -138,7 +138,7 @@ describe('只读 Explore 委派', () => {
   });
 
   it.each([
-    ['unknown type', { description: '调查代码', prompt: '检查实现', type: 'Builder' }, 'TOOL_EXECUTION_ERROR', '可用类型：Explore'],
+    ['unknown type', { description: '调查代码', prompt: '检查实现', subagent_type: 'Builder' }, 'TOOL_EXECUTION_ERROR', '可用类型：Explore'],
     ['missing required prompt', { description: '调查代码' }, 'INVALID_TOOL_ARGUMENTS', '工具参数无效'],
   ])('对 %s 返回可识别的错误', async (_caseName, input, errorCode, message) => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
@@ -298,7 +298,7 @@ describe('只读 Explore 委派', () => {
     expect(fixture.requests[3]!.messages.some(({ role }) => role === 'tool')).toBe(true);
   });
 
-  it('没有内部工具调用且报告为空时将 Explore 作为普通工具失败返回', async () => {
+  it('报告为空时将 Explore 作为普通工具失败返回', async () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [{ id: 'delegate-empty-report', type: 'function', function: {
@@ -316,6 +316,32 @@ describe('只读 Explore 委派', () => {
 
     expect(fixture.requests).toHaveLength(3);
     const failure = JSON.parse(fixture.requests[2]!.messages.find(({ role }) => role === 'tool')!.content);
+    expect(failure).toMatchObject({ is_error: true, error: { code: 'TOOL_EXECUTION_ERROR' } });
+  });
+
+  it('内部工具调用后仍无报告时将 Explore 作为普通工具失败返回', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1) return { calls: [{ id: 'delegate-empty-after-tools', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '调查', prompt: '检查代码' }),
+      } }] };
+      if (index === 2) return { calls: [{ id: 'explore-tool-before-empty', type: 'function', function: {
+        name: 'glob', arguments: JSON.stringify({ pattern: '*.ts' }),
+      } }] };
+      if (index === 3) return { content: '   ' };
+      return { content: 'Explore 未返回报告。' };
+    });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 5,
+    };
+
+    await runAgent(config, '委派调查', { smokeTool: false });
+
+    expect(fixture.requests).toHaveLength(4);
+    const failure = JSON.parse(fixture.requests[3]!.messages.find(({ role }) => role === 'tool')!.content);
     expect(failure).toMatchObject({ is_error: true, error: { code: 'TOOL_EXECUTION_ERROR' } });
   });
 

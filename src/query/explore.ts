@@ -64,10 +64,7 @@ export async function runExplore(
     prompt: `任务说明：${description}\n调查任务：${prompt}`,
     ...(signal === undefined ? {} : { abortSignal: signal }),
   });
-  const [report, steps] = await Promise.all([result.text, result.steps]);
-  const usedTools = steps.some((step) => step.toolCalls.length > 0);
-  if (!usedTools && report.trim() === '') {
-    throw new Error('Explore 未调用调查工具且未返回非空报告。');
-  }
+  const report = await result.text;
+  if (report.trim() === '') throw new Error('Explore 未返回非空报告。');
   return report;
 }
