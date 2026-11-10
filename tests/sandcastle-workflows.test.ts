@@ -103,7 +103,7 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,cached_i
       ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, GIT_CONFIG_GLOBAL: join(directory, 'gitconfig'),
       CODEX_HOME: home, CODEX_AUTH_MODE: 'chatgpt', CODEX_MODEL: '', CODEX_API_KEY: 'must-clear', OPENAI_API_KEY: 'must-clear',
       GH_TOKEN: 'fixture', GH_REPO: 'owner/repo', MOCK_CALLS: calls, OUTPUT_DIR: output,
-      ISSUE_NUMBER: '1', ISSUE_TITLE: 'Fixture', PR_NUMBER: '2', BRANCH: 'agent/issue-1-fixture',
+      ISSUE_NUMBER: '1', ISSUE_TITLE: 'Fixture', PR_NUMBER: '2', PARENT_NUMBER: '', BRANCH: 'agent/issue-1-fixture',
     };
     const run = (mode: string) => execFileSync(process.execPath, [
       '--import', require.resolve('tsx'),

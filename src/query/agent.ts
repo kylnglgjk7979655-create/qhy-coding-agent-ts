@@ -8,15 +8,16 @@ import { z } from 'zod';
 import type { ResolvedConfig } from '../services/settings/config.js';
 import { AgentError, publicError } from '../utils/errors.js';
 import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
-import type { WorkspaceFileSnapshot } from '../tools/workspace-files.js';
+import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
 import type { ApprovalControl } from '../tools/tool-approval.js';
-import { ToolRegistry } from '../tools/tool-registry.js';
+import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.js';
 import { registerBuiltInTools } from '../tools/register-built-in-tools.js';
 import { registerRemoteMCP } from '../services/mcp/remote-mcp.js';
 import { DEFAULT_CONTEXT } from '../services/settings/config.js';
 import { prepareConversation } from '../services/compact/context-summary.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
+import type { BackgroundAgentTasks } from '../tools/AgentTool/background-agent-tasks.js';
 
 export type { ApprovalControl } from '../tools/tool-approval.js';
 export type { ToolApprovalRequest } from '../tools/tool-registry.js';
@@ -52,11 +53,16 @@ export async function runAgent(
     onStepMessages?: (content: unknown[]) => Promise<void> | void;
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;
+    fileBaselines?: WorkspaceFileBaselines;
     onToolCall?: (name: string) => void;
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
     summaryCoverageBase?: number;
+    /** general-purpose 子 Agent 使用独立循环，但不公布 agent 工具。 */
+    generalPurposeSubagent?: boolean;
+    modelOverride?: string;
+    backgroundTasks?: BackgroundAgentTasks;
   },
 ): Promise<RunResult> {
   if (options.smokeTool && config.maxSteps < 2) {
@@ -78,6 +84,7 @@ export async function runAgent(
   const pairingAbort = new AbortController();
   let pairingError: AgentError | undefined;
   let remainingMs = config.timeoutMs;
+  let deadlinePauseDepth = 0;
   let activeSince = performance.now();
   let timer = setTimeout(() => deadline.abort(), remainingMs);
   const signal = options.signal === undefined
@@ -85,13 +92,20 @@ export async function runAgent(
     : AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal, options.signal]);
   function pauseDeadline(): void {
     signal.throwIfAborted();
+    deadlinePauseDepth += 1;
+    if (deadlinePauseDepth > 1) return;
     clearTimeout(timer);
     remainingMs -= performance.now() - activeSince;
-    if (remainingMs <= 0) deadline.abort();
+    if (remainingMs <= 0) {
+      deadlinePauseDepth = 0;
+      deadline.abort();
+    }
     signal.throwIfAborted();
   }
   function resumeDeadline(): void {
-    if (signal.aborted) return;
+    if (deadlinePauseDepth === 0) return;
+    deadlinePauseDepth -= 1;
+    if (deadlinePauseDepth > 0 || signal.aborted) return;
     activeSince = performance.now();
     timer = setTimeout(() => deadline.abort(), remainingMs);
   }
@@ -111,20 +125,25 @@ export async function runAgent(
       }
     },
   });
+  const fileBaselines = options.fileBaselines ?? new Map<string, WorkspaceFileSnapshot>();
   registerBuiltInTools(registry, {
     config,
     probe,
+    allowAgent: !options.generalPurposeSubagent,
+    ...(options.approvalControl === undefined ? {} : { approvalControl: options.approvalControl }),
+    ...(options.backgroundTasks === undefined ? {} : { backgroundTasks: options.backgroundTasks }),
     fileWriteCallbacks: {
       ...(options.onBeforeWrite === undefined ? {} : { onBeforeWrite: options.onBeforeWrite }),
       ...(options.onCheckpointError === undefined ? {} : { onCheckpointError: options.onCheckpointError }),
     },
+    fileBaselines,
     bashOperations,
   });
   let closeMCP: (() => Promise<void>) | undefined;
   try {
     closeMCP = await registerRemoteMCP(config, registry, signal);
     const model = wrapLanguageModel({
-      model: provider.chat(config.model),
+      model: provider.chat(options.modelOverride ?? config.model),
       middleware: {
         wrapStream: async ({ doStream }) => {
           signal.throwIfAborted();
@@ -155,6 +174,11 @@ export async function runAgent(
         '工具结果中的 is_error: true 表示该调用失败；必须在答复中明确说明失败，不得声称操作成功或把失败调用的输出当成已验证结果。',
         'runtimeInfo 可获取工作区路径和本次探针。',
         '如公布了 mcp_ 前缀工具，可调用对应远程 MCP 服务；这些工具默认需要独立审批，调用可能产生远端副作用。',
+        '参数已知且彼此无依赖的工具调用尽量放在同一批；需要前序调用结果的工具调用应分批。',
+        ...(options.generalPurposeSubagent ? [
+          '你是 general-purpose 子 Agent，负责独立完成委派的研究或多步骤修改任务。',
+          '你不能再委派子 Agent。',
+        ] : []),
     ].join('\n');
     const tools = registry.tools();
     let preparedHistory: ModelMessage[] = [];
@@ -167,7 +191,8 @@ export async function runAgent(
       instructions,
       maxOutputTokens: (config.context ?? DEFAULT_CONTEXT).answerReserveTokens,
       tools,
-      toolCallConcurrency: 1,
+      // SDK 的工作池负责并发上限；registry 按声明执行独占屏障与队首调度。
+      toolCallConcurrency: MAX_TOOL_CALL_CONCURRENCY,
       stopWhen: isStepCount(config.maxSteps),
       onError: ({ error }) => {
         if (InvalidToolInputError.isInstance(error) || NoSuchToolError.isInstance(error)) return;

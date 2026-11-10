@@ -63,6 +63,45 @@ describe('公共工具执行边界', () => {
     }
   });
 
+  it('过期读取基线阻止覆盖，重新读取及成功写入后允许后续受控写入', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    await writeFile(join(workspace, 'note.txt'), '初始内容');
+    const fixture = await startLocalOpenAIModel(async (_request, index) => {
+      if (index === 1) return { calls: [{ id: 'baseline-read', type: 'function', function: {
+        name: 'read_file', arguments: '{"path":"note.txt"}',
+      } }] };
+      if (index === 2) {
+        await writeFile(join(workspace, 'note.txt'), '外部修改');
+        return { calls: [{ id: 'stale-write', type: 'function', function: {
+          name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: '不应覆盖' }),
+        } }] };
+      }
+      if (index === 3) return { calls: [
+        { id: 'refresh-read', type: 'function', function: { name: 'read_file', arguments: '{"path":"note.txt"}' } },
+        { id: 'refreshed-write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: '已更新' }) } },
+      ] };
+      if (index === 4) return { calls: [
+        { id: 'create-file', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'created.txt', content: '初次创建' }) } },
+        { id: 'overwrite-created', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'created.txt', content: '基线已更新' }) } },
+      ] };
+      return { content: '文件处理完成。' };
+    });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 8,
+    };
+
+    await runAgent(config, '处理文件', { smokeTool: false });
+
+    const staleResult = fixture.requests.flatMap(({ messages }) => messages)
+      .find((message) => message.role === 'tool' && 'tool_call_id' in message && message.tool_call_id === 'stale-write')!.content;
+    expect(JSON.parse(staleResult)).toMatchObject({ is_error: true, error: { message: expect.stringContaining('请重新读取') } });
+    expect(await readFile(join(workspace, 'note.txt'), 'utf8')).toBe('已更新');
+    expect(await readFile(join(workspace, 'created.txt'), 'utf8')).toBe('基线已更新');
+  });
+
   it('SDK 参数 schema 拒绝通过统一结果和拒绝事件反馈', async () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
@@ -115,6 +154,162 @@ describe('公共工具执行边界', () => {
     } finally {
       write.mockRestore();
     }
+  });
+
+  it('同批可并发工具在公共 Agent 执行入口中重叠运行', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    await writeFile(join(workspace, 'note.txt'), '并发读取');
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [
+        { id: 'parallel-read', type: 'function', function: { name: 'read_file', arguments: '{"path":"note.txt"}' } },
+        { id: 'parallel-runtime', type: 'function', function: { name: 'runtimeInfo', arguments: '{}' } },
+      ] }
+      : { content: '读取完成。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+    let active = 0;
+    let maximumActive = 0;
+    await runAgent(config, '并发读取', {
+      smokeTool: false,
+      onToolCallStart: async () => {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        active -= 1;
+      },
+    });
+    expect(maximumActive).toBe(2);
+    expect(fixture.requests[0]!.messages[0]!.content).toContain('无依赖的工具调用尽量放在同一批');
+    expect(fixture.requests).toHaveLength(2);
+  });
+
+  it('并发调用最多启动十个，空位释放后继续队首调用', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    const calls = Array.from({ length: 11 }, (_, index) => ({
+      id: `limit-${index}`,
+      type: 'function' as const,
+      function: { name: 'runtimeInfo', arguments: '{}' },
+    }));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls }
+      : { content: '全部运行完成。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+    let entered = 0;
+    let active = 0;
+    let maximumActive = 0;
+    let releaseFirstWave!: () => void;
+    let tenEntered!: () => void;
+    const firstWave = new Promise<void>((resolve) => { releaseFirstWave = resolve; });
+    const tenCallsEntered = new Promise<void>((resolve) => { tenEntered = resolve; });
+    const run = runAgent(config, '执行 11 次运行信息查询', {
+      smokeTool: false,
+      onToolCallStart: async () => {
+        entered += 1;
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        if (entered === 10) tenEntered();
+        await firstWave;
+        active -= 1;
+      },
+    });
+    await tenCallsEntered;
+    expect(entered).toBe(10);
+    releaseFirstWave();
+    await run;
+    expect(entered).toBe(11);
+    expect(maximumActive).toBe(10);
+  });
+
+  it('并发人工审批等待期间不消耗整轮执行预算', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    await writeFile(join(workspace, 'note.txt'), '审批后读取');
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [
+        { id: 'approval-read-first', type: 'function', function: { name: 'read_file', arguments: '{"path":"note.txt"}' } },
+        { id: 'approval-read-second', type: 'function', function: { name: 'read_file', arguments: '{"path":"note.txt"}' } },
+      ] }
+      : { content: '两项审批均已完成。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'human', rules: [{ toolName: 'read_file', action: 'ask' }], timeoutMs: 1000, humanTimeoutMs: 500 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 100, maxSteps: 5,
+    };
+    const result = await runAgent(config, '先完成两项独立审批再读取', {
+      smokeTool: false,
+      approvalControl: async ({ callId }) => {
+        await new Promise((resolve) => setTimeout(resolve, callId === 'approval-read-first' ? 30 : 170));
+        return 'approve';
+      },
+    });
+    expect(result.text).toBe('两项审批均已完成。');
+    expect(fixture.requests).toHaveLength(2);
+  });
+
+  it('独占调用等待此前调用结束并阻止后续调用越过屏障', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [
+        { id: 'barrier-before-1', type: 'function', function: { name: 'runtimeInfo', arguments: '{}' } },
+        { id: 'barrier-before-2', type: 'function', function: { name: 'runtimeInfo', arguments: '{}' } },
+        { id: 'barrier-exclusive', type: 'function', function: { name: 'write_file', arguments: '{"path":"barrier.txt","content":"done"}' } },
+        { id: 'barrier-after', type: 'function', function: { name: 'runtimeInfo', arguments: '{}' } },
+      ] }
+      : { content: '屏障完成。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+    const started: string[] = [];
+    const gates = new Map<string, () => void>();
+    const waiters = new Map<string, () => void>();
+    for (const id of ['barrier-before-1', 'barrier-before-2', 'barrier-exclusive', 'barrier-after']) {
+      gates.set(id, () => {});
+      waiters.set(id, () => {});
+    }
+    const holds = new Map<string, Promise<void>>();
+    for (const id of gates.keys()) {
+      holds.set(id, new Promise<void>((resolve) => gates.set(id, resolve)));
+    }
+    const entered = new Map<string, Promise<void>>();
+    for (const id of waiters.keys()) {
+      entered.set(id, new Promise<void>((resolve) => waiters.set(id, resolve)));
+    }
+    const result = runAgent(config, '顺序执行并发屏障', {
+      smokeTool: false,
+      onToolCallStart: async ({ callId }) => {
+        started.push(callId);
+        waiters.get(callId)?.();
+        await holds.get(callId);
+      },
+    });
+    await Promise.all([entered.get('barrier-before-1'), entered.get('barrier-before-2')]);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(started).toEqual(['barrier-before-1', 'barrier-before-2']);
+    gates.get('barrier-before-1')?.();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(started).toEqual(['barrier-before-1', 'barrier-before-2']);
+    gates.get('barrier-before-2')?.();
+    await entered.get('barrier-exclusive');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(started).toEqual(['barrier-before-1', 'barrier-before-2', 'barrier-exclusive']);
+    gates.get('barrier-exclusive')?.();
+    await entered.get('barrier-after');
+    expect(started).toEqual(['barrier-before-1', 'barrier-before-2', 'barrier-exclusive', 'barrier-after']);
+    gates.get('barrier-after')?.();
+    await result;
+    expect(await readFile(join(workspace, 'barrier.txt'), 'utf8')).toBe('done');
   });
 
   it('首个排队工具开始后取消，不启动同批后续工具或下一次模型请求', async () => {

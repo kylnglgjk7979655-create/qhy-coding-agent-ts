@@ -6,8 +6,9 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { runAgent } from './query/agent.js';
-import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
-import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveLegacyConversation, startSessionRound } from './services/session/conversations.js';
+import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession } from './tools/AgentTool/background-agent-tasks.js';
+import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
+import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveLegacyConversation, sessionTaskOutputDirectory, startSessionRound } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
 import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './services/session/file-checkpoints.js';
 import type { FileRewindPlan } from './services/session/file-checkpoints.js';
@@ -130,20 +131,67 @@ async function main(): Promise<void> {
     }
 
     input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
+    const fileBaselinesBySession = new Map<string, Map<string, WorkspaceFileSnapshot>>();
+    const fileBaselinesForSession = (id: string): Map<string, WorkspaceFileSnapshot> => {
+      let baselines = fileBaselinesBySession.get(id);
+      if (!baselines) {
+        baselines = new Map();
+        fileBaselinesBySession.set(id, baselines);
+      }
+      return baselines;
+    };
+    let fileBaselines = fileBaselinesForSession(conversationId);
+    let unsubscribeNotifications: (() => void) | undefined;
+    const bindBackgroundNotifications = (id: string): void => {
+      unsubscribeNotifications?.();
+      const context = config.context ?? DEFAULT_CONTEXT;
+      const tasks = backgroundAgentTasksForSession(id, sessionTaskOutputDirectory(userHome, id), context.capacityTokens - context.answerReserveTokens);
+      unsubscribeNotifications = tasks.subscribeNotifications((notification) => input?.enqueueNotification(id, notification));
+    };
+    bindBackgroundNotifications(conversationId);
     const switchSession = async (id: string) => {
       const resumed = await resumeSession(userHome, id);
       if (id !== conversationId) {
         const nextRelease = await acquireSessionLock(userHome, id);
         await releaseSession?.();
         releaseSession = nextRelease;
+        fileBaselines = fileBaselinesForSession(id);
       }
+      config = resumed.config;
+      conversationId = id;
+      bindBackgroundNotifications(id);
       process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
       return resumed;
     };
     let rewindSelection: { plan: FileRewindPlan } | undefined;
     if (process.stdin.isTTY) input.prompt();
-    for await (const line of input) {
-      const prompt = line.trim();
+    while (true) {
+      const workItem = await input.nextWorkItem(conversationId);
+      if (!workItem) break;
+      if (workItem.type === 'notification') {
+        const { notification } = workItem;
+        if (!backgroundAgentTasksForSession(conversationId).acknowledgeNotification(notification.taskId)) continue;
+        process.stdout.write(`\n[后台任务通知] ${notification.summary}：${notification.status}\n`);
+        const notificationPrompt = [
+          '后台子 Agent 已完成，请处理以下属于当前会话的通知，并向用户简要汇报结果。',
+          JSON.stringify(notification),
+        ].join('\n');
+        try {
+          activeRound = new AbortController();
+          history = await runTurn(notificationPrompt, config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines);
+          const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
+          history = recovered.history;
+          recoveredRoundIds = recovered.recoveredRoundIds;
+        } catch (error) {
+          if (cancellation.signal.aborted) throw error;
+          process.stdout.write(`\n错误：${publicError(error).message}\n`);
+        } finally {
+          activeRound = undefined;
+        }
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
+      const prompt = workItem.text.trim();
       if (rewindSelection) {
         if (prompt === '/exit') {
           rewindSelection = undefined;
@@ -196,7 +244,9 @@ async function main(): Promise<void> {
         releaseSession = nextRelease;
         conversationId = id;
         history = [];
+        fileBaselines = fileBaselinesForSession(conversationId);
         recoveredRoundIds = [];
+        bindBackgroundNotifications(id);
         process.stdout.write(`已新建会话：${id}\n`);
         if (process.stdin.isTTY) input.prompt();
         continue;
@@ -287,7 +337,7 @@ async function main(): Promise<void> {
       try {
         activeRound = new AbortController();
         const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
-        history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds);
+        history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines);
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
@@ -310,6 +360,7 @@ async function main(): Promise<void> {
     });
     process.exitCode = failure.exitCode;
   } finally {
+    abortAllBackgroundAgentTasks();
     input?.close();
     await releaseSession?.().catch(() => undefined);
     process.removeListener('SIGINT', cancel);
@@ -331,6 +382,7 @@ async function runTurn(
   approvalControl?: ApprovalControl,
   legacyDirectory?: string,
   recoveredRoundIds: string[] = [],
+  fileBaselines: Map<string, WorkspaceFileSnapshot> = new Map(),
 ): Promise<ModelMessage[]> {
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
@@ -353,6 +405,12 @@ async function runTurn(
       smokeTool,
       history,
       summaryCoverageBase,
+      fileBaselines,
+      ...(!smokeTool ? { backgroundTasks: backgroundAgentTasksForSession(
+        conversationId,
+        sessionTaskOutputDirectory(userHome, conversationId),
+        (config.context ?? DEFAULT_CONTEXT).capacityTokens - (config.context ?? DEFAULT_CONTEXT).answerReserveTokens,
+      ) } : {}),
       onText: async (chunk) => {
         if (!smokeTool && roundId) await appendRoundText(userHome, conversationId, roundId, chunk);
         process.stdout.write(chunk);

@@ -60,7 +60,7 @@ it('同轮工具结果增长触发摘要，后续步骤和成功历史保留完�
     { role: 'user', content: '可替换旧目标' },
     { role: 'assistant', content: '轮内旧原文_MARKER' + '旧'.repeat(3000) },
   ]));
-  await writeFile(join(cwd, 'large.txt'), '工具结果_MARKER' + '新'.repeat(1800));
+  await writeFile(join(cwd, 'large.txt'), '工具结果_MARKER' + '新'.repeat(1400));
   const result = await run().done;
   expect(result.stdout + result.stderr).not.toContain('CONTEXT_ERROR');
   expect(fixture.summaryRequests).toHaveLength(1);

@@ -1,12 +1,16 @@
 import { createInterface, emitKeypressEvents } from 'node:readline';
 import type { ApprovalControl } from '../tools/tool-approval.js';
+import type { BackgroundAgentTaskNotification } from '../tools/AgentTool/background-agent-tasks.js';
+
+export type CliWorkItem = { type: 'user'; text: string } | { type: 'notification'; conversationId: string; notification: BackgroundAgentTaskNotification };
 
 // 单一输入消费者将对话消息与正在等待的审批答复分开，已排队的消息不会变成批准。
 export class CliInput {
   private readonly input;
   private readonly queued: string[] = [];
-  private nextLine: ((line: string | undefined) => void) | undefined;
-  private approval: { answer: (line: string) => void; close: () => void } | undefined;
+  private wakeNext: (() => void) | undefined;
+  private readonly notifications: Array<Extract<CliWorkItem, { type: 'notification' }>> = [];
+  private readonly approvals = new Map<number, { answer: (line: string) => void; close: () => void }>();
   private closed = false;
   private sequence = 0;
   private selector: (() => void) | undefined;
@@ -19,14 +23,17 @@ export class CliInput {
     this.input.on('line', (line) => {
       if (this.selector) {
         // Enter is consumed by the active keyboard chooser, never as a chat or approval answer.
-      } else if (this.approval) {
-        this.approval.answer(line.trim());
+      } else if (this.approvals.size > 0) {
+        const match = /^(approve|deny)\s+(\d+)$/i.exec(line.trim());
+        const approval = match ? this.approvals.get(Number(match[2])) : undefined;
+        if (approval) approval.answer(line.trim());
+        else if (this.approvals.size === 1) this.approvals.values().next().value?.answer(line.trim());
+        else process.stdout.write(`\n有待审批调用，请按对应编号答复：${[...this.approvals.keys()].join('、')}。\n`);
       } else if (/^(approve|deny)(\s|$)/i.test(line.trim())) {
         process.stdout.write('\n当前没有对应的待审批调用，答复已忽略。\n');
-      } else if (this.nextLine) {
-        const deliver = this.nextLine;
-        this.nextLine = undefined;
-        deliver(line);
+      } else if (this.wakeNext) {
+        this.queued.push(line);
+        this.wakeNext();
       } else {
         this.queued.push(line);
       }
@@ -34,9 +41,9 @@ export class CliInput {
     this.input.on('close', () => {
       this.closed = true;
       this.selector?.();
-      this.approval?.close();
-      this.nextLine?.(undefined);
-      this.nextLine = undefined;
+      for (const approval of this.approvals.values()) approval.close();
+      this.wakeNext?.();
+      this.wakeNext = undefined;
     });
   }
 
@@ -102,13 +109,22 @@ export class CliInput {
     });
   }
 
-  async *[Symbol.asyncIterator](): AsyncGenerator<string> {
+  enqueueNotification(conversationId: string, notification: BackgroundAgentTaskNotification): void {
+    if (this.notifications.some(({ notification: queued }) => queued.taskId === notification.taskId)) return;
+    this.notifications.push({ type: 'notification', conversationId, notification });
+    this.wakeNext?.();
+  }
+
+  async nextWorkItem(conversationId: string): Promise<CliWorkItem | undefined> {
     while (true) {
       this.signal.throwIfAborted();
-      const line = this.queued.length ? this.queued.shift()
-        : this.closed ? undefined : await new Promise<string | undefined>((resolve) => { this.nextLine = resolve; });
-      if (line === undefined) return;
-      yield line;
+      const line = this.queued.shift();
+      if (line !== undefined) return { type: 'user', text: line };
+      const notificationIndex = this.notifications.findIndex((item) => item.conversationId === conversationId);
+      if (notificationIndex >= 0) return this.notifications.splice(notificationIndex, 1)[0];
+      if (this.closed) return undefined;
+      await new Promise<void>((resolve) => { this.wakeNext = resolve; });
+      this.wakeNext = undefined;
     }
   }
 
@@ -122,18 +138,18 @@ export class CliInput {
     return new Promise((resolve) => {
       const finish = (decision: 'approve' | 'deny'): void => {
         signal.removeEventListener('abort', abort);
-        this.approval = undefined;
+        this.approvals.delete(number);
         resolve(decision);
       };
       const abort = (): void => finish('deny');
-      this.approval = {
+      this.approvals.set(number, {
         answer: (line) => {
           if (line === `approve ${number}`) finish('approve');
           else if (line === `deny ${number}`) finish('deny');
           else process.stdout.write(`\n答复无效，请输入 approve ${number} 或 deny ${number}。\n`);
         },
         close: () => finish('deny'),
-      };
+      });
       signal.addEventListener('abort', abort, { once: true });
       process.stdout.write(`\n[人工审批 ${number}] ${call.toolName}（调用 ${call.callId}；最多等待 ${this.humanTimeoutMs}ms）\n${JSON.stringify(call.input, null, 2)}\n${call.details?.cwd ? `实际工作目录：${call.details.cwd}\n` : ''}批准请输入 approve ${number}，拒绝请输入 deny ${number}：\n`);
     });

@@ -1,5 +1,5 @@
 import type { ResolvedConfig } from '../services/settings/config.js';
-import type { WorkspaceFileSnapshot } from './workspace-files.js';
+import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from './workspace-files.js';
 import type { ToolRegistry } from './tool-registry.js';
 import { registerRuntimeInfoTool } from './RuntimeInfoTool/RuntimeInfoTool.js';
 import { registerFileReadTool } from './FileReadTool/FileReadTool.js';
@@ -8,10 +8,16 @@ import { registerGrepTool } from './GrepTool/GrepTool.js';
 import { registerFileWriteTool } from './FileWriteTool/FileWriteTool.js';
 import { registerBashTool } from './BashTool/BashTool.js';
 import { registerAgentTool } from './AgentTool/AgentTool.js';
+import type { ApprovalControl } from './tool-approval.js';
+import type { BackgroundAgentTasks } from './AgentTool/background-agent-tasks.js';
 
 export interface BuiltInToolContext {
   config: ResolvedConfig;
   probe: string;
+  allowAgent?: boolean;
+  approvalControl?: ApprovalControl;
+  backgroundTasks?: BackgroundAgentTasks;
+  fileBaselines?: WorkspaceFileBaselines;
   fileWriteCallbacks: {
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;
@@ -26,5 +32,7 @@ export function registerBuiltInTools(registry: ToolRegistry, context: BuiltInToo
   registerGrepTool(registry, context);
   registerFileWriteTool(registry, context);
   registerBashTool(registry, context);
-  registerAgentTool(registry, context.config);
+  if (context.allowAgent !== false) {
+    registerAgentTool(registry, context.config, context.approvalControl, context.backgroundTasks, context.fileWriteCallbacks);
+  }
 }

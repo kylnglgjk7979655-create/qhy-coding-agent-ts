@@ -6,6 +6,7 @@ import type { ToolRegistry } from '../tool-registry.js';
 export function registerGrepTool(registry: ToolRegistry, { config }: BuiltInToolContext): void {
   registry.register({
     name: 'grep',
+    concurrency: 'parallel',
     description: '按正则搜索工作区文件，默认搜索整个工作区；可用 path 限定子目录、glob 限定文件。返回相对路径、行号和命中文本。包含隐藏目录并遵循 .gitignore。',
     inputSchema: z.strictObject({
       pattern: z.string().min(1).refine((pattern) => {
