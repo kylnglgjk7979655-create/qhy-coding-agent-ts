@@ -1,11 +1,15 @@
 import { createInterface, emitKeypressEvents } from 'node:readline';
 import type { ApprovalControl } from '../tools/tool-approval.js';
+import type { BackgroundAgentTaskNotification } from '../tools/AgentTool/background-agent-tasks.js';
+
+export type CliWorkItem = { type: 'user'; text: string } | { type: 'notification'; conversationId: string; notification: BackgroundAgentTaskNotification };
 
 // 单一输入消费者将对话消息与正在等待的审批答复分开，已排队的消息不会变成批准。
 export class CliInput {
   private readonly input;
   private readonly queued: string[] = [];
-  private nextLine: ((line: string | undefined) => void) | undefined;
+  private wakeNext: (() => void) | undefined;
+  private readonly notifications: Array<Extract<CliWorkItem, { type: 'notification' }>> = [];
   private approval: { answer: (line: string) => void; close: () => void } | undefined;
   private closed = false;
   private sequence = 0;
@@ -23,10 +27,9 @@ export class CliInput {
         this.approval.answer(line.trim());
       } else if (/^(approve|deny)(\s|$)/i.test(line.trim())) {
         process.stdout.write('\n当前没有对应的待审批调用，答复已忽略。\n');
-      } else if (this.nextLine) {
-        const deliver = this.nextLine;
-        this.nextLine = undefined;
-        deliver(line);
+      } else if (this.wakeNext) {
+        this.queued.push(line);
+        this.wakeNext();
       } else {
         this.queued.push(line);
       }
@@ -35,8 +38,8 @@ export class CliInput {
       this.closed = true;
       this.selector?.();
       this.approval?.close();
-      this.nextLine?.(undefined);
-      this.nextLine = undefined;
+      this.wakeNext?.();
+      this.wakeNext = undefined;
     });
   }
 
@@ -102,13 +105,22 @@ export class CliInput {
     });
   }
 
-  async *[Symbol.asyncIterator](): AsyncGenerator<string> {
+  enqueueNotification(conversationId: string, notification: BackgroundAgentTaskNotification): void {
+    if (this.notifications.some(({ notification: queued }) => queued.taskId === notification.taskId)) return;
+    this.notifications.push({ type: 'notification', conversationId, notification });
+    this.wakeNext?.();
+  }
+
+  async nextWorkItem(conversationId: string): Promise<CliWorkItem | undefined> {
     while (true) {
       this.signal.throwIfAborted();
-      const line = this.queued.length ? this.queued.shift()
-        : this.closed ? undefined : await new Promise<string | undefined>((resolve) => { this.nextLine = resolve; });
-      if (line === undefined) return;
-      yield line;
+      const line = this.queued.shift();
+      if (line !== undefined) return { type: 'user', text: line };
+      const notificationIndex = this.notifications.findIndex((item) => item.conversationId === conversationId);
+      if (notificationIndex >= 0) return this.notifications.splice(notificationIndex, 1)[0];
+      if (this.closed) return undefined;
+      await new Promise<void>((resolve) => { this.wakeNext = resolve; });
+      this.wakeNext = undefined;
     }
   }
 

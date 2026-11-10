@@ -109,6 +109,46 @@ describe('compiled CLI process driver', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('automatically handles background task notifications in their session after the current turn', async () => {
+    const cwd = await directory('background-notification-cwd');
+    const userDir = await directory('background-notification-user');
+    const model = await startLocalOpenAIModel((request, index) => {
+      const userText = request.messages.filter(({ role }) => role === 'user').map(({ content }) => content).join('\n');
+      if (userText.includes('任务：后台子任务')) return { content: '后台调查结果。' };
+      if (index === 1) return { calls: [{ id: 'notification-launch', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '后台调查', prompt: '后台子任务', background: true }),
+      } }] };
+      if (userText.includes('后台子 Agent 已完成')) return { content: '已收到后台调查结果。' };
+      return { content: '主轮次已完成。' };
+    });
+    try {
+      await configure(cwd, model.baseURL);
+      let stdout = '';
+      const child = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { stdout = text; });
+      child.send('启动后台调查\n');
+      await waitForRequests(model.requests, 3);
+      await waitForOutput(() => stdout, '已收到后台调查结果。', 1);
+      child.end('/exit\n');
+      const result = await child.done;
+      expect(result.code).toBe(0);
+      expect(model.requests).toHaveLength(4);
+      expect(JSON.stringify(model.requests[1])).toContain('任务：后台子任务');
+      expect(JSON.stringify(model.requests[2])).toContain('启动后台调查');
+      expect(JSON.stringify(model.requests[3])).toContain('后台子 Agent 已完成');
+      const id = findConversationId(result.stderr);
+      const record = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json'), 'utf8')) as {
+        transcript: Array<{ role?: string; content: unknown }>;
+        rounds: Array<{ status: string }>;
+      };
+      expect(JSON.stringify(record.transcript)).toContain('后台子 Agent 已完成');
+      expect(JSON.stringify(record.transcript)).toContain('已收到后台调查结果。');
+      expect(record.rounds.map(({ status }) => status)).toEqual(['succeeded', 'succeeded']);
+      expect(result.stdout).toContain('[后台任务通知] 后台调查：succeeded');
+    } finally {
+      await model.close();
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('tracks write_file baselines in per-message checkpoints, including ignored and newly created files', async () => {
     const cwd = await directory('checkpoint-cwd');
     const userDir = await directory('checkpoint-user');

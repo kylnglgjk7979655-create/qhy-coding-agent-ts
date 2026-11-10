@@ -132,6 +132,14 @@ async function main(): Promise<void> {
 
     input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
     let fileBaselines = new Map<string, WorkspaceFileSnapshot>();
+    let unsubscribeNotifications: (() => void) | undefined;
+    const bindBackgroundNotifications = (id: string): void => {
+      unsubscribeNotifications?.();
+      const context = config.context ?? DEFAULT_CONTEXT;
+      const tasks = backgroundAgentTasksForSession(id, sessionTaskOutputDirectory(userHome, id), context.capacityTokens - context.answerReserveTokens);
+      unsubscribeNotifications = tasks.subscribeNotifications((notification) => input?.enqueueNotification(id, notification));
+    };
+    bindBackgroundNotifications(conversationId);
     const switchSession = async (id: string) => {
       const resumed = await resumeSession(userHome, id);
       if (id !== conversationId) {
@@ -140,13 +148,41 @@ async function main(): Promise<void> {
         releaseSession = nextRelease;
         fileBaselines = new Map();
       }
+      config = resumed.config;
+      conversationId = id;
+      bindBackgroundNotifications(id);
       process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
       return resumed;
     };
     let rewindSelection: { plan: FileRewindPlan } | undefined;
     if (process.stdin.isTTY) input.prompt();
-    for await (const line of input) {
-      const prompt = line.trim();
+    while (true) {
+      const workItem = await input.nextWorkItem(conversationId);
+      if (!workItem) break;
+      if (workItem.type === 'notification') {
+        const { notification } = workItem;
+        if (!backgroundAgentTasksForSession(conversationId).acknowledgeNotification(notification.taskId)) continue;
+        process.stdout.write(`\n[后台任务通知] ${notification.summary}：${notification.status}\n`);
+        const notificationPrompt = [
+          '后台子 Agent 已完成，请处理以下属于当前会话的通知，并向用户简要汇报结果。',
+          JSON.stringify(notification),
+        ].join('\n');
+        try {
+          activeRound = new AbortController();
+          history = await runTurn(notificationPrompt, config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines);
+          const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
+          history = recovered.history;
+          recoveredRoundIds = recovered.recoveredRoundIds;
+        } catch (error) {
+          if (cancellation.signal.aborted) throw error;
+          process.stdout.write(`\n错误：${publicError(error).message}\n`);
+        } finally {
+          activeRound = undefined;
+        }
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
+      const prompt = workItem.text.trim();
       if (rewindSelection) {
         if (prompt === '/exit') {
           rewindSelection = undefined;
@@ -201,6 +237,7 @@ async function main(): Promise<void> {
         history = [];
         fileBaselines = new Map();
         recoveredRoundIds = [];
+        bindBackgroundNotifications(id);
         process.stdout.write(`已新建会话：${id}\n`);
         if (process.stdin.isTTY) input.prompt();
         continue;

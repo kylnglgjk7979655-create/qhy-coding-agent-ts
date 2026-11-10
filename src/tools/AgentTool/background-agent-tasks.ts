@@ -46,6 +46,7 @@ export class BackgroundAgentTasks {
   private readonly tasks = new Map<string, BackgroundAgentTask>();
   private readonly notifications: BackgroundAgentTaskNotification[] = [];
   private readonly retrievedTerminalTasks = new Set<string>();
+  private readonly notificationListeners = new Set<(notification: BackgroundAgentTaskNotification) => void>();
 
   constructor(
     private readonly outputDirectory?: string,
@@ -116,6 +117,18 @@ export class BackgroundAgentTasks {
     return this.notifications.splice(0);
   }
 
+  subscribeNotifications(listener: (notification: BackgroundAgentTaskNotification) => void): () => void {
+    this.notificationListeners.add(listener);
+    for (const notification of this.notifications) listener(notification);
+    return () => this.notificationListeners.delete(listener);
+  }
+
+  acknowledgeNotification(taskId: string): boolean {
+    if (this.retrievedTerminalTasks.has(taskId) || !this.notifications.some(({ taskId: queuedTaskId }) => queuedTaskId === taskId)) return false;
+    this.acknowledge(taskId);
+    return true;
+  }
+
   async wait(taskIds: string[]): Promise<Array<BackgroundAgentTaskSnapshot | { taskId: string; status: 'not_found'; error: string }>> {
     const tasks = taskIds.map((taskId) => this.tasks.get(taskId));
     await Promise.all(tasks.filter((task): task is BackgroundAgentTask => task !== undefined)
@@ -158,7 +171,9 @@ export class BackgroundAgentTasks {
       ...(outputFilePath === undefined ? {} : { outputFilePath }),
       ...(task.usage === undefined ? {} : { usage: task.usage }),
     };
-    this.notifications.push(limitNotification(notification, this.notificationBudgetTokens));
+    const limited = limitNotification(notification, this.notificationBudgetTokens);
+    this.notifications.push(limited);
+    for (const listener of this.notificationListeners) listener(limited);
   }
 
   private acknowledge(taskId: string): void {
