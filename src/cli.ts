@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { runAgent } from './query/agent.js';
 import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession } from './tools/AgentTool/background-agent-tasks.js';
-import { DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
+import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
 import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveLegacyConversation, sessionTaskOutputDirectory, startSessionRound } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
 import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './services/session/file-checkpoints.js';
@@ -360,7 +360,11 @@ async function runTurn(
       history,
       summaryCoverageBase,
       fileBaselines,
-      ...(!smokeTool ? { backgroundTasks: backgroundAgentTasksForSession(conversationId, sessionTaskOutputDirectory(userHome, conversationId)) } : {}),
+      ...(!smokeTool ? { backgroundTasks: backgroundAgentTasksForSession(
+        conversationId,
+        sessionTaskOutputDirectory(userHome, conversationId),
+        (config.context ?? DEFAULT_CONTEXT).capacityTokens - (config.context ?? DEFAULT_CONTEXT).answerReserveTokens,
+      ) } : {}),
       onText: async (chunk) => {
         if (!smokeTool && roundId) await appendRoundText(userHome, conversationId, roundId, chunk);
         process.stdout.write(chunk);

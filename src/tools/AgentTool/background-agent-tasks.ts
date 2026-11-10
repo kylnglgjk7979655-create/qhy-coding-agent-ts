@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AgentError, publicError } from '../../utils/errors.js';
+import { DEFAULT_CONTEXT } from '../../services/settings/config.js';
 
 export const MAX_BACKGROUND_AGENT_TASKS = 10;
 
@@ -23,6 +24,17 @@ export interface BackgroundAgentTaskSnapshot {
   usage?: BackgroundAgentTaskResult['usage'];
 }
 
+export interface BackgroundAgentTaskNotification {
+  taskId: string;
+  launchCallId: string;
+  status: Exclude<BackgroundAgentTaskStatus, 'running'>;
+  summary: string;
+  finalReply?: string;
+  reason?: string;
+  outputFilePath?: string;
+  usage?: BackgroundAgentTaskResult['usage'];
+}
+
 interface BackgroundAgentTask extends BackgroundAgentTaskSnapshot {
   controller: AbortController;
   completion: Promise<void>;
@@ -32,8 +44,13 @@ interface BackgroundAgentTask extends BackgroundAgentTaskSnapshot {
 /** 保存当前 CLI 进程中一个主会话的后台任务状态。 */
 export class BackgroundAgentTasks {
   private readonly tasks = new Map<string, BackgroundAgentTask>();
+  private readonly notifications: BackgroundAgentTaskNotification[] = [];
+  private readonly retrievedTerminalTasks = new Set<string>();
 
-  constructor(private readonly outputDirectory?: string) {}
+  constructor(
+    private readonly outputDirectory?: string,
+    private readonly notificationBudgetTokens = DEFAULT_CONTEXT.capacityTokens - DEFAULT_CONTEXT.answerReserveTokens,
+  ) {}
 
   get runningCount(): number {
     return [...this.tasks.values()].filter(({ status }) => status === 'running').length;
@@ -73,6 +90,7 @@ export class BackgroundAgentTasks {
       if (resolved.usage) task.usage = resolved.usage;
       task.status = 'succeeded';
       await this.persist(task);
+      this.notify(task);
       task.finish();
     }, async (error: unknown) => {
       const code = error instanceof AgentError ? error.code : error instanceof Error && 'code' in error ? error.code : undefined;
@@ -81,6 +99,7 @@ export class BackgroundAgentTasks {
         ? '后台任务确认因取消请求而终止；既有副作用未回滚。'
         : publicError(error).message;
       await this.persist(task);
+      this.notify(task);
       task.finish();
     });
     return { taskId: task.taskId, launchCallId };
@@ -88,7 +107,13 @@ export class BackgroundAgentTasks {
 
   get(taskId: string): BackgroundAgentTaskSnapshot | undefined {
     const task = this.tasks.get(taskId);
+    if (task && task.status !== 'running') this.acknowledge(taskId);
     return task ? this.snapshot(task) : undefined;
+  }
+
+  /** 取出尚未由 task-manager 查询或等待取得的终态通知。 */
+  takeNotifications(): BackgroundAgentTaskNotification[] {
+    return this.notifications.splice(0);
   }
 
   async wait(taskIds: string[]): Promise<Array<BackgroundAgentTaskSnapshot | { taskId: string; status: 'not_found'; error: string }>> {
@@ -97,6 +122,7 @@ export class BackgroundAgentTasks {
       .map(({ completion: done }) => done));
     return taskIds.map((taskId) => {
       const task = this.tasks.get(taskId);
+      if (task && task.status !== 'running') this.acknowledge(taskId);
       return task ? this.snapshot(task) : { taskId, status: 'not_found', error: '未找到该后台任务。' };
     });
   }
@@ -120,6 +146,28 @@ export class BackgroundAgentTasks {
     return { ...task };
   }
 
+  private notify(task: BackgroundAgentTask): void {
+    if (this.retrievedTerminalTasks.has(task.taskId)) return;
+    const outputFilePath = this.outputDirectory ? join(this.outputDirectory, `${task.taskId}.json`) : undefined;
+    const notification: BackgroundAgentTaskNotification = {
+      taskId: task.taskId,
+      launchCallId: task.launchCallId,
+      status: task.status as Exclude<BackgroundAgentTaskStatus, 'running'>,
+      summary: task.description,
+      ...(task.status === 'succeeded' ? { finalReply: task.result ?? '' } : { reason: task.error ?? '后台任务未成功完成。' }),
+      ...(outputFilePath === undefined ? {} : { outputFilePath }),
+      ...(task.usage === undefined ? {} : { usage: task.usage }),
+    };
+    this.notifications.push(limitNotification(notification, this.notificationBudgetTokens));
+  }
+
+  private acknowledge(taskId: string): void {
+    this.retrievedTerminalTasks.add(taskId);
+    for (let index = this.notifications.length - 1; index >= 0; index -= 1) {
+      if (this.notifications[index]?.taskId === taskId) this.notifications.splice(index, 1);
+    }
+  }
+
   private async persist(task: BackgroundAgentTask): Promise<void> {
     if (!this.outputDirectory) return;
     const directory = this.outputDirectory;
@@ -139,13 +187,41 @@ export class BackgroundAgentTasks {
   }
 }
 
+const truncationMarker = '\n\n[通知中的最终回复已截断；完整结果请查询任务或读取输出文件。]';
+
+function estimatedTokens(value: string): number {
+  return Math.ceil(Buffer.byteLength(value, 'utf8') / 3);
+}
+
+function truncateText(value: string, budgetTokens: number): string {
+  if (estimatedTokens(value) <= budgetTokens) return value;
+  const markerTokens = estimatedTokens(truncationMarker);
+  const availableTokens = Math.max(0, budgetTokens - markerTokens);
+  const characters = Array.from(value);
+  let low = 0;
+  let high = characters.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (estimatedTokens(characters.slice(0, middle).join('')) <= availableTokens) low = middle;
+    else high = middle - 1;
+  }
+  return `${characters.slice(0, low).join('')}${truncationMarker}`;
+}
+
+function limitNotification(notification: BackgroundAgentTaskNotification, budgetTokens: number): BackgroundAgentTaskNotification {
+  if (notification.finalReply === undefined) return notification;
+  const metadata = { ...notification, finalReply: '' };
+  const replyBudget = Math.max(0, budgetTokens - estimatedTokens(JSON.stringify(metadata)) - 16);
+  return { ...notification, finalReply: truncateText(notification.finalReply, replyBudget) };
+}
+
 const sessionTasks = new Map<string, BackgroundAgentTasks>();
 
 /** 任务只存活于当前进程，并按主会话隔离。 */
-export function backgroundAgentTasksForSession(sessionId: string, outputDirectory?: string): BackgroundAgentTasks {
+export function backgroundAgentTasksForSession(sessionId: string, outputDirectory?: string, notificationBudgetTokens?: number): BackgroundAgentTasks {
   let tasks = sessionTasks.get(sessionId);
   if (!tasks) {
-    tasks = new BackgroundAgentTasks(outputDirectory);
+    tasks = new BackgroundAgentTasks(outputDirectory, notificationBudgetTokens);
     sessionTasks.set(sessionId, tasks);
   }
   return tasks;

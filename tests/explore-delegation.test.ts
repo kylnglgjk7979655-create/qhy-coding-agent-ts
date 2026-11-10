@@ -675,6 +675,94 @@ describe('后台子 Agent 启动', () => {
     ]));
   });
 
+  it('终态先更新后排入含任务信息的会话通知，启动时不通知', async () => {
+    const outputDirectory = await mkdtemp(join(tmpdir(), 'qhy-background-notification-'));
+    try {
+      const tasks = new BackgroundAgentTasks(outputDirectory);
+      let finish!: (report: string) => void;
+      const launched = tasks.launch('launch-notification', '整理调查结果', () => new Promise((resolve) => {
+        finish = resolve;
+      }));
+
+      expect(tasks.takeNotifications()).toEqual([]);
+      finish('完整最终回复');
+      let notifications: ReturnType<typeof tasks.takeNotifications> = [];
+      await vi.waitFor(() => {
+        notifications = tasks.takeNotifications();
+        expect(notifications).toHaveLength(1);
+      });
+      expect(notifications).toEqual([expect.objectContaining({
+        taskId: launched.taskId,
+        launchCallId: 'launch-notification',
+        status: 'succeeded',
+        summary: '整理调查结果',
+        finalReply: '完整最终回复',
+        outputFilePath: join(outputDirectory, `${launched.taskId}.json`),
+      })]);
+      expect(tasks.get(launched.taskId)?.status).toBe('succeeded');
+    } finally {
+      await rm(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('失败和取消通知包含原因，查询或等待取得终态后不再通知', async () => {
+    const tasks = new BackgroundAgentTasks();
+    const failed = tasks.launch('launch-notified-failure', '失败调查', async () => {
+      throw Object.assign(new Error('失败原因'), { code: 'PROVIDER_ERROR' });
+    });
+    let failureNotifications: ReturnType<typeof tasks.takeNotifications> = [];
+    await vi.waitFor(() => {
+      failureNotifications = tasks.takeNotifications();
+      expect(failureNotifications).toHaveLength(1);
+    });
+    expect(failureNotifications).toEqual([expect.objectContaining({
+      taskId: failed.taskId, status: 'failed', reason: expect.any(String),
+    })]);
+
+    const queried = tasks.launch('launch-queried', '主动等待', async () => '等待结果');
+    await expect(tasks.wait([queried.taskId])).resolves.toMatchObject([{ status: 'succeeded' }]);
+    expect(tasks.takeNotifications()).toEqual([]);
+
+    const queriedDirectly = tasks.launch('launch-queried-directly', '主动查询', async () => '查询结果');
+    await vi.waitFor(() => expect(tasks.get(queriedDirectly.taskId)?.status).toBe('succeeded'));
+    expect(tasks.takeNotifications()).toEqual([]);
+
+    const cancelled = tasks.launch('launch-notified-cancel', '取消调查', (signal) => new Promise<string>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }));
+    tasks.cancel(cancelled.taskId);
+    let cancellationNotifications: ReturnType<typeof tasks.takeNotifications> = [];
+    await vi.waitFor(() => {
+      cancellationNotifications = tasks.takeNotifications();
+      expect(cancellationNotifications).toHaveLength(1);
+    });
+    expect(cancellationNotifications[0]).toMatchObject({
+      taskId: cancelled.taskId, status: 'cancelled', reason: expect.any(String),
+    });
+  });
+
+  it('长回复在通知中明确截断，查询仍返回完整回复', async () => {
+    const outputDirectory = await mkdtemp(join(tmpdir(), 'qhy-background-truncated-notification-'));
+    try {
+      const tasks = new BackgroundAgentTasks(outputDirectory, 128);
+      const fullReply = '完整内容'.repeat(500);
+      const launched = tasks.launch('launch-long-notification', '长报告', async () => fullReply);
+      let notifications: ReturnType<typeof tasks.takeNotifications> = [];
+      await vi.waitFor(() => {
+        notifications = tasks.takeNotifications();
+        expect(notifications).toHaveLength(1);
+      });
+      const [notification] = notifications;
+      expect(notification?.finalReply).toContain('[通知中的最终回复已截断');
+      expect(notification?.finalReply).not.toContain(fullReply);
+      expect(tasks.get(launched.taskId)?.result).toBe(fullReply);
+      expect(JSON.parse(await readFile(join(outputDirectory, `${launched.taskId}.json`), 'utf8')))
+        .toMatchObject({ finalReply: fullReply });
+    } finally {
+      await rm(outputDirectory, { recursive: true, force: true });
+    }
+  });
+
   it('取消只报告请求，任务以取消错误终止后才标记取消', async () => {
     const tasks = new BackgroundAgentTasks();
     let observedAbort = false;
