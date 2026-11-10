@@ -5,6 +5,9 @@ import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS } from '../services/
 import { AgentError } from '../utils/errors.js';
 import type { ToolApprovalRequest } from './tool-registry.js';
 import { assertInputBudget } from '../services/compact/context-summary.js';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
+import { isWithinWorkspace } from './workspace-files.js';
 
 export type ApprovalControl = (call: ToolApprovalRequest, signal: AbortSignal) => Promise<'approve' | 'deny'>;
 
@@ -24,9 +27,14 @@ export async function approveToolCall(
 ): Promise<boolean> {
   signal.throwIfAborted();
   const actions = config.approval.rules.filter(({ toolName }) => toolName === call.toolName).map(({ action }) => action);
-  if (actions.includes('deny')) return false;
-  if (actions.includes('allow')) return true;
-  if (!actions.includes('ask') && ['read_file', 'glob', 'grep', 'runtimeInfo', 'agent'].includes(call.toolName)) return true;
+  const readAction = call.toolName === 'read_file' ? readPermissionAction(config, call) : undefined;
+  const readOutsideWorkspace = call.toolName === 'read_file' && readAction === undefined && !isReadTargetInWorkspace(config, call);
+  const permissionRequiresApproval = readAction === 'ask' || readOutsideWorkspace;
+  if (actions.includes('deny') || readAction === 'deny') return false;
+  // 按路径设置的 ask 必须高于旧版工具级 allow。
+  if (!permissionRequiresApproval && (readAction === 'allow' || actions.includes('allow'))) return true;
+  if (!permissionRequiresApproval && !actions.includes('ask')
+    && ['read_file', 'glob', 'grep', 'runtimeInfo', 'agent'].includes(call.toolName)) return true;
 
   if (config.approval.mode === 'default') {
     if (!control) return false;
@@ -86,6 +94,51 @@ export async function approveToolCall(
       ? '工具审批超时，已停止本轮；此前已完成的操作不会回滚。'
       : '工具审批不可用或响应无效，已停止本轮；此前已完成的操作不会回滚。');
   }
+}
+
+function readPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest): 'allow' | 'ask' | 'deny' | undefined {
+  const inputPath = typeof call.input === 'object' && call.input !== null && 'path' in call.input
+    && typeof call.input.path === 'string' ? call.input.path : undefined;
+  const requestedPath = call.details?.requestedPath ?? inputPath;
+  const target = call.details?.target;
+  if (!requestedPath || !target) return undefined;
+  const paths = [resolveUserPath(config, requestedPath), target];
+  const matches = (rule: string): boolean => {
+    const match = /^Read(?:\((.+)\))?$/u.exec(rule);
+    if (!match) return false;
+    if (match[1] === undefined) return true;
+    const pattern = resolveUserPath(config, match[1]);
+    const expression = globExpression(pattern);
+    return paths.some((path) => expression.test(path));
+  };
+  for (const action of ['deny', 'ask', 'allow'] as const) {
+    if ((config.permissions?.[action] ?? []).some(matches)) return action;
+  }
+  return undefined;
+}
+
+function isReadTargetInWorkspace(config: ResolvedConfig, call: ToolApprovalRequest): boolean {
+  const target = call.details?.target;
+  return target !== undefined && isWithinWorkspace(config.workspace, target);
+}
+
+function resolveUserPath(config: ResolvedConfig, path: string): string {
+  const expanded = path === '~' ? homedir() : path.startsWith('~/') ? resolve(homedir(), path.slice(2)) : path;
+  return resolve(config.workspace, expanded).replaceAll('\\', '/');
+}
+
+function globExpression(pattern: string): RegExp {
+  let expression = '^';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index]!;
+    if (character === '*' && pattern[index + 1] === '*') {
+      if (pattern[index + 2] === '/') { expression += '(?:.*/)?'; index += 2; }
+      else { expression += '.*'; index += 1; }
+    } else if (character === '*') expression += '[^/]*';
+    else if (character === '?') expression += '[^/]';
+    else expression += character.replace(/[|\\{}()[\]^$+?.]/gu, '\\$&');
+  }
+  return new RegExp(`${expression}$`, 'u');
 }
 
 function waitForDecision(control: ApprovalControl, call: ToolApprovalRequest, signal: AbortSignal): Promise<'approve' | 'deny'> {

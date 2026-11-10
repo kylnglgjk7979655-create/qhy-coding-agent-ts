@@ -268,7 +268,7 @@ describe('interactive compiled CLI', () => {
     const toolMessage = requests[1]?.messages.find(({ role }) => role === 'tool') as unknown as { tool_call_id: string; content: string };
     expect(toolMessage.tool_call_id).toBe('call_read_file');
     expect(JSON.parse(toolMessage.content)).toEqual({ is_error: true, error: {
-      code: 'TOOL_EXECUTION_ERROR', message: '无法访问文件：目标必须存在且位于工作区内。',
+      code: 'TOOL_EXECUTION_ERROR', message: '无法访问文件：目标必须存在且读取权限允许。',
     } });
   });
 

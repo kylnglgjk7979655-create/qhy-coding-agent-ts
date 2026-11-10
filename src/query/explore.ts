@@ -36,6 +36,7 @@ export async function runExplore(
   const context: BuiltInToolContext = {
     config,
     probe: '',
+    allowWorkspaceExternalRead: false,
     fileWriteCallbacks: {},
     bashOperations: new Set(),
   };

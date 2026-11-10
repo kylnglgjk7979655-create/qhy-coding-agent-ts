@@ -15,6 +15,7 @@ export interface BuiltInToolContext {
   config: ResolvedConfig;
   probe: string;
   allowAgent?: boolean;
+  allowWorkspaceExternalRead?: boolean;
   approvalControl?: ApprovalControl;
   backgroundTasks?: BackgroundAgentTasks;
   fileBaselines?: WorkspaceFileBaselines;

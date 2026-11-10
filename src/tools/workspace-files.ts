@@ -1,4 +1,5 @@
 import { lstat, readFile, realpath, unlink, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 export interface WorkspaceFileSnapshot {
@@ -30,11 +31,32 @@ export function isWithinWorkspace(workspace: string, target: string): boolean {
     || (!pathFromWorkspace.startsWith(`..${sep}`) && pathFromWorkspace !== '..' && !isAbsolute(pathFromWorkspace));
 }
 
-async function resolveReadTarget(workspace: string, requestedPath: string): Promise<string> {
-  const candidate = resolve(workspace, requestedPath);
-  const canonicalTarget = await realpath(candidate);
-  if (!isWithinWorkspace(workspace, canonicalTarget)) throw new Error('越出工作区');
-  return canonicalTarget;
+function resolveRequestedPath(workspace: string, requestedPath: string): string {
+  const expanded = requestedPath === '~' ? homedir()
+    : requestedPath.startsWith('~/') ? resolve(homedir(), requestedPath.slice(2))
+      : requestedPath;
+  return resolve(workspace, expanded);
+}
+
+export async function resolveReadTarget(workspace: string, requestedPath: string): Promise<string> {
+  const candidate = resolveRequestedPath(workspace, requestedPath);
+  try {
+    return await realpath(candidate);
+  } catch (error) {
+    if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+    let parent = dirname(candidate);
+    const suffix = [basename(candidate)];
+    while (true) {
+      try { return resolve(await realpath(parent), ...suffix.reverse()); }
+      catch (parentError) {
+        if (!(parentError instanceof Error) || !('code' in parentError) || parentError.code !== 'ENOENT') throw parentError;
+        const next = dirname(parent);
+        if (next === parent) throw parentError;
+        suffix.push(basename(parent));
+        parent = next;
+      }
+    }
+  }
 }
 
 async function resolveWriteTarget(workspace: string, requestedPath: string): Promise<string> {
@@ -61,14 +83,18 @@ export async function readWorkspaceFile(
   workspace: string,
   requestedPath: string,
   baselines?: WorkspaceFileBaselines,
+  approvedTarget?: string,
+  enforceWorkspaceBoundary = false,
 ): Promise<string> {
   try {
     const target = await resolveReadTarget(workspace, requestedPath);
-    const content = await readFile(target, 'utf8');
+    if (enforceWorkspaceBoundary && !isWithinWorkspace(workspace, target)) throw new Error('越出工作区');
+    if (approvedTarget !== undefined && target !== approvedTarget) throw new Error('读取目标已变化');
+    const content = await readFile(approvedTarget ?? target, 'utf8');
     baselines?.set(relative(workspace, target), { path: relative(workspace, target), existed: true, content });
     return content;
   } catch {
-    throw new Error('无法访问文件：目标必须存在且位于工作区内。');
+    throw new Error('无法访问文件：目标必须存在且读取权限允许。');
   }
 }
 
