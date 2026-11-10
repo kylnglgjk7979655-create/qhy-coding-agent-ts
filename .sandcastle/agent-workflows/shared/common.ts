@@ -66,7 +66,7 @@ export const codexAgent = () => {
   const codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex");
   console.log(`Codex 模型：${model}`);
   return sandcastle.codex(model, {
-    effort: "high", env: { ...env, CODEX_HOME: codexHome }, captureSessions: false,
+    effort: "high", env: { ...env, CODEX_HOME: codexHome }, captureSessions: true,
     sessionStorage: { hostSessionsDir: path.join(codexHome, "sessions") },
   });
 };

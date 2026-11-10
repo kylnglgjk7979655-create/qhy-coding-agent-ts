@@ -35,6 +35,17 @@ try {
     },
   });
 
+  const contextWindow = result.iterations.at(-1)?.contextWindow;
+  if (contextWindow) {
+    const limit = contextWindow.limit;
+    const usage = limit
+      ? `${contextWindow.tokens.toLocaleString()} / ${limit.toLocaleString()} tokens (${((contextWindow.tokens / limit) * 100).toFixed(1)}%)`
+      : `${contextWindow.tokens.toLocaleString()} tokens`;
+    console.log(`Codex 上下文用量（最后一次模型请求）：${usage}`);
+  } else {
+    console.log("Codex 上下文用量：本次运行未返回上下文窗口数据。");
+  }
+
   const commitsAhead = Number(sh("git rev-list --count main..HEAD").trim());
   if (!Number.isFinite(commitsAhead) || commitsAhead === 0) {
     fail("Agent finished but no commits were made on the branch.");
