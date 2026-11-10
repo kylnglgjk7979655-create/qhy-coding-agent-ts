@@ -108,6 +108,28 @@ it.skipIf(process.platform === 'win32')('人工审批 Bash 展示完整参数与
   await expect(readFile(join(cwd, 'denied.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
+it.skipIf(process.platform === 'win32')('人工审批工作区外 Bash cwd 展示实际目录并在批准前等待', async () => {
+  let outside = '';
+  await setup((_request, index) => index === 1 ? { calls: [
+    { id: 'external-cwd', type: 'function', function: { name: 'Bash', arguments: JSON.stringify({ command: 'printf approved > external.txt', cwd: outside }) } },
+  ] } : { content: '外部目录命令完成' }, { timeoutMs: 3000, workspace: 'work' });
+  outside = join(cwd, 'outside');
+  await mkdir(join(cwd, 'work'));
+  await mkdir(outside);
+  const running = run();
+  await running.waitFor('> ');
+  running.child.stdin.write('执行命令\n');
+  await running.waitFor('approve 1');
+  expect(running.output()).toContain(`实际工作目录：${await realpath(outside)}`);
+  await expect(readFile(join(outside, 'external.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  running.child.stdin.write('approve 1\n');
+  await running.waitFor('外部目录命令完成');
+  running.child.stdin.end('/exit\n');
+  const result = await running.done;
+  expect(result.code, result.stdout + result.stderr).toBe(0);
+  expect(await readFile(join(outside, 'external.txt'), 'utf8')).toBe('approved');
+});
+
 it.skipIf(process.platform === 'win32')('人工批准后写入工作区外目标并展示规范实际路径', async () => {
   const outside = await mkdtemp(join(tmpdir(), 'qhy-human-write-outside-'));
   try {

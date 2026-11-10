@@ -440,7 +440,7 @@ function deriveTitleFromText(text: string): string {
 function isModelConfig(value: unknown): value is ModelConfig {
   if (typeof value !== 'object' || value === null) return false;
   const config = value as Partial<ModelConfig>;
-  const fields = ['provider', 'model', 'apiKeyEnv', 'baseURL', 'workspace', 'timeoutMs', 'maxSteps', 'explore', 'context', 'mcp', 'bash', 'approval'];
+  const fields = ['provider', 'model', 'apiKeyEnv', 'baseURL', 'workspace', 'timeoutMs', 'maxSteps', 'explore', 'context', 'mcp', 'bash', 'approval', 'permissions'];
   return Object.keys(value).every((field) => fields.includes(field))
     && config.provider === 'openai'
     && typeof config.model === 'string'

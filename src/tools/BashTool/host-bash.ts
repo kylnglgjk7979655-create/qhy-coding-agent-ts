@@ -3,14 +3,20 @@ import { realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { isWithinWorkspace } from '../workspace-files.js';
 import { ToolExecutionError } from '../tool-registry.js';
+import { analyzeBashCommand } from './bash-policy.js';
 
 export async function prepareBashInput<Input extends { command: string; cwd?: string | undefined }>(workspace: string, input: Input) {
   try {
     const cwd = await realpath(resolve(workspace, input.cwd ?? '.'));
-    if (!isWithinWorkspace(workspace, cwd) || !(await stat(cwd)).isDirectory()) throw new Error();
-    return { input: { ...input, cwd }, details: { cwd } };
+    if (!(await stat(cwd)).isDirectory()) throw new Error();
+    const analysis = analyzeBashCommand(input.command);
+    return { input: { ...input, cwd }, details: {
+      cwd,
+      bashCommands: JSON.stringify(analysis.commands),
+      bashRequiresApproval: String(analysis.requiresApproval || !isWithinWorkspace(resolve(workspace), cwd)),
+    } };
   } catch {
-    throw new Error('Bash 工作目录必须是工作区内可访问的实际目录。');
+    throw new Error('Bash 命令或工作目录无效、无法可靠解析，或无法访问。');
   }
 }
 

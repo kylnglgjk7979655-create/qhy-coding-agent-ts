@@ -32,10 +32,16 @@ export async function approveToolCall(
   const searchAction = call.toolName === 'glob' || call.toolName === 'grep'
     ? pathPermissionAction(config, call, call.toolName === 'glob' ? 'Glob' : 'Grep') : undefined;
   const searchAsks = call.details?.searchAsk !== undefined;
+  const bashActions = call.toolName === 'Bash' ? bashPermissionActions(config, call) : [];
+  const bashDenied = bashActions.includes('deny');
+  const bashAllowed = bashActions.length > 0 && bashActions.every((action) => action === 'allow');
+  const bashRequiresApproval = call.toolName === 'Bash' && call.details?.bashRequiresApproval === 'true';
   const readOutsideWorkspace = call.toolName === 'read_file' && readAction === undefined && !isReadTargetInWorkspace(config, call);
   const permissionAction = readAction ?? writeAction ?? searchAction;
-  const permissionRequiresApproval = permissionAction === 'ask' || readOutsideWorkspace || searchAsks;
-  if (actions.includes('deny') || permissionAction === 'deny') return false;
+  const permissionRequiresApproval = permissionAction === 'ask' || readOutsideWorkspace || searchAsks
+    || bashActions.includes('ask') || bashRequiresApproval;
+  if (actions.includes('deny') || permissionAction === 'deny' || bashDenied) return false;
+  if (call.toolName === 'Bash' && bashAllowed && !permissionRequiresApproval) return true;
   // 按路径设置的 ask 必须高于旧版工具级 allow。
   if (!permissionRequiresApproval && (permissionAction === 'allow' || actions.includes('allow'))) return true;
   if (!permissionRequiresApproval && !actions.includes('ask')
@@ -99,6 +105,31 @@ export async function approveToolCall(
       ? '工具审批超时，已停止本轮；此前已完成的操作不会回滚。'
       : '工具审批不可用或响应无效，已停止本轮；此前已完成的操作不会回滚。');
   }
+}
+
+function bashPermissionActions(config: ResolvedConfig, call: ToolApprovalRequest): Array<'allow' | 'ask' | 'deny' | undefined> {
+  const commands = call.details?.bashCommands;
+  if (!commands) return [];
+  let parsed: unknown;
+  try { parsed = JSON.parse(commands); } catch { return []; }
+  if (!Array.isArray(parsed) || !parsed.every((command) => typeof command === 'string')) return [];
+  return parsed.map((command) => {
+    for (const action of ['deny', 'ask', 'allow'] as const) {
+      if ((config.permissions?.[action] ?? []).some((rule) => matchesBashRule(rule, command))) return action;
+    }
+    return undefined;
+  });
+}
+
+function matchesBashRule(rule: string, command: string): boolean {
+  const match = /^Bash\((.+)\)$/u.exec(rule);
+  if (!match) return false;
+  const pattern = match[1]!.trim();
+  if (pattern.endsWith(' *')) {
+    const prefix = pattern.slice(0, -2).trimEnd();
+    return command === prefix || command.startsWith(`${prefix} `);
+  }
+  return command === pattern;
 }
 
 function readPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest): 'allow' | 'ask' | 'deny' | undefined {
