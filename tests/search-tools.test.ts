@@ -32,7 +32,7 @@ it('Agent 可用 glob 和 grep 搜索工作区，包含隐藏目录并遵循忽�
     ] } : { content: '搜索完成' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -84,7 +84,7 @@ it('搜索工具限定子目录、拒绝越界路径并标记截断结果', asyn
     ] } : { content: '边界与截断已验证' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };

@@ -8,6 +8,7 @@ import type { FixtureToolCall } from './helpers/local-openai-fixture.js';
 
 const cli = resolve('dist/cli.js');
 let cwd = '';
+let workspaceArgs: string[] = [];
 let fixture: Awaited<ReturnType<typeof startLocalOpenAIModel>>;
 const managedPids: number[] = [];
 afterEach(async () => {
@@ -23,14 +24,19 @@ function bash(id: string, input: unknown): FixtureToolCall {
 }
 async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0], review?: Parameters<typeof startLocalOpenAIModel>[1], extra = {}) {
   cwd = await mkdtemp(join(tmpdir(), 'qhy-bash-'));
+  const { workspace, approval, ...settings } = extra as Record<string, unknown> & {
+    workspace?: string; approval?: Record<string, unknown>;
+  };
+  workspaceArgs = workspace ? ['--workspace', workspace] : [];
   fixture = await startLocalOpenAIModel(respond, review);
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'bash-fixture', baseURL: fixture.baseURL, apiKeyEnv: 'TEST_BASH_KEY',
-    workspace: '.', timeoutMs: 4000, ...extra,
+    timeoutMs: 4000, approval: { mode: 'auto', ...approval }, ...settings,
   }));
 }
 function run(input = '运行受控命令\n/exit\n', env: NodeJS.ProcessEnv = {}) {
-  const child = spawn(process.execPath, [cli, '--conversation-id', 'bash'], {
+  const child = spawn(process.execPath, [cli, '--conversation-id', 'bash', ...workspaceArgs], {
     cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_BASH_KEY: 'fake-bash-key', TEST_BASH_ENV: 'inherited-marker', ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });

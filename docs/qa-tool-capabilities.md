@@ -15,12 +15,12 @@ pnpm build
 pnpm exec tsx tests/helpers/local-qa-fixture.ts --directory "$PWD/.scratch/qa-local-normal" --scenario normal
 ```
 
-`--directory` 必须指向不存在的新目录，父目录须存在。重复验收请使用新的目录名，夹具拒绝覆盖已有记录。出现 `QA_READY` 后，模型与两个 MCP 服务均已就绪，实际 URL 已填入生成的 `config.json`，不必手工替换端口。目录内包含：
+`--directory` 必须指向不存在的新目录，父目录须存在。重复验收请使用新的目录名，夹具拒绝覆盖已有记录。出现 `QA_READY` 后，模型与两个 MCP 服务均已就绪，实际 URL 已填入 `work/.agent/settings.json`，不必手工替换端口。目录内包含：
 
 ```text
 qa-local-normal/
-├── config.json                   # 仅引用假凭据环境变量，文件权限 0600
 ├── work/
+│   ├── .agent/settings.json      # 项目 settings，仅引用假凭据环境变量
 │   ├── note.txt                  # 初始文本
 │   ├── large.txt                 # 轮内增长触发摘要
 │   ├── huge.txt                  # 必要内容无法容纳
@@ -39,7 +39,7 @@ QA_ROOT="$REPO/.scratch/qa-local-normal"
 export TEST_MODEL_API_KEY=local-qa-model
 export QA_MCP_HEADER=local-qa-mcp
 cd "$QA_ROOT"
-"$CLI_NODE" "$REPO/dist/cli.js" --config "$QA_ROOT/config.json" --workspace "$QA_ROOT/work" --conversation-id qa-normal
+"$CLI_NODE" "$REPO/dist/cli.js" --workspace "$QA_ROOT/work" --conversation-id qa-normal
 ```
 
 这两个环境变量只设置本地假值。配置中的 `apiKeyEnv` 引用 `TEST_MODEL_API_KEY`，`mcp.servers[0].headers.Authorization.env` 引用 `QA_MCP_HEADER`；不把真实令牌写入配置或验收记录。模型、审查及摘要共用本地模型地址；连接器将假请求头值注入 alpha 的请求头，不进入模型输入或产品历史。
@@ -93,7 +93,7 @@ cd "$QA_ROOT"
 
 结束 CLI 后在编辑器修改生成配置，再重启；配置仅在启动时读取。每个取消或进程实验使用全新验收目录，避免混淆上次留下的 PID 和标记文件。
 
-将审批配置改为 `{"mode":"human","humanTimeoutMs":5000}`，`timeoutMs` 设为 1000，`bash` 设为 `{"timeoutMs":4000}`。输入 `slow`，人工界面展示完整命令及实际 `work` 目录；等超过一秒再按当前编号批准。等待中 `shell.pid`、`started.txt` 不存在，且不报整轮超时。批准后命令启动，继续消耗等待前剩余的执行预算；本轮在剩余时间耗尽时报告 `TIMEOUT`，后续 `later.txt` 和远端调用均不发生。
+将审批配置改为 `{"mode":"default","humanTimeoutMs":5000}`，`timeoutMs` 设为 1000，`bash` 设为 `{"timeoutMs":4000}`。输入 `slow`，人工界面展示完整命令及实际 `work` 目录；等超过一秒再按当前编号批准。等待中 `shell.pid`、`started.txt` 不存在，且不报整轮超时。批准后命令启动，继续消耗等待前剩余的执行预算；本轮在剩余时间耗尽时报告 `TIMEOUT`，后续 `later.txt` 和远端调用均不发生。
 
 在另一全新目录将整轮上限改为 5000、Bash 上限改为 400，可验证单命令超时：Bash 返回普通调用失败，后续写入和远端普通调用继续，区别于整轮停止。`slow` 中的工作进程会在启动 2.5 秒后尝试写 `late.txt`；超时或取消后等待超过此时长，文件不应出现。
 
@@ -110,7 +110,7 @@ Bash 使用宿主当前用户权限；cwd 仅约束启动目录，不提供文�
 | 字段 | 产品默认值 / 用途 |
 | --- | --- |
 | `timeoutMs`、`maxSteps` | 60000ms、20；整轮执行预算与主模型步骤上限 |
-| `approval.mode`、`approval.rules` | `model`、空规则；规则为 `{toolName, action}`，只精确匹配名称，`deny` 优先于 `allow` 和 `ask` |
+| `approval.mode`、`approval.rules` | `default`、空规则；`auto` 使用独立模型审批，规则为 `{toolName, action}` |
 | `approval.timeoutMs`、`approval.humanTimeoutMs` | 30000ms、300000ms；人工等待不扣整轮执行预算，不重置此前已消耗时间 |
 | `approval.model` | 可选 `{provider, model, baseURL, apiKeyEnv}`，默认复用主模型，独立审查不携带历史且不提供工具 |
 | `bash.timeoutMs` | 30000ms；单命令上限，不能延长整轮预算 |

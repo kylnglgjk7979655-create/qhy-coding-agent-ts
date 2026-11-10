@@ -33,7 +33,7 @@ describe('只读 Explore 委派', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [{ toolName: 'write_file', action: 'deny' }], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [{ toolName: 'write_file', action: 'deny' }], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 6,
     };
@@ -68,7 +68,7 @@ describe('只读 Explore 委派', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'human', rules: [], timeoutMs: 30_000, humanTimeoutMs: 1000 },
+      approval: { mode: 'default', rules: [], timeoutMs: 30_000, humanTimeoutMs: 1000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 6,
     };
@@ -97,7 +97,7 @@ describe('只读 Explore 委派', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [{ toolName: 'write_file', action: 'allow' }], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [{ toolName: 'write_file', action: 'allow' }], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 6,
     };
@@ -128,7 +128,7 @@ describe('只读 Explore 委派', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [{ toolName: 'write_file', action: 'allow' }], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [{ toolName: 'write_file', action: 'allow' }], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 8,
     };
@@ -155,7 +155,7 @@ describe('只读 Explore 委派', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [{ toolName: 'write_file', action: 'allow' }], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [{ toolName: 'write_file', action: 'allow' }], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 8,
     };
@@ -189,7 +189,7 @@ describe('只读 Explore 委派', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 6,
     };
@@ -228,7 +228,7 @@ describe('只读 Explore 委派', () => {
       : { content: index === 2 ? '配置调查完成。' : '已根据报告回答。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
       ...(explore === undefined ? {} : { explore }),
@@ -251,7 +251,7 @@ describe('只读 Explore 委派', () => {
       : { content: '调查完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
       explore: { loadRootAgents: true },
@@ -274,7 +274,7 @@ describe('只读 Explore 委派', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 6,
     };
@@ -300,7 +300,7 @@ describe('只读 Explore 委派', () => {
       : { content: '已收到委派错误。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
     };
@@ -319,7 +319,7 @@ describe('只读 Explore 委派', () => {
       : { content: '权限拒绝已处理。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [{ toolName: 'agent', action: 'deny' }], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [{ toolName: 'agent', action: 'deny' }], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
     };
@@ -341,7 +341,7 @@ describe('只读 Explore 委派', () => {
       : index === 2 ? { content: '已完成只读调查。' } : { content: '已根据报告回答。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'human', rules: [{ toolName: 'agent', action: 'ask' }], timeoutMs: 30_000, humanTimeoutMs: 1000 },
+      approval: { mode: 'default', rules: [{ toolName: 'agent', action: 'ask' }], timeoutMs: 30_000, humanTimeoutMs: 1000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
     };
@@ -369,7 +369,7 @@ describe('只读 Explore 委派', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 5,
     };
@@ -398,7 +398,7 @@ describe('只读 Explore 委派', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 6,
     };
@@ -433,7 +433,7 @@ describe('只读 Explore 委派', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 5,
     };
@@ -472,7 +472,7 @@ describe('只读 Explore 委派', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 7,
     };
@@ -498,7 +498,7 @@ describe('只读 Explore 委派', () => {
       : index === 2 ? { content: '   ' } : { content: 'Explore 未返回报告。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
     };
@@ -524,7 +524,7 @@ describe('只读 Explore 委派', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 5,
     };
@@ -545,7 +545,7 @@ describe('只读 Explore 委派', () => {
       : index === 2 ? { status: 500, content: 'Explore provider unavailable' } : { content: '调查暂不可用。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
     };
@@ -566,7 +566,7 @@ describe('只读 Explore 委派', () => {
       : { frames: [{ delta: { content: '缓慢' }, delayMs: 500 }, { delta: {}, finish_reason: 'stop' }] });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 5000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 5000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 4,
     };
@@ -588,7 +588,7 @@ describe('只读 Explore 委派', () => {
       : { frames: [{ delta: { content: '缓慢' }, delayMs: 500 }, { delta: {}, finish_reason: 'stop' }] });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 200, maxSteps: 4,
     };
@@ -625,7 +625,7 @@ describe('后台子 Agent 启动', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 5,
     };

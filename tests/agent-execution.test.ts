@@ -28,7 +28,7 @@ describe('公共工具执行边界', () => {
       : { content: '读取完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -88,7 +88,7 @@ describe('公共工具执行边界', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 8,
     };
@@ -109,7 +109,7 @@ describe('公共工具执行边界', () => {
       : { content: '参数已修正。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -134,7 +134,7 @@ describe('公共工具执行边界', () => {
       : { content: '后续模型请求完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -167,7 +167,7 @@ describe('公共工具执行边界', () => {
       : { content: '读取完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -199,7 +199,7 @@ describe('公共工具执行边界', () => {
       : { content: '全部运行完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -240,7 +240,7 @@ describe('公共工具执行边界', () => {
       : { content: '两项审批均已完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'human', rules: [{ toolName: 'read_file', action: 'ask' }], timeoutMs: 1000, humanTimeoutMs: 500 },
+      approval: { mode: 'default', rules: [{ toolName: 'read_file', action: 'ask' }], timeoutMs: 1000, humanTimeoutMs: 500 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 100, maxSteps: 5,
     };
@@ -267,7 +267,7 @@ describe('公共工具执行边界', () => {
       : { content: '屏障完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -322,7 +322,7 @@ describe('公共工具执行边界', () => {
       : { content: '不应收到的回答。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -346,7 +346,7 @@ describe('公共工具执行边界', () => {
     ] } : { content: '人工决定已处理' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'human', rules: [], timeoutMs: 30_000, humanTimeoutMs: 500 },
+      approval: { mode: 'default', rules: [], timeoutMs: 30_000, humanTimeoutMs: 500 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };

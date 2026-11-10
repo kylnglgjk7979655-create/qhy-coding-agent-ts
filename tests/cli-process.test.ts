@@ -22,9 +22,10 @@ describe('compiled CLI process driver', () => {
   }
 
   async function configure(cwd: string, baseURL: string): Promise<void> {
-    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+    await mkdir(join(cwd, '.agent'), { recursive: true });
+    await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
       model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL,
-      workspace: '.', timeoutMs: 3000, maxSteps: 10,
+      timeoutMs: 3000, maxSteps: 10,
       approval: { rules: [
         { toolName: 'write_file', action: 'allow' },
         { toolName: 'Bash', action: 'allow' },

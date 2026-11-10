@@ -79,8 +79,8 @@ export async function startLocalQA(scenario: QAScenario = 'normal', reviewDelayM
     alpha, beta, model,
     config: {
       model: 'local-qa', baseURL: model.baseURL, apiKeyEnv: 'TEST_MODEL_API_KEY',
-      workspace: './work', timeoutMs: 10000,
-      approval: { mode: 'model', timeoutMs: 2000 },
+      timeoutMs: 10000,
+      approval: { mode: 'auto', timeoutMs: 2000 },
       context: { capacityTokens: 10000, answerReserveTokens: 1000, triggerRatio: 0.6, targetRatio: 0.5, keepRecentTurns: 0 },
       mcp: { servers: [
         { name: 'alpha', url: alpha.url, headers: { Authorization: { env: 'QA_MCP_HEADER' } } },
@@ -109,8 +109,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const qa = await startLocalQA(scenario, delay);
     try {
       await mkdir(join(directory, 'work'), { mode: 0o700 });
+      await mkdir(join(directory, 'work/.agent'), { mode: 0o700 });
       await mkdir(join(directory, '.agent/conversations'), { recursive: true, mode: 0o700 });
-      await writeFile(join(directory, 'config.json'), JSON.stringify(qa.config, null, 2), { mode: 0o600, flag: 'wx' });
+      await writeFile(join(directory, 'work/.agent/settings.json'), JSON.stringify(qa.config, null, 2), { mode: 0o600, flag: 'wx' });
       await writeFile(join(directory, 'work/note.txt'), '初始内容');
       await writeFile(join(directory, 'work/large.txt'), 'private-large-content' + '新'.repeat(1800));
       await writeFile(join(directory, 'work/huge.txt'), '超'.repeat(12000));

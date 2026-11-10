@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -22,8 +22,10 @@ async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0], revie
   cwd = await mkdtemp(join(tmpdir(), 'qhy-mcp-'));
   const model = await startLocalOpenAIModel(respond, review);
   cleanup.push(model.close);
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
-    model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL, workspace: '.', timeoutMs: 4000, ...extra,
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
+    model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL, timeoutMs: 4000,
+    approval: { mode: 'auto' }, ...extra,
   }));
   return model;
 }
@@ -231,7 +233,7 @@ it('同一服务重复公布工具名称时明确报错，不能静默覆盖或�
 it('人工模式的非交互拒绝沿用同一路径，远端调用为零', async () => {
   const remote = await mcp();
   const model = await setup((_request, index) => index === 1 ? { calls: [call('denied', 'mcp_alpha_echo', { text: '不能执行' })] } : { content: '已拒绝' }, undefined, {
-    mcp: { servers: [{ name: 'alpha', url: remote.url }] }, approval: { mode: 'human' },
+    mcp: { servers: [{ name: 'alpha', url: remote.url }] }, approval: { mode: 'default' },
   });
   const result = await run().done;
   expect(result.code).toBe(0);

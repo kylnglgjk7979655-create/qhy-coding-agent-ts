@@ -28,7 +28,7 @@ export async function approveToolCall(
   if (actions.includes('allow')) return true;
   if (!actions.includes('ask') && ['read_file', 'glob', 'grep', 'runtimeInfo', 'agent'].includes(call.toolName)) return true;
 
-  if (config.approval.mode === 'human') {
+  if (config.approval.mode === 'default') {
     if (!control) return false;
     humanWait?.pause();
     const timeout = new AbortController();

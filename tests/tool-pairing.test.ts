@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -23,9 +23,10 @@ describe('工具批次顺序与新增往返配对', () => {
     const fixture = await startLocalOpenAIModel(respond);
     closeFixture = fixture.close;
     requests = fixture.requests;
-    await writeFile(join(workspace, 'agent.config.json'), JSON.stringify({
+    await mkdir(join(workspace, '.agent'), { recursive: true });
+    await writeFile(join(workspace, '.agent', 'settings.json'), JSON.stringify({
       model: 'fixture', apiKeyEnv: 'PAIRING_KEY', baseURL: fixture.baseURL,
-      workspace: '.', timeoutMs: 5000, maxSteps: 5,
+      timeoutMs: 5000, maxSteps: 5, approval: { mode: 'auto' },
     }));
     return fixture;
   }

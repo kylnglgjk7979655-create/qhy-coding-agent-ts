@@ -17,7 +17,8 @@ afterEach(async () => {
 async function setup(scenario: Parameters<typeof startLocalQA>[0] = 'normal') {
   cwd = await mkdtemp(join(tmpdir(), 'qhy-capabilities-'));
   qa = await startLocalQA(scenario);
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({ ...qa.config, workspace: '.' }));
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent/settings.json'), JSON.stringify(qa.config));
 }
 function run(input?: string) {
   const child = spawn(process.execPath, [cli, '--conversation-id', 'combined'], {
@@ -102,7 +103,8 @@ it.each(['approval-error', 'approval-invalid', 'approval-timeout'] as const)('�
 
 it.each(['summary-error', 'summary-invalid'] as const)('混合副作用与工具增长触发 %s，停止后不保存且同进程恢复沿用成功历史', async (scenario) => {
   await setup(scenario);
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({ ...qa.config, workspace: '.',
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent/settings.json'), JSON.stringify({ ...qa.config,
     context: { capacityTokens: 10000, answerReserveTokens: 1000, triggerRatio: 0.6, targetRatio: 0.5, keepRecentTurns: 0 },
   }));
   const directory = join(cwd, '.agent/conversations');
@@ -128,7 +130,8 @@ it.each(['summary-error', 'summary-invalid'] as const)('混合副作用与工具
 
 it('混合工具增长后成功摘要，完整保存当前轮工具配对并跨进程续聊', async () => {
   await setup();
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({ ...qa.config, workspace: '.',
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent/settings.json'), JSON.stringify({ ...qa.config,
     context: { capacityTokens: 10000, answerReserveTokens: 1000, triggerRatio: 0.6, targetRatio: 0.5, keepRecentTurns: 0 },
   }));
   await mkdir(join(cwd, '.agent/conversations'), { recursive: true });

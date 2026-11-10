@@ -74,9 +74,10 @@ describe('interactive compiled CLI', () => {
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Missing fixture address');
-    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+    await mkdir(join(cwd, '.agent'), { recursive: true });
+    await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
       model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${address.port}/v1`,
-      workspace: '.', timeoutMs: 3000, maxSteps: 20,
+      timeoutMs: 3000, maxSteps: 20,
       approval: { rules: [{ toolName: 'write_file', action: 'allow' }] },
     }));
   });
@@ -366,9 +367,10 @@ describe('interactive compiled CLI', () => {
     await symlink(join(cwd, 'outside.txt'), join(cwd, 'workspace', 'escape.txt'));
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Missing fixture address');
-    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+    await mkdir(join(cwd, 'workspace', '.agent'), { recursive: true });
+    await writeFile(join(cwd, 'workspace', '.agent', 'settings.json'), JSON.stringify({
       model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${address.port}/v1`,
-      workspace: 'workspace', timeoutMs: 3000, maxSteps: 20,
+      timeoutMs: 3000, maxSteps: 20,
       approval: { rules: [{ toolName: 'write_file', action: 'allow' }] },
     }));
     reply = (_request, index) => {
@@ -377,7 +379,7 @@ describe('interactive compiled CLI', () => {
       if (index === 3) return { body: response(null, { name: 'write_file', arguments: { path: 'escape.txt', content: 'overwritten' } }) };
       return { body: response('该路径超出工作区。') };
     };
-    const result = await run('读取文件\n/exit\n');
+    const result = await run('读取文件\n/exit\n', ['--workspace', 'workspace']);
     expect(result.code).toBe(0);
     expect(result.stdout).not.toContain('private-outside-content');
     expect(await readFile(join(cwd, 'outside.txt'), 'utf8')).toBe('private-outside-content');
@@ -414,9 +416,10 @@ describe('interactive compiled CLI', () => {
   });
 
   it('continues to another message after the configured step limit fails a turn', async () => {
-    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+    await mkdir(join(cwd, '.agent'), { recursive: true });
+    await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
       model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
-      workspace: '.', timeoutMs: 3000, maxSteps: 1,
+      timeoutMs: 3000, maxSteps: 1,
     }));
     reply = (_request, index) => index === 1
       ? { body: response(null, { name: 'runtimeInfo' }) }
@@ -429,9 +432,10 @@ describe('interactive compiled CLI', () => {
   });
 
   it('reports step exhaustion when stop includes tool calls and preserves recovery', async () => {
-    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+    await mkdir(join(cwd, '.agent'), { recursive: true });
+    await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
       model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
-      workspace: '.', timeoutMs: 3000, maxSteps: 1,
+      timeoutMs: 3000, maxSteps: 1,
     }));
     reply = (_request, index) => index === 1
       ? { body: response('工具前置说明。', { name: 'runtimeInfo' }, 'stop') }
@@ -497,9 +501,10 @@ describe('interactive compiled CLI', () => {
   });
 
   it('keeps total request timeout and SIGINT cancellation behavior', async () => {
-    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+    await mkdir(join(cwd, '.agent'), { recursive: true });
+    await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
       model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
-      workspace: '.', timeoutMs: 120, maxSteps: 20,
+      timeoutMs: 120, maxSteps: 20,
     }));
     reply = (_request, index) => index === 1 ? undefined : { body: response('超时后仍可继续。') };
     const result = await run('请求超时\n超时后的下一轮\n/exit\n');

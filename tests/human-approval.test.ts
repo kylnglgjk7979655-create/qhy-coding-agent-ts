@@ -26,9 +26,10 @@ function write(id: string, path = 'note.txt'): FixtureToolCall {
 async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0], extra = {}) {
   cwd = await mkdtemp(join(tmpdir(), 'qhy-human-approval-'));
   fixture = await startLocalOpenAIModel(respond, () => { throw new Error('人工模式不得请求模型审批'); });
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'human-fixture', apiKeyEnv: 'TEST_HUMAN_KEY', baseURL: fixture.baseURL,
-    workspace: '.', timeoutMs: 3000, approval: { mode: 'human', humanTimeoutMs: 2000 }, ...extra,
+    timeoutMs: 3000, approval: { mode: 'default', humanTimeoutMs: 2000 }, ...extra,
   }));
 }
 function run(terminal = true) {
@@ -112,7 +113,7 @@ it.skipIf(process.platform === 'win32')('并发人工审批按各自编号独立
     { id: 'parallel-read-one', type: 'function', function: { name: 'read_file', arguments: '{"path":"one.txt"}' } },
     { id: 'parallel-read-two', type: 'function', function: { name: 'read_file', arguments: '{"path":"two.txt"}' } },
   ] } : { content: '两项读取均已批准' }, {
-    approval: { mode: 'human', rules: [{ toolName: 'read_file', action: 'ask' }], humanTimeoutMs: 2000 },
+    approval: { mode: 'default', rules: [{ toolName: 'read_file', action: 'ask' }], humanTimeoutMs: 2000 },
   });
   await writeFile(join(cwd, 'one.txt'), 'one');
   await writeFile(join(cwd, 'two.txt'), 'two');
@@ -189,7 +190,7 @@ it.skipIf(process.platform === 'win32')('人工逐次展示完整参数，只有
 
 it.skipIf(process.platform === 'win32')('人工等待超时只拒绝当前调用，迟到答复不能批准下一个调用', async () => {
   await setup((_request, index) => index === 1 ? { calls: [write('expired'), write('next', 'next.txt')] } : { content: '超时后完成' }, {
-    approval: { mode: 'human', humanTimeoutMs: 250 },
+    approval: { mode: 'default', humanTimeoutMs: 250 },
   });
   const running = run();
   await running.waitFor('> ');
@@ -212,7 +213,7 @@ it.skipIf(process.platform === 'win32')('人工等待超时只拒绝当前调用
 
 it.skipIf(process.platform === 'win32')('审批中关闭终端输入会直接拒绝当前和后续待审批调用', async () => {
   await setup((_request, index) => index === 1 ? { calls: [write('allowed', 'allowed.txt'), write('closed')] } : { content: '关闭后完成' }, {
-    approval: { mode: 'human', rules: [{ toolName: 'runtimeInfo', action: 'deny' }] },
+    approval: { mode: 'default', rules: [{ toolName: 'runtimeInfo', action: 'deny' }] },
   });
   const running = run();
   await running.waitFor('> ');
@@ -278,7 +279,7 @@ it.skipIf(process.platform === 'win32')('多次人工等待不会重置此前模
 
 it.skipIf(process.platform === 'win32')('人工思考跨过整轮截止时间仍可逐次批准，且人工上限独立于模型审批上限', async () => {
   await setup((_request, index) => index === 1 ? { calls: [write('one'), write('two', 'two.txt')] } : { content: '等待后完成' }, {
-    timeoutMs: 500, approval: { mode: 'human', timeoutMs: 50, humanTimeoutMs: 2000 },
+    timeoutMs: 500, approval: { mode: 'default', timeoutMs: 50, humanTimeoutMs: 2000 },
   });
   const running = run();
   await running.waitFor('> ');
@@ -303,7 +304,7 @@ it.skipIf(process.platform === 'win32')('默认人工等待上限为五分钟，
     write('allowed'), { id: 'denied', type: 'function', function: { name: 'runtimeInfo', arguments: '{}' } },
     { id: 'asked', type: 'function', function: { name: 'read_file', arguments: '{"path":"note.txt"}' } },
   ] } : { content: '策略完成' }, {
-    approval: { mode: 'human', rules: [
+    approval: { mode: 'default', rules: [
       { toolName: 'write_file', action: 'allow' },
       { toolName: 'runtimeInfo', action: 'allow' }, { toolName: 'runtimeInfo', action: 'deny' },
       { toolName: 'read_file', action: 'ask' },
@@ -327,7 +328,7 @@ it.skipIf(process.platform === 'win32')('默认人工等待上限为五分钟，
 });
 
 it.each([0, -1, '100', 1.5, 3_600_001, null])('非法人工等待上限 %j 在请求或工具操作前报错', async (humanTimeoutMs) => {
-  await setup(() => ({ calls: [write('invalid')] }), { approval: { mode: 'human', humanTimeoutMs } });
+  await setup(() => ({ calls: [write('invalid')] }), { approval: { mode: 'default', humanTimeoutMs } });
   const running = run(false);
   running.child.stdin.end('不应运行\n');
   const result = await running.done;
@@ -346,7 +347,7 @@ it.skipIf(process.platform === 'win32').each(['整轮超时', 'SIGTERM'] as cons
       write('later', 'later.txt'),
     ] } : { content: '不应再次请求主模型' }, {
       timeoutMs: 1000, bash: { timeoutMs: 5000 },
-      approval: { mode: 'human', humanTimeoutMs: 3000, rules: [{ toolName: 'write_file', action: 'allow' }] },
+      approval: { mode: 'default', humanTimeoutMs: 3000, rules: [{ toolName: 'write_file', action: 'allow' }] },
     });
     await writeFile(join(cwd, 'worker.cjs'), "const fs = require('node:fs'); fs.writeFileSync('child.pid', String(process.pid)); setTimeout(() => fs.writeFileSync('late.txt', 'leaked'), 1800); setInterval(() => {}, 1000);");
     const running = run();

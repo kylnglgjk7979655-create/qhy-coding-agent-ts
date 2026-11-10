@@ -27,7 +27,7 @@ it('独立 QA 入口生成可运行的配置和历史，CLI 无需真实模型�
   await expect.poll(() => output, { timeout: 5000 }).toContain('QA_READY');
   expect(errors).toBe('');
   async function run(command: string, conversation = 'qa-summary') {
-    const child = spawn(process.execPath, [resolve('dist/cli.js'), '--config', 'config.json', '--conversation-id', conversation], {
+    const child = spawn(process.execPath, [resolve('dist/cli.js'), '--workspace', 'work', '--conversation-id', conversation], {
       cwd: root, env: { ...process.env, HOME: root, USERPROFILE: root, TEST_MODEL_API_KEY: 'fake-model', QA_MCP_HEADER: 'fake-header' }, stdio: ['pipe', 'pipe', 'pipe'],
     });
     processes.push(child);
@@ -55,5 +55,5 @@ it('独立 QA 入口生成可运行的配置和历史，CLI 无需真实模型�
   expect(remoteHistory).toContain('正常参数');
   expect(remoteHistory).not.toContain('fake-header');
   expect((await readFile(join(root, 'work/worker.cjs'), 'utf8'))).toContain('child.pid');
-  expect((await readFile(join(root, 'config.json'), 'utf8'))).toContain('QA_MCP_HEADER');
+  expect((await readFile(join(root, 'work/.agent/settings.json'), 'utf8'))).toContain('QA_MCP_HEADER');
 });

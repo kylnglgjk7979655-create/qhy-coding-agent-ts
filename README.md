@@ -86,7 +86,7 @@ pnpm dev --workspace ./demo
 
 ## 模型及运行配置
 
-默认读取当前目录的 `agent.config.json`，项目已配置火山方舟 Coding 服务及 `doubao-seed-2.0-mini`。`--config ./path.json` 指定的文件必须存在。配置文件路径和工作区路径相对启动命令所在目录解析；`--workspace` 优先于文件配置。工作区必须是已存在的可访问目录，会解析为绝对路径，不会改变进程工作目录。文件工具的相对路径从工作区解析。
+配置由用户级 `~/.agent/settings.json`、项目级 `<工作区>/.agent/settings.json` 和项目本地 `<工作区>/.agent/settings.local.json` 按此顺序合并；更具体的字段覆盖同名字段，权限列表跨层合并去重，其他数组整体替换。项目本地文件已加入 Git 忽略规则。工作区依次由 `--workspace`、用户级设置和启动目录确定；项目设置不能重定向工作区，也不会向父目录逐级发现。仓库示例位于 `demo/.agent/settings.json`，启动示例使用 `--workspace ./demo`。发现旧的 `agent.config.json` 时会提示迁移，但不会加载该文件。
 
 ```json
 {
@@ -94,7 +94,6 @@ pnpm dev --workspace ./demo
   "model": "doubao-seed-2.0-mini",
   "apiKeyEnv": "ARK_API_KEY",
   "baseURL": "https://ark.cn-beijing.volces.com/api/coding/v3",
-  "workspace": "./demo",
   "timeoutMs": 60000,
   "maxSteps": 20,
   "explore": {
@@ -110,7 +109,7 @@ pnpm dev --workspace ./demo
 | `model` | 实际模型 ID，必须支持 function/tool calling；当前配置 `doubao-seed-2.0-mini` |
 | `apiKeyEnv` | 密钥的环境变量名，仅引用凭据；不接受 `apiKey` 等明文字段 |
 | `baseURL` | 可选，默认 `https://api.openai.com/v1`；必须是无内嵌凭据、查询参数及片段的 HTTP(S) 地址 |
-| `workspace` | 默认 `./demo`；CLI 可覆盖 |
+| `workspace` | 仅用户级 settings 可指定；命令行 `--workspace` 优先，缺省使用启动目录 |
 | `timeoutMs` | 1–3,600,000ms；每轮独立计时，覆盖该轮的生成与工具循环；人工审批等待单独计时，超时通过 AbortSignal 中止请求 |
 | `maxSteps` | 1–100，默认 20；每轮独立计步，达到上限仍在调用工具时该轮失败，交互模式继续等待输入 |
 | `explore.model` | 可选；Explore 默认模型，未配置时使用主 Agent 的 `model`。`agent` 单次调用可用 `model` 覆盖；连接地址和凭据沿用主 Agent |
@@ -119,7 +118,7 @@ pnpm dev --workspace ./demo
 
 未知字段、无效类型及越界数值会在网络请求前报错。自动重试关闭，避免鉴权失败反复请求。Ctrl+C 会中止当前请求。
 
-自定义 `baseURL` 的服务必须兼容 OpenAI Chat Completions 及函数调用；仅能返回文本不足以认定工具兼容。项目配置文件不存在时，内置默认值使用 OpenAI 地址、`gpt-4.1-mini-2025-04-14` 和 `OPENAI_API_KEY`；正常启动请保留本项目的方舟配置文件。
+自定义 `baseURL` 的服务必须兼容 OpenAI Chat Completions 及函数调用；仅能返回文本不足以认定工具兼容。缺少 settings 时，内置默认值使用 OpenAI 地址、`gpt-4.1-mini-2025-04-14` 和 `OPENAI_API_KEY`。
 
 2026-11-03 的基础版本曾通过方舟真实模型和 `runtimeInfo` 工具验收，详见 [历史验收记录](docs/verification.md)。当前工具权限、Bash、基础 MCP 与摘要的离线验收入口见 [本地 QA 指南](docs/qa-tool-capabilities.md)；早期交互式文件工具的验收项目保留在 [QA 清单](.scratch/interactive-cli-file-tools/qa-checklist.md)。
 
@@ -162,7 +161,7 @@ pnpm dev --workspace ./demo
 | `runtimeInfo` | 返回工作区绝对路径和本轮运行探针 |
 | `Bash` | 接收 `command` 和可选 `cwd`，在工作区内的启动目录运行独立宿主 Bash |
 
-相对路径从配置的工作区解析；绝对路径仅在解析后的目标仍位于工作区内时允许。指向工作区外的符号链接会被拒绝。read_file 和 runtimeInfo 默认直接执行；write_file 默认在独立模型审批通过后执行。固定允许或审批通过均不能放宽文件路径与符号链接边界。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
+相对路径从配置的工作区解析；绝对路径仅在解析后的目标仍位于工作区内时允许。指向工作区外的符号链接会被拒绝。read_file 和 runtimeInfo 默认直接执行；write_file 默认进入当前审批策略。固定允许或审批通过均不能放宽文件路径与符号链接边界。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
 
 终端实时显示 `[工具] read_file：开始`、`[工具] read_file：成功`、`[工具] read_file：失败` 或 `[工具] read_file：拒绝` 等执行状态，不直接打印工具参数、文件内容或原始异常。一次调用只显示一个终结状态；普通调用失败后，同批后续调用仍会执行，Agent 会收到各次工具结果并决定如何继续。Agent 的最终回答可以按用户要求引用文件内容。
 
@@ -179,7 +178,7 @@ pnpm dev --workspace ./demo
 ```json
 {
   "bash": { "timeoutMs": 10000 },
-  "approval": { "mode": "human", "humanTimeoutMs": 300000 }
+  "approval": { "mode": "default", "humanTimeoutMs": 300000 }
 }
 ```
 
@@ -191,12 +190,12 @@ pnpm dev --workspace ./demo
 
 ## 工具策略与审批
 
-可在配置中添加 `approval`，省略时采用模型审批：
+可在 settings 中添加 `approval`，省略时采用人工审批：
 
 ```json
 {
   "approval": {
-    "mode": "model",
+    "mode": "auto",
     "timeoutMs": 30000,
     "rules": [
       { "toolName": "read_file", "action": "allow" },
@@ -234,13 +233,13 @@ pnpm dev --workspace ./demo
 ```json
 {
   "approval": {
-    "mode": "human",
+    "mode": "default",
     "humanTimeoutMs": 300000
   }
 }
 ```
 
-`approval.mode` 接受 `model`（默认）和 `human`。人工模式逐次展示工具名称、调用 ID 和完整参数，例如 `[人工审批 1] write_file`。输入 `approve 1` 批准，或 `deny 1` 拒绝；数字须与当前提示一致。答复只对应本次调用，不能用旧编号批准后续调用。无效输入（包括新的用户需求）不会被当作批准；请完成审批后再提交新需求。进入等待前已经排队的需求仍作为后续对话处理，不能成为审批答复。
+`approval.mode` 接受 `default`（默认人工审批）和 `auto`（独立模型审批）。`ask` 在两种模式下分别交给人工或模型审批。人工模式逐次展示工具名称、调用 ID 和完整参数，例如 `[人工审批 1] write_file`。输入 `approve 1` 批准，或 `deny 1` 拒绝；数字须与当前提示一致。答复只对应本次调用，不能用旧编号批准后续调用。无效输入（包括新的用户需求）不会被当作批准；请完成审批后再提交新需求。进入等待前已经排队的需求仍作为后续对话处理，不能成为审批答复。
 
 人工等待独立上限 `approval.humanTimeoutMs` 默认五分钟（300,000ms），范围为 1–3,600,000 毫秒；它与模型审批上限分别配置。非交互管道、输入关闭或等待超时直接拒绝本次调用，其他普通调用继续，不请求模型代为审批。人工等待不消耗整轮执行预算；批准或拒绝后继续使用等待前的剩余时间，多次等待不会重置已消耗时间。Ctrl+C、SIGTERM 和公共入口的父级取消信号仍能立即中断等待并停止本轮。公共入口在人工模式下未提供 `approvalControl` 时直接拒绝。
 

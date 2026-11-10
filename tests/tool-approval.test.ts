@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -17,11 +17,13 @@ function call(id: string, name: string, input: unknown): FixtureToolCall {
 }
 async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0], review?: Parameters<typeof startLocalOpenAIModel>[1], extra = {}) {
   cwd = await mkdtemp(join(tmpdir(), 'qhy-approval-'));
+  const { approval, ...settings } = extra as Record<string, unknown> & { approval?: Record<string, unknown> };
   const fixture = await startLocalOpenAIModel(respond, review);
   fixtures.push(fixture);
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'main-fixture', baseURL: fixture.baseURL, apiKeyEnv: 'TEST_APPROVAL_KEY',
-    workspace: '.', timeoutMs: 3000, ...extra,
+    timeoutMs: 3000, approval: { mode: 'auto', ...approval }, ...settings,
   }));
   return fixture;
 }

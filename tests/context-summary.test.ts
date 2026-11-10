@@ -38,9 +38,10 @@ async function setup(
   cwd = await mkdtemp(join(tmpdir(), 'qhy-summary-'));
   const fixture = await startLocalOpenAIModel(respond, undefined, summarize);
   fixtures.push(fixture);
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: fixture.baseURL,
-    workspace: '.', timeoutMs: 3000, context, ...extra,
+    timeoutMs: 3000, approval: { mode: 'auto' }, context, ...extra,
   }));
   await mkdir(join(cwd, '.agent/conversations'), { recursive: true });
   await writeFile(historyPath(), JSON.stringify([...old, ...recent]));
@@ -84,7 +85,7 @@ it('审查单次调用载荷超预算时不发送审查，停止同批后续操�
     { id: 'tail', type: 'function', function: { name: 'Bash', arguments: '{"command":"touch forbidden.txt"}' } },
   ] }), undefined, {
     context: { capacityTokens: 4000, answerReserveTokens: 1000 },
-    approval: { rules: [{ toolName: 'Bash', action: 'allow' }] },
+    approval: { mode: 'auto', rules: [{ toolName: 'Bash', action: 'allow' }] },
   });
   await writeFile(historyPath(), '[]');
   const result = await run().done;

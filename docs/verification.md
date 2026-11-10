@@ -90,4 +90,4 @@ pnpm exec node dist/cli.js --workspace ./demo "介绍你的能力"
 pnpm smoke
 ```
 
-正常回答须非空、退出 0。工具验收须退出 0，且终态日志包含 `toolSmokePassed: true`。配置其他服务时，修改 `agent.config.json` 的 `baseURL`、`model` 和 `apiKeyEnv`，重新运行上述验收。
+正常回答须非空、退出 0。工具验收须退出 0，且终态日志包含 `toolSmokePassed: true`。配置其他服务时，修改工作区 `.agent/settings.json` 的 `baseURL`、`model` 和 `apiKeyEnv`，重新运行上述验收。

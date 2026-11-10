@@ -32,9 +32,10 @@ it('跨进程复用已保存摘要，保留摘要覆盖的完整 transcript 和�
     () => ({ content: '摘要目标：跨进程续聊；约束：保留完整原文；结果：前序消息已处理；未完成：继续工作。' }),
   );
   fixtures.push(model);
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL,
-    workspace: '.', timeoutMs: 3000, maxSteps: 10,
+    timeoutMs: 3000, maxSteps: 10, approval: { mode: 'auto' },
     // 工具定义进入上下文预算后，留出空间让本例仍在第 4 轮触发一次摘要。
     context: { capacityTokens: 7000, answerReserveTokens: 1000, triggerRatio: 0.8, targetRatio: 0.75, keepRecentTurns: 1 },
   }));
@@ -93,9 +94,10 @@ it('迁移旧版工作区历史时将摘要原文纳入新会话 transcript', as
     () => ({ content: '旧目标摘要；约束：保留完整原文；未完成：继续工作。' }),
   );
   fixtures.push(model);
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL,
-    workspace: '.', timeoutMs: 3000, maxSteps: 10,
+    timeoutMs: 3000, maxSteps: 10, approval: { mode: 'auto' },
     context: { capacityTokens: 10000, answerReserveTokens: 1000, triggerRatio: 0.5, targetRatio: 0.4, keepRecentTurns: 0 },
   }));
   const legacyHistory = [
@@ -127,9 +129,10 @@ it('摘要压缩校验失败时保留完整 transcript 且不保存无效摘要'
     () => ({ content: '过长摘要'.repeat(2000) }),
   );
   fixtures.push(model);
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL,
-    workspace: '.', timeoutMs: 3000, maxSteps: 10,
+    timeoutMs: 3000, maxSteps: 10, approval: { mode: 'auto' },
     context: { capacityTokens: 10000, answerReserveTokens: 1000, triggerRatio: 0.5, targetRatio: 0.4, keepRecentTurns: 0 },
   }));
   const legacyHistory = [
