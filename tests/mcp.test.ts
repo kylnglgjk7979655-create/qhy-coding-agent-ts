@@ -102,7 +102,7 @@ it('发现同名远端工具，独立审批后通过真实协议调用；凭据�
   expect(model.requests[0]!.tools.map(({ function: f }) => f.name)).toEqual(expect.arrayContaining(['mcp_alpha_echo', 'mcp_beta_echo', 'runtimeInfo', 'Bash']));
   expect(a.calls).toEqual([{ name: 'echo', arguments: { text: '第一条' } }]);
   expect(b.calls).toEqual([{ name: 'echo', arguments: { text: '第二条' } }]);
-  expect(model.approvalRequests.map((request) => JSON.parse(request.messages[1]!.content))).toEqual([
+  expect(model.approvalRequests.map((request) => JSON.parse(request.messages[1]!.content))).toMatchObject([
     { toolName: 'mcp_alpha_echo', input: { text: '第一条' } }, { toolName: 'mcp_beta_echo', input: { text: '第二条' } },
   ]);
   expect(results(model).map(({ tool_call_id }) => tool_call_id)).toEqual(['a', 'b', 'local']);

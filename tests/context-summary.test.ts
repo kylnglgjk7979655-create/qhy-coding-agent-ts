@@ -182,7 +182,7 @@ it('摘要和独立审查不重置主模型步骤上限', async () => {
   expect(fixture.summaryRequests).toHaveLength(1);
   expect(fixture.approvalRequests).toHaveLength(1);
   expect(fixture.requests).toHaveLength(1);
-  expect(JSON.stringify(fixture.approvalRequests[0])).not.toContain(summary);
+  expect(JSON.stringify(fixture.approvalRequests[0])).toContain(summary);
   expect(JSON.stringify(fixture.approvalRequests[0])).not.toContain('旧原文标记');
   expect(await readFile(join(cwd, 'kept.txt'), 'utf8')).toBe('kept');
   expect(await readFile(historyPath(), 'utf8')).toBe(previous);

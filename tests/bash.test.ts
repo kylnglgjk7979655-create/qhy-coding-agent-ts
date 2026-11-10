@@ -77,7 +77,7 @@ it('Bash 默认独立审批，批准前无启动或副作用，批准后返回�
     await expect(readFile(join(cwd, 'kept.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     const review = fixture.approvalRequests[0]!;
     expect(review.tools ?? []).toEqual([]);
-    expect(JSON.parse(review.messages[1]!.content)).toEqual({ toolName: 'Bash', input: { command } });
+    expect(JSON.parse(review.messages[1]!.content)).toMatchObject({ toolName: 'Bash', input: { command } });
   } finally { release(); }
   const result = await running.done;
   expect(result.code, result.stderr).toBe(0);

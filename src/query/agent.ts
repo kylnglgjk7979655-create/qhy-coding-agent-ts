@@ -90,6 +90,7 @@ export async function runAgent(
   const signal = options.signal === undefined
     ? AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal])
     : AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal, options.signal]);
+  let preparedHistory: ModelMessage[] = [];
   function pauseDeadline(): void {
     signal.throwIfAborted();
     deadlinePauseDepth += 1;
@@ -115,7 +116,7 @@ export async function runAgent(
     approve: async (call) => {
       signal.throwIfAborted();
       try {
-        return await approveToolCall(config, call, signal, options.approvalControl, { pause: pauseDeadline, resume: resumeDeadline });
+        return await approveToolCall(config, call, signal, options.approvalControl, { pause: pauseDeadline, resume: resumeDeadline }, preparedHistory);
       } catch (error) {
         if (!signal.aborted) {
           frameworkError = error instanceof AgentError ? error : new AgentError('APPROVAL_ERROR', '工具审批故障，已停止本轮。');
@@ -181,7 +182,6 @@ export async function runAgent(
         ] : []),
     ].join('\n');
     const tools = registry.tools();
-    let preparedHistory: ModelMessage[] = [];
     let preparedResponseCount = 0;
     const summaries: RunResult['summaries'] = [];
     let summaryCoverageBase = options.summaryCoverageBase ?? 0;
@@ -210,6 +210,7 @@ export async function runAgent(
           summaryCoverageBase = coversThrough;
           hasSummary = true;
         });
+        preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;
         signal.throwIfAborted();
         return {
