@@ -74,7 +74,12 @@ function isIgnored(path: string, rules: IgnoreRules[]): boolean {
   return ignored;
 }
 
-async function workspaceFiles(workspace: string, requestedPath?: string, permission?: SearchPermission): Promise<{ root: string; paths: string[]; excluded: string[]; asks: string[] }> {
+async function workspaceFiles(
+  workspace: string,
+  requestedPath?: string,
+  permission?: SearchPermission,
+  approvedAsks?: string[],
+): Promise<{ root: string; paths: string[]; excluded: string[]; asks: string[] }> {
   const root = await searchRoot(workspace, requestedPath);
   const files: string[] = [];
   const excluded: string[] = [];
@@ -110,6 +115,12 @@ async function workspaceFiles(workspace: string, requestedPath?: string, permiss
         if (entry.isSymbolicLink() && (await lstat(candidate)).isSymbolicLink()) {
           const linkTarget = await realpath(candidate);
           if (!isWithinWorkspace(workspace, linkTarget) || !(await stat(linkTarget)).isFile()) continue;
+          const targetAction = permission?.(linkTarget);
+          if (targetAction === 'deny') {
+            excluded.push(toPosix(relative(workspace, candidate)));
+            continue;
+          }
+          if (targetAction === 'ask') asks.push(toPosix(relative(workspace, linkTarget)));
           files.push(candidate);
           continue;
         }
@@ -123,12 +134,26 @@ async function workspaceFiles(workspace: string, requestedPath?: string, permiss
   }
 
   await visit(root, rootRules);
+  const compactAsks = compactSearchAsks(asks);
+  if (approvedAsks !== undefined && compactAsks.some((path) => !isSearchScopeCovered(path, approvedAsks))) {
+    throw new Error('搜索范围在审批后发生变化，需重新提交调用。');
+  }
   return {
     root,
     paths: files.map((file) => toPosix(relative(workspace, file))).sort((left, right) => left.localeCompare(right)),
     excluded: excluded.sort((left, right) => left.localeCompare(right)),
-    asks: [...new Set(asks)].sort((left, right) => left.localeCompare(right)),
+    asks: compactAsks,
   };
+}
+
+function compactSearchAsks(asks: string[]): string[] {
+  const unique = [...new Set(asks)].sort((left, right) => left.localeCompare(right));
+  return unique.filter((path) => !unique.some((parent) => parent !== path
+    && (parent === '.' || path.startsWith(`${parent}/`))));
+}
+
+function isSearchScopeCovered(path: string, approvedAsks: string[]): boolean {
+  return approvedAsks.some((approved) => approved === '.' || path === approved || path.startsWith(`${approved}/`));
 }
 
 export async function inspectWorkspaceSearch(
@@ -137,9 +162,7 @@ export async function inspectWorkspaceSearch(
   permission: SearchPermission,
 ): Promise<SearchPermissionScope> {
   const { asks, excluded } = await workspaceFiles(workspace, requestedPath, permission);
-  const compactAsks = asks.filter((path) => !asks.some((parent) => parent !== path
-    && (parent === '.' || path.startsWith(`${parent}/`))));
-  return { asks: compactAsks, excluded };
+  return { asks, excluded };
 }
 
 function matchesGlob(path: string, pattern: string): boolean {
@@ -154,8 +177,13 @@ function outputFits(value: unknown): boolean {
   return JSON.stringify(value).length <= MAX_OUTPUT_CHARS;
 }
 
-export async function globWorkspace(workspace: string, input: SearchOptions, permission?: SearchPermission): Promise<{ paths: string[]; truncated: boolean; permission_excluded?: string[] }> {
-  const { root, paths: candidates, excluded } = await workspaceFiles(workspace, input.path, permission);
+export async function globWorkspace(
+  workspace: string,
+  input: SearchOptions,
+  permission?: SearchPermission,
+  approvedAsks?: string[],
+): Promise<{ paths: string[]; truncated: boolean; permission_excluded?: string[] }> {
+  const { root, paths: candidates, excluded } = await workspaceFiles(workspace, input.path, permission, approvedAsks);
   const paths: string[] = [];
   let truncated = false;
   for (const path of candidates) {
@@ -174,18 +202,32 @@ export async function grepWorkspace(
   workspace: string,
   input: SearchOptions & { glob?: string | undefined },
   permission?: SearchPermission,
+  approvedAsks?: string[],
 ): Promise<{ matches: Array<{ path: string; line: number; text: string }>; truncated: boolean; permission_excluded?: string[] }> {
   const expression = new RegExp(input.pattern);
-  const { root, paths: candidates, excluded } = await workspaceFiles(workspace, input.path, permission);
+  const { root, paths: candidates, excluded } = await workspaceFiles(workspace, input.path, permission, approvedAsks);
   const matches: Array<{ path: string; line: number; text: string }> = [];
   let truncated = false;
 
   for (const path of candidates) {
     if (input.glob && !matchesGlob(pathFromSearchRoot(workspace, root, path), input.glob)) continue;
+    let canonical: string;
     let content: string;
     try {
-      const canonical = await realpath(resolve(workspace, path));
-      if (!isWithinWorkspace(workspace, canonical)) continue;
+      canonical = await realpath(resolve(workspace, path));
+    } catch {
+      continue;
+    }
+    if (!isWithinWorkspace(workspace, canonical)) continue;
+    const action = permission?.(canonical);
+    if (action === 'deny') {
+      excluded.push(toPosix(relative(workspace, path)));
+      continue;
+    }
+    if (action === 'ask' && !isSearchScopeCovered(toPosix(relative(workspace, canonical)), approvedAsks ?? [])) {
+      throw new Error('搜索范围在审批后发生变化，需重新提交调用。');
+    }
+    try {
       content = await readFile(canonical, 'utf8');
     } catch {
       continue;

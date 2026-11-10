@@ -21,11 +21,16 @@ export function registerGrepTool(registry: ToolRegistry, { config }: BuiltInTool
       const permission = (path: string) => searchPathPermissionAction(config, 'grep', path);
       const rootDenied = permission(target) === 'deny';
       const scope = rootDenied ? { asks: [], excluded: [] } : await inspectWorkspaceSearch(config.workspace, input.path, permission);
-      return { input, details: {
+      return { input: { ...input, approvedSearchAsks: scope.asks }, details: {
         requestedPath: input.path ?? '.', target,
         ...(scope.asks.length ? { searchAsk: JSON.stringify(scope.asks) } : {}),
       } };
     },
-    execute: (input) => grepWorkspace(config.workspace, input, (path) => searchPathPermissionAction(config, 'grep', path)),
+    execute: (input) => grepWorkspace(
+      config.workspace,
+      input,
+      (path) => searchPathPermissionAction(config, 'grep', path),
+      input.approvedSearchAsks,
+    ),
   });
 }

@@ -121,6 +121,7 @@ it('Glob 与 Grep 按各自权限范围剪枝并汇总审批', async () => {
     await mkdir(join(workspace, 'private'));
     await mkdir(join(workspace, 'review-zone'));
     await writeFile(join(workspace, 'private', 'secret.txt'), 'needle forbidden body');
+    await symlink(join(workspace, 'private', 'secret.txt'), join(workspace, 'private-link.txt'));
     await writeFile(join(workspace, 'needs-review.txt'), 'needle reviewed body');
     await writeFile(join(workspace, 'review-zone', 'review-denied.txt'), 'needle denied review body');
     await writeFile(join(workspace, 'public.txt'), 'needle public body');
@@ -133,7 +134,10 @@ it('Glob 与 Grep 按各自权限范围剪枝并汇总审批', async () => {
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
       approval: { mode: 'default', rules: [], timeoutMs: 30_000 },
-      permissions: { allow: ['Read'], ask: ['Grep(needs-review.txt)', 'Grep(review-zone)'], deny: ['Read(private)', 'Glob(private)', 'Grep(private)', 'Grep(private/secret.txt)'] },
+      permissions: { allow: ['Read'], ask: ['Grep(needs-review.txt)', 'Grep(review-zone)'], deny: [
+        'Read(private)', 'Glob(private)', 'Grep(private)', 'Grep(private/secret.txt)',
+        'Glob(private/secret.txt)',
+      ] },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -150,19 +154,54 @@ it('Glob 与 Grep 按各自权限范围剪枝并汇总审批', async () => {
     });
     const results = fixture.requests[1]!.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ content: string; tool_call_id: string }>;
     const output = (id: string) => JSON.parse(results.find(({ tool_call_id }) => tool_call_id === id)!.content);
-    expect(output('permission-glob')).toMatchObject({ is_error: false, output: { paths: ['needs-review.txt', 'public.txt', 'review-zone/review-denied.txt'], permission_excluded: ['private'] } });
+    expect(output('permission-glob')).toMatchObject({ is_error: false, output: {
+      paths: ['needs-review.txt', 'public.txt', 'review-zone/review-denied.txt'],
+      permission_excluded: ['private', 'private-link.txt'],
+    } });
     expect(output('permission-grep')).toMatchObject({ is_error: false, output: {
       matches: [
         { path: 'needs-review.txt', text: 'needle reviewed body' },
         { path: 'public.txt', text: 'needle public body' },
         { path: 'review-zone/review-denied.txt', text: 'needle denied review body' },
-      ], permission_excluded: ['private'],
+      ], permission_excluded: ['private', 'private-link.txt'],
     } });
     expect(output('permission-grep').output.matches.map(({ text }: { text: string }) => text).join('\n')).not.toContain('forbidden body');
     expect(output('permission-root-deny').error.code).toBe('PERMISSION_DENIED');
     expect(output('permission-ask-deny').error.code).toBe('PERMISSION_DENIED');
     expect(approvalScopes.sort()).toEqual(['["needs-review.txt","review-zone"]', '["review-zone"]']);
     expect(approvals).toEqual(['grep', 'grep']);
+  } finally {
+    await closeFixture?.();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+it('搜索审批后新增的 ask 范围不会被未覆盖的先前批准放行', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'qhy-search-scope-change-'));
+  let closeFixture: (() => Promise<void>) | undefined;
+  try {
+    await writeFile(join(workspace, 'reviewed.txt'), 'needle approved body');
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1 ? { calls: [
+      { id: 'scope-change', type: 'function', function: { name: 'grep', arguments: '{"pattern":"needle"}' } },
+    ] } : { content: '搜索完成' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'default', rules: [], timeoutMs: 30_000 },
+      permissions: { allow: [], ask: ['Grep(reviewed.txt)', 'Grep(new-review.txt)'], deny: [] },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 4,
+    };
+    await runAgent(config, '搜索经审批的文件', {
+      smokeTool: false,
+      approvalControl: async () => {
+        await writeFile(join(workspace, 'new-review.txt'), 'needle not approved body');
+        return 'approve';
+      },
+    });
+
+    const result = JSON.parse(fixture.requests[1]!.messages.find(({ role }) => role === 'tool')!.content);
+    expect(result).toMatchObject({ is_error: true });
+    expect(JSON.stringify(result)).not.toContain('not approved body');
   } finally {
     await closeFixture?.();
     await rm(workspace, { recursive: true, force: true });

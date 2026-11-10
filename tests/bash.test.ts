@@ -120,11 +120,12 @@ it('Bash 权限按完整命令和参数边界匹配，复合命令及命令替�
     bash('prefix-lookalike', { command: 'printf prefixish' }),
     bash('compound', { command: 'printf before; touch denied-compound' }),
     bash('substitution', { command: 'printf "$(touch denied-substitution)"' }),
+    bash('arithmetic-substitution', { command: 'echo $(( $(touch denied-arithmetic; echo 1) ))' }),
     bash('unparseable', { command: 'printf "$(touch missing-close"' }),
   ] } : { content: '权限完成' }, () => ({ content: 'approve' }), {
     permissions: {
       allow: ['Bash(printf exact)', 'Bash(printf prefix *)'],
-      deny: ['Bash(touch denied-compound)', 'Bash(touch denied-substitution)'],
+      deny: ['Bash(touch denied-compound)', 'Bash(touch denied-substitution)', 'Bash(touch denied-arithmetic)'],
     },
   });
   const result = await run(undefined, {}, 'bash-permissions').done;
@@ -133,11 +134,12 @@ it('Bash 权限按完整命令和参数边界匹配，复合命令及命令替�
   expect(results().map(({ is_error, error }) => ({ is_error, code: error?.code }))).toEqual([
     { is_error: false, code: undefined }, { is_error: false, code: undefined }, { is_error: false, code: undefined },
     { is_error: true, code: 'PERMISSION_DENIED' }, { is_error: true, code: 'PERMISSION_DENIED' },
-    { is_error: true, code: 'INVALID_TOOL_ARGUMENTS' },
+    { is_error: true, code: 'PERMISSION_DENIED' }, { is_error: true, code: 'INVALID_TOOL_ARGUMENTS' },
   ]);
   expect(fixture.approvalRequests).toHaveLength(1);
   await expect(readFile(join(cwd, 'denied-compound'))).rejects.toMatchObject({ code: 'ENOENT' });
   await expect(readFile(join(cwd, 'denied-substitution'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(join(cwd, 'denied-arithmetic'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('Bash 重定向和工作区外 cwd 必须审批，拒绝或未完成审批前不启动', async () => {

@@ -48,9 +48,7 @@ export function analyzeBashCommand(source: string): BashCommandAnalysis {
       if (character === "'" || character === '"') { quote = character; continue; }
       if (character === '$' && text[index + 1] === '(') {
         if (text[index + 2] === '(') {
-          const end = text.indexOf('))', index + 3);
-          if (end < 0) throw new Error('算术扩展未闭合');
-          index = end + 1;
+          index = parseArithmeticExpansion(text, index + 3, (nested) => parse(nested, depth + 1));
           continue;
         }
         const nested = findSubstitution(text, index + 1);
@@ -108,6 +106,26 @@ export function analyzeBashCommand(source: string): BashCommandAnalysis {
   parse(source, 0);
   if (commands.length === 0) throw new Error('命令中没有可检查的简单命令');
   return { commands, requiresApproval };
+}
+
+/** 算术扩展也会执行其中的命令替换，必须纳入同一条命令权限检查。 */
+function parseArithmeticExpansion(text: string, start: number, parseNested: (source: string) => void): number {
+  for (let index = start; index < text.length; index += 1) {
+    if (text[index] === '$' && text[index + 1] === '(' && text[index + 2] !== '(') {
+      const nested = findSubstitution(text, index + 1);
+      parseNested(nested.body);
+      index = nested.end;
+      continue;
+    }
+    if (text[index] === '`') {
+      const nested = findBacktick(text, index + 1);
+      parseNested(nested.body);
+      index = nested.end;
+      continue;
+    }
+    if (text[index] === ')' && text[index + 1] === ')') return index + 1;
+  }
+  throw new Error('算术扩展未闭合');
 }
 
 function findSubstitution(text: string, openIndex: number): { body: string; end: number } {
