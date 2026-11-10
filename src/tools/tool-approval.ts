@@ -28,11 +28,13 @@ export async function approveToolCall(
   signal.throwIfAborted();
   const actions = config.approval.rules.filter(({ toolName }) => toolName === call.toolName).map(({ action }) => action);
   const readAction = call.toolName === 'read_file' ? readPermissionAction(config, call) : undefined;
+  const writeAction = call.toolName === 'write_file' ? pathPermissionAction(config, call, 'Write') : undefined;
   const readOutsideWorkspace = call.toolName === 'read_file' && readAction === undefined && !isReadTargetInWorkspace(config, call);
-  const permissionRequiresApproval = readAction === 'ask' || readOutsideWorkspace;
-  if (actions.includes('deny') || readAction === 'deny') return false;
+  const permissionAction = readAction ?? writeAction;
+  const permissionRequiresApproval = permissionAction === 'ask' || readOutsideWorkspace;
+  if (actions.includes('deny') || permissionAction === 'deny') return false;
   // 按路径设置的 ask 必须高于旧版工具级 allow。
-  if (!permissionRequiresApproval && (readAction === 'allow' || actions.includes('allow'))) return true;
+  if (!permissionRequiresApproval && (permissionAction === 'allow' || actions.includes('allow'))) return true;
   if (!permissionRequiresApproval && !actions.includes('ask')
     && ['read_file', 'glob', 'grep', 'runtimeInfo', 'agent'].includes(call.toolName)) return true;
 
@@ -97,6 +99,10 @@ export async function approveToolCall(
 }
 
 function readPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest): 'allow' | 'ask' | 'deny' | undefined {
+  return pathPermissionAction(config, call, 'Read');
+}
+
+function pathPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest, permission: 'Read' | 'Write'): 'allow' | 'ask' | 'deny' | undefined {
   const inputPath = typeof call.input === 'object' && call.input !== null && 'path' in call.input
     && typeof call.input.path === 'string' ? call.input.path : undefined;
   const requestedPath = call.details?.requestedPath ?? inputPath;
@@ -104,7 +110,7 @@ function readPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest)
   if (!requestedPath || !target) return undefined;
   const paths = [resolveUserPath(config, requestedPath), target];
   const matches = (rule: string): boolean => {
-    const match = /^Read(?:\((.+)\))?$/u.exec(rule);
+    const match = new RegExp(`^${permission}(?:\\((.+)\\))?$`, 'u').exec(rule);
     if (!match) return false;
     if (match[1] === undefined) return true;
     const pattern = resolveUserPath(config, match[1]);

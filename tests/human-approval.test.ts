@@ -108,6 +108,34 @@ it.skipIf(process.platform === 'win32')('人工审批 Bash 展示完整参数与
   await expect(readFile(join(cwd, 'denied.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
+it.skipIf(process.platform === 'win32')('人工批准后写入工作区外目标并展示规范实际路径', async () => {
+  const outside = await mkdtemp(join(tmpdir(), 'qhy-human-write-outside-'));
+  try {
+    const target = join(outside, 'approved.txt');
+    await setup((_request, index) => index === 1
+      ? { calls: [write('outside', 'outside-link/approved.txt')] }
+      : { content: '外部写入完成。' });
+    await symlink(outside, join(cwd, 'outside-link'));
+    const running = run();
+    running.child.stdin.write('写入获批的外部目标\n');
+    await running.waitFor('[人工审批 1] write_file');
+    expect(running.output()).toContain('"path": "outside-link/approved.txt"');
+    expect(running.output()).toContain(`实际文件目标：${target}`);
+    await expect(readFile(target, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    running.child.stdin.write('approve 1\n');
+    await running.waitFor('外部写入完成。');
+    running.child.stdin.end('/exit\n');
+
+    const result = await running.done;
+    expect(result.code).toBe(0);
+    expect(await readFile(target, 'utf8')).toBe('内容-outside');
+    expect(results().map(({ tool_call_id }) => tool_call_id)).toContain('outside');
+    expect(fixture.requests).toHaveLength(2);
+  } finally {
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
 it.skipIf(process.platform === 'win32')('并发人工审批按各自编号独立处理', async () => {
   await setup((_request, index) => index === 1 ? { calls: [
     { id: 'parallel-read-one', type: 'function', function: { name: 'read_file', arguments: '{"path":"one.txt"}' } },
