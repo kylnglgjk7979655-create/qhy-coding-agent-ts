@@ -33,11 +33,14 @@ export async function approveToolCall(
     ? pathPermissionAction(config, call, call.toolName === 'glob' ? 'Glob' : 'Grep') : undefined;
   const searchAsks = call.details?.searchAsk !== undefined;
   const bashActions = call.toolName === 'Bash' ? bashPermissionActions(config, call) : [];
+  const mcpAction = mcpPermissionAction(config, call);
+  const basicToolAction = ['agent', 'runtimeInfo'].includes(call.toolName)
+    ? basicToolPermissionAction(config, call.toolName === 'agent' ? 'Agent' : 'RuntimeInfo') : undefined;
   const bashDenied = bashActions.includes('deny');
   const bashAllowed = bashActions.length > 0 && bashActions.every((action) => action === 'allow');
   const bashRequiresApproval = call.toolName === 'Bash' && call.details?.bashRequiresApproval === 'true';
   const readOutsideWorkspace = call.toolName === 'read_file' && readAction === undefined && !isReadTargetInWorkspace(config, call);
-  const permissionAction = readAction ?? writeAction ?? searchAction;
+  const permissionAction = mcpAction ?? basicToolAction ?? readAction ?? writeAction ?? searchAction;
   const permissionRequiresApproval = permissionAction === 'ask' || readOutsideWorkspace || searchAsks
     || bashActions.includes('ask') || bashRequiresApproval;
   if (actions.includes('deny') || permissionAction === 'deny' || bashDenied) return false;
@@ -130,6 +133,28 @@ function matchesBashRule(rule: string, command: string): boolean {
     return command === prefix || command.startsWith(`${prefix} `);
   }
   return command === pattern;
+}
+
+function mcpPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest): 'allow' | 'ask' | 'deny' | undefined {
+  const server = call.details?.mcpServer;
+  const tool = call.details?.mcpTool;
+  if (!server || !tool) return undefined;
+  for (const action of ['deny', 'ask', 'allow'] as const) {
+    if ((config.permissions?.[action] ?? []).some((rule) => {
+      if (rule === 'MCP') return true;
+      const match = /^MCP\(([a-z][a-z0-9-]{0,15})\/(.+)\)$/u.exec(rule);
+      if (!match || match[1] !== server) return false;
+      return match[2] === '*' || match[2] === tool;
+    })) return action;
+  }
+  return undefined;
+}
+
+function basicToolPermissionAction(config: ResolvedConfig, permission: 'Agent' | 'RuntimeInfo'): 'allow' | 'ask' | 'deny' | undefined {
+  for (const action of ['deny', 'ask', 'allow'] as const) {
+    if ((config.permissions?.[action] ?? []).includes(permission)) return action;
+  }
+  return undefined;
 }
 
 function readPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest): 'allow' | 'ask' | 'deny' | undefined {

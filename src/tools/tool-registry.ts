@@ -104,10 +104,11 @@ export class ToolRegistry {
     description: string;
     inputSchema: FlexibleSchema<Input>;
     concurrency?: 'parallel' | 'exclusive';
+    approvalDetails?: Record<string, string>;
     prepare?: (input: Input) => Promise<{ input: PreparedInput; details?: Record<string, string> }>;
     execute: (input: PreparedInput, options: ToolExecutionOptions<unknown>) => Promise<Output> | Output;
   }): void {
-    const { name, description, inputSchema, execute, prepare, concurrency = 'exclusive' } = definition;
+    const { name, description, inputSchema, execute, prepare, concurrency = 'exclusive', approvalDetails } = definition;
     if (this.registered.has(name)) {
       throw new AgentError('CONFIG_ERROR', `工具名称重复注册：${name}。`);
     }
@@ -131,7 +132,8 @@ export class ToolRegistry {
         execution.abortSignal?.throwIfAborted();
         await this.options.beforeTool?.({ callId: execution.toolCallId, toolName: name, input });
         execution.abortSignal?.throwIfAborted();
-        if (this.options.approve && !await this.options.approve({ callId: execution.toolCallId, toolName: name, input, ...(prepared.details ? { details: prepared.details } : {}) }, execution.abortSignal)) {
+        const details = { ...approvalDetails, ...prepared.details };
+        if (this.options.approve && !await this.options.approve({ callId: execution.toolCallId, toolName: name, input, ...(Object.keys(details).length > 0 ? { details } : {}) }, execution.abortSignal)) {
           this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'rejected', errorCode: 'PERMISSION_DENIED' });
           return { is_error: true as const, error: { code: 'PERMISSION_DENIED' as const, message: '本次工具调用未获权限批准。' } };
         }

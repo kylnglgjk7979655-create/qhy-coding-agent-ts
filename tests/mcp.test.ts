@@ -39,6 +39,52 @@ function results(model: Awaited<ReturnType<typeof setup>>) {
   return model.requests.at(-1)!.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ tool_call_id: string; content: string }>;
 }
 
+it.each([
+  { name: 'MCP 默认审批', permissions: undefined, expectedApprovals: 1, expectedCalls: 1 },
+  { name: '全局 MCP 允许', permissions: { allow: ['MCP'] }, expectedApprovals: 0, expectedCalls: 1 },
+  { name: '服务身份允许', permissions: { allow: ['MCP(alpha/*)'] }, expectedApprovals: 0, expectedCalls: 1 },
+  { name: '原始工具身份拒绝优先于全局允许', permissions: { allow: ['MCP'], deny: ['MCP(alpha/echo)'] }, expectedApprovals: 0, expectedCalls: 0 },
+  { name: '服务级 ask 优先于全局允许', permissions: { allow: ['MCP'], ask: ['MCP(alpha/*)'] }, expectedApprovals: 1, expectedCalls: 1 },
+  { name: '原始工具身份 ask 优先于全局允许', permissions: { allow: ['MCP'], ask: ['MCP(alpha/echo)'] }, expectedApprovals: 1, expectedCalls: 1 },
+])('$name', async ({ permissions, expectedApprovals, expectedCalls }) => {
+  const remote = await mcp();
+  const model = await setup((_request, index) => index === 1
+    ? { calls: [call('remote', 'mcp_alpha_echo', { text: '受权限控制' })] }
+    : { content: '完成' }, async () => ({ content: 'approve' }), {
+    mcp: { servers: [{ name: 'alpha', url: remote.url }] },
+    ...(permissions === undefined ? {} : { permissions }),
+  });
+
+  const result = await run().done;
+
+  expect(result.code, result.stderr).toBe(0);
+  expect(model.approvalRequests).toHaveLength(expectedApprovals);
+  expect(remote.calls).toHaveLength(expectedCalls);
+  if (expectedCalls === 0) {
+    expect(JSON.parse(results(model)[0]!.content)).toMatchObject({ error: { code: 'PERMISSION_DENIED' } });
+  }
+});
+
+it('MCP 工具名包含特殊字符时仍按远端原名应用规则', async () => {
+  const remote = await mcp();
+  remote.setTools([{ name: 'echo.special', description: '特殊名称', inputSchema: {
+    type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false,
+  } }]);
+  const model = await setup((_request, index) => index === 1
+    ? { calls: [call('remote', 'mcp_alpha_6563686f2e7370656369616c', { text: '不应执行' })] }
+    : { content: '完成' }, undefined, {
+    mcp: { servers: [{ name: 'alpha', url: remote.url }] },
+    permissions: { deny: ['MCP(alpha/echo.special)'] },
+  });
+
+  const result = await run().done;
+
+  expect(result.code).toBe(0);
+  expect(model.approvalRequests).toEqual([]);
+  expect(remote.calls).toEqual([]);
+  expect(JSON.parse(results(model)[0]!.content)).toMatchObject({ error: { code: 'PERMISSION_DENIED' } });
+});
+
 it('发现同名远端工具，独立审批后通过真实协议调用；凭据只进入连接器请求头', async () => {
   const a = await mcp(), b = await mcp(true);
   const model = await setup((_request, index) => index === 1 ? { calls: [
