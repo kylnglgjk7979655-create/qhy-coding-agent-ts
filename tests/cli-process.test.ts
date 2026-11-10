@@ -149,6 +149,38 @@ describe('compiled CLI process driver', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('switching sessions preserves each session’s in-process file baseline', async () => {
+    const cwd = await directory('session-baseline-cwd');
+    const userDir = await directory('session-baseline-user');
+    await writeFile(join(cwd, 'note.txt'), 'initial');
+    const model = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1) return { calls: [{ id: 'read-session-baseline', type: 'function', function: {
+        name: 'read_file', arguments: JSON.stringify({ path: 'note.txt' }),
+      } }] };
+      if (index === 3) return { calls: [{ id: 'write-other-session', type: 'function', function: {
+        name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'other session' }),
+      } }] };
+      if (index === 5) return { calls: [{ id: 'write-resumed-session', type: 'function', function: {
+        name: 'write_file', arguments: JSON.stringify({ path: 'note.txt', content: 'resumed session' }),
+      } }] };
+      return { content: '已处理。' };
+    });
+    try {
+      await configure(cwd, model.baseURL);
+      const child = startCLI({
+        cwd, userDir, conversationId: 'baseline-session', env: { TEST_MODEL_API_KEY: secret },
+        input: '读取基线\n/new\n独立会话检查\n/resume baseline-session\n按原基线写入\n/exit\n',
+      });
+      const result = await child.done;
+      expect(result.code).toBe(0);
+      expect(JSON.stringify(model.requests[3])).toContain('尚未读取');
+      expect(JSON.stringify(model.requests[5])).not.toContain('尚未读取');
+      expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('resumed session');
+    } finally {
+      await model.close();
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('tracks write_file baselines in per-message checkpoints, including ignored and newly created files', async () => {
     const cwd = await directory('checkpoint-cwd');
     const userDir = await directory('checkpoint-user');

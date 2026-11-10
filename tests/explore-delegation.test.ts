@@ -83,6 +83,34 @@ describe('只读 Explore 委派', () => {
     await expect(readFile(join(workspace, 'result.txt'), 'utf8')).resolves.toBe('已批准写入');
   });
 
+  it('general-purpose 子 Agent 写入沿用主轮次文件检查点回调', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-general-purpose-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1) return { calls: [{ id: 'delegate-checkpoint-write', type: 'function', function: {
+        name: 'agent', arguments: JSON.stringify({ description: '创建结果文件', prompt: '创建 result.txt' }),
+      } }] };
+      if (index === 2) return { calls: [{ id: 'subagent-checkpoint-write', type: 'function', function: {
+        name: 'write_file', arguments: JSON.stringify({ path: 'result.txt', content: '子 Agent 内容' }),
+      } }] };
+      if (index === 3) return { content: '文件已创建。' };
+      return { content: '子 Agent 已创建文件。' };
+    });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'model', rules: [{ toolName: 'write_file', action: 'allow' }], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 6,
+    };
+    const snapshots: string[] = [];
+
+    await runAgent(config, '请创建文件', { smokeTool: false, onBeforeWrite: async ({ path, existed }) => {
+      snapshots.push(`${path}:${existed}`);
+    } });
+
+    expect(snapshots).toEqual(['result.txt:false']);
+    await expect(readFile(join(workspace, 'result.txt'), 'utf8')).resolves.toBe('子 Agent 内容');
+  });
+
   it('子 Agent 创建文件后，主 Agent 不能以过期的缺失状态覆盖它', async () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-general-purpose-'));
     const fixture = await startLocalOpenAIModel((_request, index) => {

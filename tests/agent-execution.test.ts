@@ -183,6 +183,7 @@ describe('公共工具执行边界', () => {
       },
     });
     expect(maximumActive).toBe(2);
+    expect(fixture.requests[0]!.messages[0]!.content).toContain('无依赖的工具调用尽量放在同一批');
     expect(fixture.requests).toHaveLength(2);
   });
 

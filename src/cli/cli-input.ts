@@ -10,7 +10,7 @@ export class CliInput {
   private readonly queued: string[] = [];
   private wakeNext: (() => void) | undefined;
   private readonly notifications: Array<Extract<CliWorkItem, { type: 'notification' }>> = [];
-  private approval: { answer: (line: string) => void; close: () => void } | undefined;
+  private readonly approvals = new Map<number, { answer: (line: string) => void; close: () => void }>();
   private closed = false;
   private sequence = 0;
   private selector: (() => void) | undefined;
@@ -23,8 +23,12 @@ export class CliInput {
     this.input.on('line', (line) => {
       if (this.selector) {
         // Enter is consumed by the active keyboard chooser, never as a chat or approval answer.
-      } else if (this.approval) {
-        this.approval.answer(line.trim());
+      } else if (this.approvals.size > 0) {
+        const match = /^(approve|deny)\s+(\d+)$/i.exec(line.trim());
+        const approval = match ? this.approvals.get(Number(match[2])) : undefined;
+        if (approval) approval.answer(line.trim());
+        else if (this.approvals.size === 1) this.approvals.values().next().value?.answer(line.trim());
+        else process.stdout.write(`\n有待审批调用，请按对应编号答复：${[...this.approvals.keys()].join('、')}。\n`);
       } else if (/^(approve|deny)(\s|$)/i.test(line.trim())) {
         process.stdout.write('\n当前没有对应的待审批调用，答复已忽略。\n');
       } else if (this.wakeNext) {
@@ -37,7 +41,7 @@ export class CliInput {
     this.input.on('close', () => {
       this.closed = true;
       this.selector?.();
-      this.approval?.close();
+      for (const approval of this.approvals.values()) approval.close();
       this.wakeNext?.();
       this.wakeNext = undefined;
     });
@@ -134,18 +138,18 @@ export class CliInput {
     return new Promise((resolve) => {
       const finish = (decision: 'approve' | 'deny'): void => {
         signal.removeEventListener('abort', abort);
-        this.approval = undefined;
+        this.approvals.delete(number);
         resolve(decision);
       };
       const abort = (): void => finish('deny');
-      this.approval = {
+      this.approvals.set(number, {
         answer: (line) => {
           if (line === `approve ${number}`) finish('approve');
           else if (line === `deny ${number}`) finish('deny');
           else process.stdout.write(`\n答复无效，请输入 approve ${number} 或 deny ${number}。\n`);
         },
         close: () => finish('deny'),
-      };
+      });
       signal.addEventListener('abort', abort, { once: true });
       process.stdout.write(`\n[人工审批 ${number}] ${call.toolName}（调用 ${call.callId}；最多等待 ${this.humanTimeoutMs}ms）\n${JSON.stringify(call.input, null, 2)}\n${call.details?.cwd ? `实际工作目录：${call.details.cwd}\n` : ''}批准请输入 approve ${number}，拒绝请输入 deny ${number}：\n`);
     });

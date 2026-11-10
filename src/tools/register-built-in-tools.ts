@@ -32,5 +32,7 @@ export function registerBuiltInTools(registry: ToolRegistry, context: BuiltInToo
   registerGrepTool(registry, context);
   registerFileWriteTool(registry, context);
   registerBashTool(registry, context);
-  if (context.allowAgent !== false) registerAgentTool(registry, context.config, context.approvalControl, context.backgroundTasks);
+  if (context.allowAgent !== false) {
+    registerAgentTool(registry, context.config, context.approvalControl, context.backgroundTasks, context.fileWriteCallbacks);
+  }
 }

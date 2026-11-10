@@ -78,6 +78,7 @@ describe('Explore 只读工具并发调度', () => {
     expect(overlapped).toBe(true);
     expect(peakActive).toBe(2);
     expect(fixture.requests).toHaveLength(2);
+    expect(fixture.requests[0]!.messages[0]!.content).toContain('无依赖的搜索和读取尽量放在同一批');
     expect(report).toContain('两项搜索均已完成');
   });
 

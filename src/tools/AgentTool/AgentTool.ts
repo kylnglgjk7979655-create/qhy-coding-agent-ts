@@ -6,8 +6,18 @@ import { ToolExecutionError } from '../tool-registry.js';
 import type { ToolRegistry } from '../tool-registry.js';
 import type { ApprovalControl } from '../tool-approval.js';
 import type { BackgroundAgentTasks } from './background-agent-tasks.js';
+import type { WorkspaceFileSnapshot } from '../workspace-files.js';
 
-export function registerAgentTool(registry: ToolRegistry, config: ResolvedConfig, approvalControl?: ApprovalControl, backgroundTasks?: BackgroundAgentTasks): void {
+export function registerAgentTool(
+  registry: ToolRegistry,
+  config: ResolvedConfig,
+  approvalControl?: ApprovalControl,
+  backgroundTasks?: BackgroundAgentTasks,
+  fileWriteCallbacks: {
+    onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
+    onCheckpointError?: (path: string) => void;
+  } = {},
+): void {
   registry.register({
     name: 'agent',
     concurrency: 'parallel',
@@ -41,6 +51,8 @@ export function registerAgentTool(registry: ToolRegistry, config: ResolvedConfig
               smokeTool: false,
               generalPurposeSubagent: true,
               signal,
+              ...(fileWriteCallbacks.onBeforeWrite === undefined ? {} : { onBeforeWrite: fileWriteCallbacks.onBeforeWrite }),
+              ...(fileWriteCallbacks.onCheckpointError === undefined ? {} : { onCheckpointError: fileWriteCallbacks.onCheckpointError }),
               ...(approvalControl === undefined ? {} : { approvalControl }),
               ...(model === undefined ? {} : { modelOverride: model }),
             });
@@ -55,6 +67,8 @@ export function registerAgentTool(registry: ToolRegistry, config: ResolvedConfig
         const result = await runAgent(config, `任务说明：${description}\n任务：${prompt}`, {
           smokeTool: false,
           generalPurposeSubagent: true,
+          ...(fileWriteCallbacks.onBeforeWrite === undefined ? {} : { onBeforeWrite: fileWriteCallbacks.onBeforeWrite }),
+          ...(fileWriteCallbacks.onCheckpointError === undefined ? {} : { onCheckpointError: fileWriteCallbacks.onCheckpointError }),
           ...(approvalControl === undefined ? {} : { approvalControl }),
           ...(model === undefined ? {} : { modelOverride: model }),
           ...(execution.abortSignal === undefined ? {} : { signal: execution.abortSignal }),

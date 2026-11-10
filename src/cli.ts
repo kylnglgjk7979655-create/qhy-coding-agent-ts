@@ -131,7 +131,16 @@ async function main(): Promise<void> {
     }
 
     input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
-    let fileBaselines = new Map<string, WorkspaceFileSnapshot>();
+    const fileBaselinesBySession = new Map<string, Map<string, WorkspaceFileSnapshot>>();
+    const fileBaselinesForSession = (id: string): Map<string, WorkspaceFileSnapshot> => {
+      let baselines = fileBaselinesBySession.get(id);
+      if (!baselines) {
+        baselines = new Map();
+        fileBaselinesBySession.set(id, baselines);
+      }
+      return baselines;
+    };
+    let fileBaselines = fileBaselinesForSession(conversationId);
     let unsubscribeNotifications: (() => void) | undefined;
     const bindBackgroundNotifications = (id: string): void => {
       unsubscribeNotifications?.();
@@ -146,7 +155,7 @@ async function main(): Promise<void> {
         const nextRelease = await acquireSessionLock(userHome, id);
         await releaseSession?.();
         releaseSession = nextRelease;
-        fileBaselines = new Map();
+        fileBaselines = fileBaselinesForSession(id);
       }
       config = resumed.config;
       conversationId = id;
@@ -235,7 +244,7 @@ async function main(): Promise<void> {
         releaseSession = nextRelease;
         conversationId = id;
         history = [];
-        fileBaselines = new Map();
+        fileBaselines = fileBaselinesForSession(conversationId);
         recoveredRoundIds = [];
         bindBackgroundNotifications(id);
         process.stdout.write(`已新建会话：${id}\n`);

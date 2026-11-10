@@ -107,6 +107,32 @@ it.skipIf(process.platform === 'win32')('人工审批 Bash 展示完整参数与
   await expect(readFile(join(cwd, 'denied.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
+it.skipIf(process.platform === 'win32')('并发人工审批按各自编号独立处理', async () => {
+  await setup((_request, index) => index === 1 ? { calls: [
+    { id: 'parallel-read-one', type: 'function', function: { name: 'read_file', arguments: '{"path":"one.txt"}' } },
+    { id: 'parallel-read-two', type: 'function', function: { name: 'read_file', arguments: '{"path":"two.txt"}' } },
+  ] } : { content: '两项读取均已批准' }, {
+    approval: { mode: 'human', rules: [{ toolName: 'read_file', action: 'ask' }], humanTimeoutMs: 2000 },
+  });
+  await writeFile(join(cwd, 'one.txt'), 'one');
+  await writeFile(join(cwd, 'two.txt'), 'two');
+  const running = run();
+  await running.waitFor('> ');
+  running.child.stdin.write('读取两个文件\n');
+  await running.waitFor('approve 1');
+  await running.waitFor('approve 2');
+
+  running.child.stdin.write('approve 2\n');
+  running.child.stdin.write('approve 1\n');
+  await running.waitFor('两项读取均已批准');
+  running.child.stdin.end('/exit\n');
+
+  const result = await running.done;
+  expect(result.code, result.stdout + result.stderr).toBe(0);
+  expect(results().map(({ tool_call_id }) => tool_call_id).sort()).toEqual(['parallel-read-one', 'parallel-read-two']);
+  expect(results().map(({ content }) => JSON.parse(content).is_error)).toEqual([false, false]);
+});
+
 it('非交互管道直接拒绝人工审批，后续需求不被当作答复且仍能完成', async () => {
   await setup((_request, index) => index === 1 ? { calls: [write('pipe')] } : { content: '继续完成' });
   const running = run(false);
