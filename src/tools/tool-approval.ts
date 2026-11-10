@@ -29,9 +29,12 @@ export async function approveToolCall(
   const actions = config.approval.rules.filter(({ toolName }) => toolName === call.toolName).map(({ action }) => action);
   const readAction = call.toolName === 'read_file' ? readPermissionAction(config, call) : undefined;
   const writeAction = call.toolName === 'write_file' ? pathPermissionAction(config, call, 'Write') : undefined;
+  const searchAction = call.toolName === 'glob' || call.toolName === 'grep'
+    ? pathPermissionAction(config, call, call.toolName === 'glob' ? 'Glob' : 'Grep') : undefined;
+  const searchAsks = call.details?.searchAsk !== undefined;
   const readOutsideWorkspace = call.toolName === 'read_file' && readAction === undefined && !isReadTargetInWorkspace(config, call);
-  const permissionAction = readAction ?? writeAction;
-  const permissionRequiresApproval = permissionAction === 'ask' || readOutsideWorkspace;
+  const permissionAction = readAction ?? writeAction ?? searchAction;
+  const permissionRequiresApproval = permissionAction === 'ask' || readOutsideWorkspace || searchAsks;
   if (actions.includes('deny') || permissionAction === 'deny') return false;
   // 按路径设置的 ask 必须高于旧版工具级 allow。
   if (!permissionRequiresApproval && (permissionAction === 'allow' || actions.includes('allow'))) return true;
@@ -102,7 +105,7 @@ function readPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest)
   return pathPermissionAction(config, call, 'Read');
 }
 
-function pathPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest, permission: 'Read' | 'Write'): 'allow' | 'ask' | 'deny' | undefined {
+function pathPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest, permission: 'Read' | 'Write' | 'Glob' | 'Grep'): 'allow' | 'ask' | 'deny' | undefined {
   const inputPath = typeof call.input === 'object' && call.input !== null && 'path' in call.input
     && typeof call.input.path === 'string' ? call.input.path : undefined;
   const requestedPath = call.details?.requestedPath ?? inputPath;
@@ -119,6 +122,21 @@ function pathPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest,
   };
   for (const action of ['deny', 'ask', 'allow'] as const) {
     if ((config.permissions?.[action] ?? []).some(matches)) return action;
+  }
+  return undefined;
+}
+
+export function searchPathPermissionAction(config: ResolvedConfig, toolName: 'glob' | 'grep', path: string): 'allow' | 'ask' | 'deny' | undefined {
+  const permission = toolName === 'glob' ? 'Glob' : 'Grep';
+  const absolutePath = resolve(path);
+  for (const action of ['deny', 'ask', 'allow'] as const) {
+    const matches = (config.permissions?.[action] ?? []).some((rule) => {
+      const match = new RegExp(`^${permission}(?:\\((.+)\\))?$`, 'u').exec(rule);
+      if (!match) return false;
+      if (match[1] === undefined) return true;
+      return globExpression(resolveUserPath(config, match[1])).test(absolutePath.replaceAll('\\', '/'));
+    });
+    if (matches) return action;
   }
   return undefined;
 }

@@ -17,6 +17,14 @@ interface SearchOptions {
   pattern: string;
 }
 
+export type SearchPermissionAction = 'allow' | 'ask' | 'deny' | undefined;
+export type SearchPermission = (absolutePath: string) => SearchPermissionAction;
+
+export interface SearchPermissionScope {
+  asks: string[];
+  excluded: string[];
+}
+
 function toPosix(path: string): string {
   return path.split(sep).join('/');
 }
@@ -66,11 +74,15 @@ function isIgnored(path: string, rules: IgnoreRules[]): boolean {
   return ignored;
 }
 
-async function workspaceFiles(workspace: string, requestedPath?: string): Promise<{ root: string; paths: string[] }> {
+async function workspaceFiles(workspace: string, requestedPath?: string, permission?: SearchPermission): Promise<{ root: string; paths: string[]; excluded: string[]; asks: string[] }> {
   const root = await searchRoot(workspace, requestedPath);
   const files: string[] = [];
+  const excluded: string[] = [];
+  const asks: string[] = [];
+  if (permission?.(root) === 'deny') throw new Error('搜索根目录被权限规则禁止。');
+  if (permission?.(root) === 'ask') asks.push(toPosix(relative(workspace, root)) || '.');
   const rootRules = await ancestorIgnoreRules(workspace, root);
-  if (isIgnored(root, rootRules)) return { root, paths: files };
+  if (isIgnored(root, rootRules)) return { root, paths: files, excluded, asks };
 
   async function visit(directory: string, inheritedRules: IgnoreRules[]): Promise<void> {
     const localRules = await gitignoreRules(workspace, directory);
@@ -81,6 +93,12 @@ async function workspaceFiles(workspace: string, requestedPath?: string): Promis
     for (const entry of entries) {
       const candidate = resolve(directory, entry.name);
       if (isIgnored(candidate, rules)) continue;
+      const action = permission?.(candidate);
+      if (action === 'deny') {
+        excluded.push(toPosix(relative(workspace, candidate)));
+        continue;
+      }
+      if (action === 'ask') asks.push(toPosix(relative(workspace, candidate)));
       if (entry.isDirectory()) {
         await visit(candidate, rules);
         continue;
@@ -108,7 +126,20 @@ async function workspaceFiles(workspace: string, requestedPath?: string): Promis
   return {
     root,
     paths: files.map((file) => toPosix(relative(workspace, file))).sort((left, right) => left.localeCompare(right)),
+    excluded: excluded.sort((left, right) => left.localeCompare(right)),
+    asks: [...new Set(asks)].sort((left, right) => left.localeCompare(right)),
   };
+}
+
+export async function inspectWorkspaceSearch(
+  workspace: string,
+  requestedPath: string | undefined,
+  permission: SearchPermission,
+): Promise<SearchPermissionScope> {
+  const { asks, excluded } = await workspaceFiles(workspace, requestedPath, permission);
+  const compactAsks = asks.filter((path) => !asks.some((parent) => parent !== path
+    && (parent === '.' || path.startsWith(`${parent}/`))));
+  return { asks: compactAsks, excluded };
 }
 
 function matchesGlob(path: string, pattern: string): boolean {
@@ -123,8 +154,8 @@ function outputFits(value: unknown): boolean {
   return JSON.stringify(value).length <= MAX_OUTPUT_CHARS;
 }
 
-export async function globWorkspace(workspace: string, input: SearchOptions): Promise<{ paths: string[]; truncated: boolean }> {
-  const { root, paths: candidates } = await workspaceFiles(workspace, input.path);
+export async function globWorkspace(workspace: string, input: SearchOptions, permission?: SearchPermission): Promise<{ paths: string[]; truncated: boolean; permission_excluded?: string[] }> {
+  const { root, paths: candidates, excluded } = await workspaceFiles(workspace, input.path, permission);
   const paths: string[] = [];
   let truncated = false;
   for (const path of candidates) {
@@ -136,15 +167,16 @@ export async function globWorkspace(workspace: string, input: SearchOptions): Pr
     }
     paths.push(path);
   }
-  return { paths, truncated };
+  return { paths, truncated, ...(excluded.length ? { permission_excluded: excluded } : {}) };
 }
 
 export async function grepWorkspace(
   workspace: string,
   input: SearchOptions & { glob?: string | undefined },
-): Promise<{ matches: Array<{ path: string; line: number; text: string }>; truncated: boolean }> {
+  permission?: SearchPermission,
+): Promise<{ matches: Array<{ path: string; line: number; text: string }>; truncated: boolean; permission_excluded?: string[] }> {
   const expression = new RegExp(input.pattern);
-  const { root, paths: candidates } = await workspaceFiles(workspace, input.path);
+  const { root, paths: candidates, excluded } = await workspaceFiles(workspace, input.path, permission);
   const matches: Array<{ path: string; line: number; text: string }> = [];
   let truncated = false;
 
@@ -172,9 +204,9 @@ export async function grepWorkspace(
     }
     if (truncated) break;
   }
-  return { matches, truncated };
+  return { matches, truncated, ...(excluded.length ? { permission_excluded: excluded } : {}) };
 }
 
-export async function validateSearchRoot(workspace: string, path?: string): Promise<void> {
-  await searchRoot(workspace, path);
+export async function validateSearchRoot(workspace: string, path?: string): Promise<string> {
+  return searchRoot(workspace, path);
 }

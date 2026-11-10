@@ -7,6 +7,7 @@ import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 
 const search = vi.hoisted(() => ({
   validateSearchRoot: vi.fn(),
+  inspectWorkspaceSearch: vi.fn(),
   globWorkspace: vi.fn(),
   grepWorkspace: vi.fn(),
 }));
@@ -24,6 +25,7 @@ describe('Explore 只读工具并发调度', () => {
     closeFixture = undefined;
     if (workspace) await rm(workspace, { recursive: true, force: true });
     search.validateSearchRoot.mockReset();
+    search.inspectWorkspaceSearch.mockReset();
     search.globWorkspace.mockReset();
     search.grepWorkspace.mockReset();
   });
@@ -37,7 +39,8 @@ describe('Explore 只读工具并发调度', () => {
     let started = 0;
     let releaseGate!: () => void;
     const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
-    search.validateSearchRoot.mockResolvedValue(undefined);
+    search.validateSearchRoot.mockResolvedValue(workspace);
+    search.inspectWorkspaceSearch.mockResolvedValue({ asks: [], excluded: [] });
     const waitForPeer = async (): Promise<void> => {
       active += 1;
       peakActive = Math.max(peakActive, active);
@@ -91,7 +94,8 @@ describe('Explore 只读工具并发调度', () => {
     const firstTenStarted = new Promise<void>((resolve) => { tenStarted = resolve; });
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    search.validateSearchRoot.mockResolvedValue(undefined);
+    search.validateSearchRoot.mockResolvedValue(workspace);
+    search.inspectWorkspaceSearch.mockResolvedValue({ asks: [], excluded: [] });
     const waitForRelease = async (id: string): Promise<void> => {
       started.push(id);
       active += 1;

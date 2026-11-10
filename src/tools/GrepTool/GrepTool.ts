@@ -1,7 +1,8 @@
 import { z } from 'zod';
-import { grepWorkspace, validateSearchRoot } from '../workspace-search.js';
+import { grepWorkspace, inspectWorkspaceSearch, validateSearchRoot } from '../workspace-search.js';
 import type { BuiltInToolContext } from '../register-built-in-tools.js';
 import type { ToolRegistry } from '../tool-registry.js';
+import { searchPathPermissionAction } from '../tool-approval.js';
 
 export function registerGrepTool(registry: ToolRegistry, { config }: BuiltInToolContext): void {
   registry.register({
@@ -16,9 +17,15 @@ export function registerGrepTool(registry: ToolRegistry, { config }: BuiltInTool
       glob: z.string().min(1).optional(),
     }),
     prepare: async (input) => {
-      await validateSearchRoot(config.workspace, input.path);
-      return { input };
+      const target = await validateSearchRoot(config.workspace, input.path);
+      const permission = (path: string) => searchPathPermissionAction(config, 'grep', path);
+      const rootDenied = permission(target) === 'deny';
+      const scope = rootDenied ? { asks: [], excluded: [] } : await inspectWorkspaceSearch(config.workspace, input.path, permission);
+      return { input, details: {
+        requestedPath: input.path ?? '.', target,
+        ...(scope.asks.length ? { searchAsk: JSON.stringify(scope.asks) } : {}),
+      } };
     },
-    execute: (input) => grepWorkspace(config.workspace, input),
+    execute: (input) => grepWorkspace(config.workspace, input, (path) => searchPathPermissionAction(config, 'grep', path)),
   });
 }

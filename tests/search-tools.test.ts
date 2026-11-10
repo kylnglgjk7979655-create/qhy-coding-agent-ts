@@ -113,3 +113,58 @@ it('搜索工具限定子目录、拒绝越界路径并标记截断结果', asyn
     await rm(outside, { recursive: true, force: true });
   }
 });
+
+it('Glob 与 Grep 按各自权限范围剪枝并汇总审批', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'qhy-search-permissions-'));
+  let closeFixture: (() => Promise<void>) | undefined;
+  try {
+    await mkdir(join(workspace, 'private'));
+    await mkdir(join(workspace, 'review-zone'));
+    await writeFile(join(workspace, 'private', 'secret.txt'), 'needle forbidden body');
+    await writeFile(join(workspace, 'needs-review.txt'), 'needle reviewed body');
+    await writeFile(join(workspace, 'review-zone', 'review-denied.txt'), 'needle denied review body');
+    await writeFile(join(workspace, 'public.txt'), 'needle public body');
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1 ? { calls: [
+      { id: 'permission-glob', type: 'function', function: { name: 'glob', arguments: '{"pattern":"**/*.txt"}' } },
+      { id: 'permission-grep', type: 'function', function: { name: 'grep', arguments: '{"pattern":"needle"}' } },
+      { id: 'permission-root-deny', type: 'function', function: { name: 'grep', arguments: '{"pattern":"needle","path":"private"}' } },
+      { id: 'permission-ask-deny', type: 'function', function: { name: 'grep', arguments: '{"pattern":"needle","path":"review-zone"}' } },
+    ] } : { content: '权限范围已处理' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'default', rules: [], timeoutMs: 30_000 },
+      permissions: { allow: ['Read'], ask: ['Grep(needs-review.txt)', 'Grep(review-zone)'], deny: ['Read(private)', 'Glob(private)', 'Grep(private)', 'Grep(private/secret.txt)'] },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+    const approvals: string[] = [];
+    const approvalScopes: string[] = [];
+    await runAgent(config, '搜索工作区文本', {
+      smokeTool: false,
+      approvalControl: async ({ toolName, input, details }) => {
+        approvals.push(toolName);
+        if (details?.searchAsk) approvalScopes.push(details.searchAsk);
+        expect(input).toMatchObject({ pattern: 'needle' });
+        return (input as { path?: string }).path === 'review-zone' ? 'deny' : 'approve';
+      },
+    });
+    const results = fixture.requests[1]!.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ content: string; tool_call_id: string }>;
+    const output = (id: string) => JSON.parse(results.find(({ tool_call_id }) => tool_call_id === id)!.content);
+    expect(output('permission-glob')).toMatchObject({ is_error: false, output: { paths: ['needs-review.txt', 'public.txt', 'review-zone/review-denied.txt'], permission_excluded: ['private'] } });
+    expect(output('permission-grep')).toMatchObject({ is_error: false, output: {
+      matches: [
+        { path: 'needs-review.txt', text: 'needle reviewed body' },
+        { path: 'public.txt', text: 'needle public body' },
+        { path: 'review-zone/review-denied.txt', text: 'needle denied review body' },
+      ], permission_excluded: ['private'],
+    } });
+    expect(output('permission-grep').output.matches.map(({ text }: { text: string }) => text).join('\n')).not.toContain('forbidden body');
+    expect(output('permission-root-deny').error.code).toBe('PERMISSION_DENIED');
+    expect(output('permission-ask-deny').error.code).toBe('PERMISSION_DENIED');
+    expect(approvalScopes.sort()).toEqual(['["needs-review.txt","review-zone"]', '["review-zone"]']);
+    expect(approvals).toEqual(['grep', 'grep']);
+  } finally {
+    await closeFixture?.();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
