@@ -356,7 +356,7 @@ describe('只读 Explore 委派', () => {
     expect(fixture.requests).toHaveLength(3);
   });
 
-  it('Explore 的 read_file 不能通过符号链接读取工作区外文件', async () => {
+  it('Explore 读取工作区外文件经审批后遵守统一权限', async () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
     outside = await mkdtemp(join(tmpdir(), 'qhy-explore-outside-'));
     await writeFile(join(outside, 'secret.txt'), '工作区外秘密');
@@ -366,7 +366,7 @@ describe('只读 Explore 委派', () => {
       if (index === 2) return { calls: [{ id: 'boundary-read', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'secret-link.txt' }) } }] };
       if (index === 3) return { content: '读取失败，目标不在工作区内。' };
       return { content: 'Explore 未能读取工作区外文件。' };
-    });
+    }, () => ({ content: 'approve' }));
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
       approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
@@ -376,8 +376,42 @@ describe('只读 Explore 委派', () => {
 
     await runAgent(config, '检查文件边界', { smokeTool: false });
 
+    expect(fixture.approvalRequests).toHaveLength(1);
+    expect(JSON.stringify(fixture.approvalRequests[0]!.messages)).toContain(join(outside, 'secret.txt'));
     const internalResult = JSON.parse(fixture.requests[2]!.messages.find(({ role }) => role === 'tool')!.content);
-    expect(internalResult).toMatchObject({ is_error: true, error: { code: 'TOOL_EXECUTION_ERROR' } });
+    expect(internalResult).toMatchObject({ is_error: false, output: { content: '工作区外秘密' } });
+    expect(fixture.requests[1]!.tools.map(({ function: fn }) => fn.name).sort()).toEqual(['glob', 'grep', 'read_file']);
+  });
+
+  it('Explore 搜索按统一权限规则审批并将自身调查上下文交给审批模型', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-'));
+    await writeFile(join(workspace, 'module.ts'), 'export const guarded = true;\n');
+    const fixture = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1) return { calls: [{ id: 'permission-delegate', type: 'function', function: { name: 'agent', arguments: JSON.stringify({ description: '检查受保护搜索', prompt: '搜索 guarded 并报告位置', subagent_type: 'Explore' }) } }] };
+      if (index === 2) return { calls: [{ id: 'permission-grep', type: 'function', function: { name: 'grep', arguments: JSON.stringify({ pattern: 'guarded' }) } }] };
+      if (index === 3) return { content: '搜索被权限拒绝。' };
+      if (index === 4) return { content: '搜索被权限拒绝。' };
+      return { content: 'Explore 报告搜索被拒绝。' };
+    }, () => ({ content: 'deny' }));
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
+      permissions: { allow: [], ask: ['Grep'], deny: [] },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 6,
+    };
+
+    await runAgent(config, '检查受保护数据', { smokeTool: false,
+      history: [{ role: 'assistant', content: '父会话私密历史' }],
+    });
+
+    expect(fixture.approvalRequests).toHaveLength(1);
+    expect(JSON.stringify(fixture.approvalRequests[0]!.messages)).toContain('搜索 guarded');
+    expect(JSON.stringify(fixture.approvalRequests[0]!.messages)).not.toContain('父会话私密历史');
+    expect(JSON.stringify(fixture.approvalRequests[0]!.messages)).toContain('grep');
+    expect(fixture.requests).toHaveLength(4);
+    const denied = JSON.parse(fixture.requests[2]!.messages.find(({ role }) => role === 'tool')!.content);
+    expect(denied).toMatchObject({ is_error: true, error: { code: 'PERMISSION_DENIED' } });
     expect(fixture.requests[1]!.tools.map(({ function: fn }) => fn.name).sort()).toEqual(['glob', 'grep', 'read_file']);
   });
 
