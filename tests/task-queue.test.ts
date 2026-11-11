@@ -6,7 +6,7 @@ const require = createRequire(import.meta.url);
 const queue = require('../.github/scripts/task-queue.cjs') as {
   decodeRequest: (body: string) => Record<string, unknown> | undefined;
   enqueue: (args: { github: unknown; context: unknown; request: Record<string, unknown> }) => Promise<unknown>;
-  listWaiting: (args: { github: unknown; context: unknown }) => Promise<Array<{ request: { id: string; workflow: string }; commentId: number }>>;
+  listWaiting: (args: { github: unknown; context: unknown }) => Promise<Array<{ request: { id: string; workflow: string; inputs: Record<string, string> }; commentId: number }>>;
   transition: (args: { github: unknown; context: unknown; number: number; commentId: number; status: string; authFingerprint?: string; reason?: string }) => Promise<unknown>;
 };
 const worker = require('../.github/scripts/queue-worker.cjs') as {
@@ -141,6 +141,8 @@ describe('订阅 Agent 持久化队列', () => {
   it.each([
     ['agent:implement', 'agent-implement-pr.yml'],
     ['agent:review', 'agent-review.yml'],
+    ['agent:qa-only', 'agent-qa-only.yml'],
+    ['agent:qa', 'agent-qa.yml'],
     ['agent:update-branch', 'agent-update-branch.yml'],
   ])('从可信 PR 标签事件路由 %s，忽略 fork、关闭的 PR 和旧事件', async (label, workflow) => {
     const h = fixture();
@@ -167,6 +169,21 @@ describe('订阅 Agent 持久化队列', () => {
     expect(h.github.rest.actions.createWorkflowDispatch).toHaveBeenCalledWith(expect.objectContaining({
       workflow_id: 'agent-queue.yml', ref: 'main',
     }));
+  });
+
+  it('手动 CR 不带自动 QA 接续；只有内部 review 请求可记录明确布尔值', async () => {
+    const h = fixture();
+    const manual = request('manual', 12, '2026-11-08T10:01:00Z', 'review', 'agent-review.yml');
+    await queue.enqueue({ github: h.github, context, request: manual });
+    await queue.enqueue({ github: h.github, context, request: {
+      ...manual, id: 'auto', inputs: { ...manual.inputs, qa_after_review: 'true' },
+    } });
+    const waiting = await queue.listWaiting({ github: h.github, context });
+    expect(waiting.find((entry) => entry.request.id === 'manual')?.request.inputs.qa_after_review).toBeUndefined();
+    expect(waiting.find((entry) => entry.request.id === 'auto')?.request.inputs.qa_after_review).toBe('true');
+    await expect(queue.enqueue({ github: h.github, context, request: {
+      ...manual, id: 'invalid', inputs: { ...manual.inputs, qa_after_review: 'qa-only' },
+    } })).rejects.toThrow('输入参数不匹配');
   });
 
   it('状态转换保留审计记录，并禁止重放已终结请求', async () => {
@@ -277,6 +294,7 @@ describe('订阅 Agent 持久化队列', () => {
     for (const name of [
       'agent-implement.yml', 'agent-implement-pr.yml', 'agent-review.yml',
       'agent-update-branch.yml', 'agent-explore.yml', 'agent-to-issues.yml', 'agent-implement-spec.yml',
+      'agent-qa-only.yml',
     ]) {
       const workflow = readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8');
       expect(workflow).toContain('queue_request_id');

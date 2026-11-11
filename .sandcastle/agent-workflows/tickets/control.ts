@@ -1,6 +1,7 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { GitHub, hasLabel } from './github.js';
+import { requestPrStage } from '../shared/pr-stage.js';
 import { parsePlan, sourceHash } from './plan.js';
 import { publishTickets } from './publish.js';
 import { Queue } from './queue.js';
@@ -102,18 +103,11 @@ try {
     case 'review': {
       const pr = Number(required('PR_NUMBER'));
       if (!Number.isSafeInteger(pr) || pr < 1) throw new Error('无效 PR 编号。');
-      if (process.env.AGENT_PAT) {
-        new GitHub(github.repo, process.env.AGENT_PAT).addLabels(pr, ['agent:review']);
-      } else {
-        const pull = github.api<{ head: { sha: string } }>('GET', `pulls/${pr}`);
-        github.addLabels(pr, ['agent:review']);
-        github.api('POST', 'actions/workflows/check.yml/dispatches', { ref: required('BRANCH') });
-        github.queueTask({
-          id: `internal-review-${pr}-${Math.floor(Date.now() / 1000)}`,
-          kind: 'review', number: pr, workflow: 'agent-review.yml',
-          inputs: { pr_number: String(pr), authorization_label: 'agent:review', expected_head_sha: pull.head.sha },
-        });
-      }
+      requestPrStage(github, pr, 'review', required('BRANCH'));
+      break;
+    }
+    case 'qa': {
+      requestPrStage(github, Number(required('PR_NUMBER')), 'qa', required('BRANCH'));
       break;
     }
     default: throw new Error('未知 tickets 控制命令。');

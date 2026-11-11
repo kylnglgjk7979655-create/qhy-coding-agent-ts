@@ -9,6 +9,8 @@ const issueRoutes = {
 const prRoutes = {
   'agent:implement': ['implement-pr', 'agent-implement-pr.yml'],
   'agent:review': ['review', 'agent-review.yml'],
+  'agent:qa': ['qa', 'agent-qa.yml'],
+  'agent:qa-only': ['qa-only', 'agent-qa-only.yml'],
   'agent:update-branch': ['update-branch', 'agent-update-branch.yml'],
 };
 
