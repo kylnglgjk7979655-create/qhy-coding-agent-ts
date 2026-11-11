@@ -30,7 +30,7 @@ Artifacts directory: `{{ARTIFACTS_DIRECTORY}}`
 # QA PROCESS
 
 1. 启动 **QA subagent**，使用 `$qa-only` skill。显式提供上方完整 Spec、固定比较基准 `main` 和独立报告目录。由它生成 QA plan、实际运行产品并报告结果；它只验收，不修改产品代码或测试。
-2. 若全部必验项通过，汇总报告。缺少环境、凭据或明确预期时报告 blocked；与本次范围无关的问题只记录。
+2. 若全部必验项通过，汇总报告。缺少环境、凭据或明确预期时报告 blocked，并说明最小解阻步骤；与本次范围无关的问题只记录。
 3. 有已复现的范围内缺陷时，在首次修复前固定 HEAD，逐项启动 **implement subagent**，使用 `$implement` skill。向它明确提供缺陷、复现步骤、预期结果和相关 Spec，只修复指定问题，执行项目检查并提交。实现 subagent 串行运行，主 Agent 不亲自修改产品代码。
 4. 修复后启动 **CR subagent**，使用 `$code-review` skill。显式提供修复前 HEAD 作为 fixed point、同一份 Spec，以及 `CODING_STANDARDS.md`。CR skill 只审查、返回 findings；有效 findings 再交给新的 implement subagent 修复并提交，新增修改重新经过 CR。
 5. 启动新的 **QA subagent**，再次使用 `$qa-only`，按原 QA plan 验证修复、受影响功能和相邻正常路径。代码未变且相关输入和环境未变的证据可沿用；有新增修改时重新审查和复验。
@@ -43,6 +43,6 @@ Artifacts directory: `{{ARTIFACTS_DIRECTORY}}`
 
 不 push、不编辑标签、不创建 GitHub 评论，不改变 PR Ready 状态；发布由调用方负责。
 
-在最终摘要中记录实际验收的完整 HEAD、最后一次 CR 通过的完整 HEAD（无修复或未通过时为 null）、每个问题的累计修复次数、解决状态和提交，以及未解决的范围内 findings。达到三次仍未解决必须报告 fail，并写明达到最大次数及剩余问题；因环境阻塞而停下时保留原因。
+在最终摘要中记录实际验收的完整 HEAD、最后一次 CR 通过的完整 HEAD（无修复或未通过时为 null）、每个问题的累计修复次数、解决状态和提交，以及已确认且未修复的范围内缺陷。环境、权限或证据缺失单列为 blocked 验收项，不当作已复现的产品缺陷。达到三次仍未解决必须报告 fail，并写明达到最大次数及剩余问题；因环境阻塞而停下时保留原因。
 
 完成后输出 `<promise>COMPLETE</promise>`。fail / blocked 也是有效验收结果，必须如实保留。

@@ -73,11 +73,11 @@ gh label create agent:qa-only --color 5319E7 --description '只读功能验收�
 gh pr edit <PR编号> --add-label agent:qa-only
 ```
 
-阶段 prompt 显式传入 Spec、fixed point、被测 HEAD 和仓库外的 artifact 目录。先保存 `qa-plan.md`，然后运行已有的 CLI/API/浏览器入口。每项 pass/fail 都必须有实际证据文件；缺少环境或预期时如实记录 blocked，尚未执行项保留 not-run。所有必验项通过才为 pass，存在失败为 fail，其余未完成为 blocked。
+阶段 prompt 显式传入 Spec、fixed point、被测 HEAD 和仓库外的 artifact 目录。先保存 `qa-plan.md`，然后运行已有的 CLI/API/浏览器入口。每项 pass/fail 都必须有实际证据文件；缺少环境或预期时如实记录 blocked，尚未执行项保留 not-run。所有必验项通过才为 pass，存在失败为 fail，其余未完成为 blocked。已确认且未解决的修复仍为 fail；尚未完成验收的说明文本不会单独将 blocked 升级为已确认失败。
 
 认证回存成功、PR HEAD 未变后，workflow 将中文报告发布为 PR 评论。Actions 中的 `qa-only-PR编号-run编号` artifact 保存 `spec.md` 来源快照、计划、`report.md`、`result.json` 和脱敏证据，保留 14 天。运行期间改动产品文件或提交、引用不存在的证据时，runner 拒绝发布有效验收结论。输出目录必须是新的，重跑不会覆盖旧报告。
 
-fail / blocked 会使该次 workflow 失败并标记 `agent:blocked`，但不改变 PR 的 Draft/Ready 状态。处理原因后重新添加 `agent:qa-only`；失败不会自动重试。运行失败时仍尝试保存已生成的证据。人工 QA 的已执行、待执行状态独立保留。
+验收门禁在 Actions 日志和 Job Summary 中展示完整报告；fail / blocked 都会阻止放行，所以该次 workflow 仍为红色。fail / blocked 会使该次 workflow 失败并标记 `agent:blocked`，但不改变 PR 的 Draft/Ready 状态。处理原因后重新添加 `agent:qa-only`；失败不会自动重试。运行失败时仍尝试保存已生成的证据。人工 QA 的已执行、待执行状态独立保留。
 
 `agent:qa` 是验收与修复入口，`agent:qa-only` 保留为只读报告入口，两者均使用只读的 `$qa-only` skill。普通 implement 完成后自动请求整体 CR，并在持久队列记录 `qa_after_review=true`；该 CR 成功后排队 QA。手动添加 `agent:review` 不记录接续标志，不自动运行 QA。`implement-spec` 暂不接入。
 

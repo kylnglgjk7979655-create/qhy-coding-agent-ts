@@ -167,7 +167,17 @@ jobs:
 
       - name: Check QA verdict
         if: success()
-        run: test "$(cat "$RUNNER_TEMP/qa/verdict.txt")" = pass
+        run: |
+          verdict=$(cat "$RUNNER_TEMP/qa/verdict.txt")
+          printf 'QA verdict: %s\n' "$verdict"
+          cat "$RUNNER_TEMP/qa/report.md"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            cat "$RUNNER_TEMP/qa/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$verdict" != pass ]; then
+            echo "::error::QA $verdict：验收未通过，原因见上方报告与 PR 评论。"
+            exit 1
+          fi
 
       - name: Mark PR ready after QA passes
         if: success()

@@ -46,8 +46,11 @@ export const qaWorkflowOutputSchema = standardSchema<QaWorkflowOutput>((value) =
 });
 
 export function qaVerdict(output: QaWorkflowOutput): 'pass' | 'fail' | 'blocked' {
-  if (output.unresolvedFindings.length || output.repairs.some((repair) => !repair.resolved)) return 'fail';
-  return checkVerdict(output);
+  if (output.repairs.some((repair) => !repair.resolved)) return 'fail';
+  const verdict = checkVerdict(output);
+  // 文本未完成项可能只是阻塞说明；由逐项执行结果区分 fail 与 blocked。
+  if (verdict !== 'pass') return verdict;
+  return output.unresolvedFindings.length ? 'fail' : 'pass';
 }
 
 /** 通过结论必须对应最终提交；修复还须经过独立 CR。 */

@@ -24,6 +24,19 @@ describe('QA 结果及证据', () => {
     expect(verdict(check('fail'), { ...check('blocked', []), id: 'QA-002' })).toBe('fail');
   });
 
+  it('线上没有复现缺陷、仅缺少验收证据时保留 blocked，即使说明被放入未完成项', () => {
+    const blocked = { ...check('blocked', []), id: 'Q2', actual: '缺少修复版本的真实 Actions 证据' };
+    const result = validate(qaOutputSchema, {
+      ...output([check(), blocked, { ...blocked, id: 'Q3' }, { ...check(), id: 'Q4' }, { ...blocked, id: 'Q5' }]),
+      unresolvedFindings: ['Q2、Q3、Q5 缺少真实 Actions 证据，仍受阻'],
+    });
+    expect(qaVerdict(result)).toBe('blocked');
+    expect(renderQaReport(result, 'a'.repeat(40), 'a'.repeat(40))).toContain('Result: **blocked**');
+    expect(qaVerdict(validate(qaOutputSchema, { ...result, checks: [check('fail'), blocked] }))).toBe('fail');
+    expect(qaVerdict(validate(qaOutputSchema, { ...result, repairs: [{ issue: '实际缺陷', attempts: 3, resolved: false, commits: [] }] }))).toBe('fail');
+    expect(qaVerdict(validate(qaOutputSchema, { ...result, checks: [check()], unresolvedFindings: ['CR 仍存在有效 finding'] }))).toBe('fail');
+  });
+
   it('拒绝重复检查、无证据的通过结果及不完整的执行记录', () => {
     expect(() => validate(qaOutputSchema, output([check(), check()]))).toThrow('重复');
     expect(() => validate(qaOutputSchema, output([check('pass', [])]))).toThrow('证据');
@@ -102,14 +115,14 @@ if (!args.includes('resume')) {
     cp.execFileSync('git',['commit','-m','fix: repair QA finding']);
   }
 } else {
-  const status = ['fail','fail-with-repair'].includes(mode) ? 'fail' : mode === 'blocked' ? 'blocked' : 'pass';
+  const status = ['fail','fail-with-repair'].includes(mode) ? 'fail' : ['blocked','blocked-with-finding'].includes(mode) ? 'blocked' : 'pass';
   const check = {id:'QA-001',specReference:'#1 CLI 写入 done',steps:'启动 CLI 并观察文件',expected:'done',actual:status === 'blocked' ? '缺少所需服务' : status === 'fail' ? '观察到错误结果' : 'done',status,evidence:status === 'blocked' ? [] : ['QA-001.log']};
   text = '<output>'+JSON.stringify({spec:'#1 Fixture spec',summary:'本地行为验收。',checks:mode === 'empty' ? [] : [check],findings:[],humanQa:['真实模型语义尚未人工验收。'],
     testedHead: mode === 'stale-test' ? process.env.BRANCH_HEAD_SHA : cp.execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
     reviewedHead: ['commit','stale-test'].includes(mode) ? cp.execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim() : null,
     reviewSummary: mode === 'commit' ? '修复已通过 CR' : '无通过的修复 CR',
     repairs: ['commit','stale-test','stale-review'].includes(mode) ? [{issue:'CLI 缺陷',attempts:1,resolved:true,commits:[cp.execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim()]}] : mode === 'max-attempts' ? [{issue:'CLI 缺陷',attempts:3,resolved:false,commits:[]}] : [],
-    unresolvedFindings: mode === 'max-attempts' ? ['达到最大次数后仍未解决'] : []})+'</output>';
+    unresolvedFindings: mode === 'max-attempts' ? ['达到最大次数后仍未解决'] : mode === 'blocked-with-finding' ? ['缺少真实 Actions 证据，验收受阻'] : []})+'</output>';
 }
 console.log(JSON.stringify({type:'thread.started',thread_id:session}));
 console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text}}));
@@ -163,7 +176,7 @@ describe('QA 的真实 runner 与提取协议', () => {
     } finally { await h.cleanup(); }
   }, 60_000);
 
-  it.each(['fail', 'blocked', 'empty', 'max-attempts', 'fail-with-repair'])('保留 %s 的验收结果，不擅自修复或伪造通过', async (mode) => {
+  it.each(['fail', 'blocked', 'empty', 'max-attempts', 'fail-with-repair', 'blocked-with-finding'])('保留 %s 的验收结果，不擅自修复或伪造通过', async (mode) => {
     const h = await fixture();
     try {
       h.run(mode);
