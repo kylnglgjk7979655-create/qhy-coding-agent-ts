@@ -178,6 +178,52 @@ describe('interactive compiled CLI', () => {
     expect(result.stderr).toBe('');
   });
 
+  it.skipIf(process.platform === 'win32')('在隐藏调试事件的真实交互终端显示并执行人工审批', async () => {
+    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+      model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+      workspace: '.', timeoutMs: 3000, maxSteps: 20,
+      approval: { mode: 'human', humanTimeoutMs: 3000 },
+    }));
+    reply = (_request, index) => index === 1
+      ? { body: response(null, { name: 'write_file', arguments: { path: 'approved.txt', content: 'approved-content' } }) }
+      : { body: response('人工审批后已完成。') };
+
+    let resolveApprovalVisible!: () => void;
+    const approvalVisible = new Promise<void>((resolve) => { resolveApprovalVisible = resolve; });
+    let resolveReplyVisible!: () => void;
+    const replyVisible = new Promise<void>((resolve) => { resolveReplyVisible = resolve; });
+    let cliProcess!: ReturnType<typeof startCLI>;
+    let exitSent = false;
+    cliProcess = startCLI({ cwd, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (stdout) => {
+      if (stdout.includes('[人工审批 1] write_file')) resolveApprovalVisible();
+      if (!exitSent && stdout.includes('人工审批后已完成。')) {
+        exitSent = true;
+        cliProcess.end('/exit\n');
+        resolveReplyVisible();
+      }
+    });
+    cliProcess.send('请写入文件\n');
+    await approvalVisible;
+    expect(cliProcess.child.stdin.writable).toBe(true);
+    cliProcess.send('approve 1\n');
+    await replyVisible;
+    const result = await cliProcess.done;
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('[人工审批 1] write_file');
+    expect(result.stdout).toContain('"path": "approved.txt"');
+    expect(result.stdout).toContain('"content": "approved-content"');
+    expect(result.stdout).toContain('批准请输入 approve 1，拒绝请输入 deny 1');
+    expect(result.stdout).toContain('[工具] write_file：开始');
+    expect(result.stdout).toContain('[工具] write_file：成功');
+    expect(result.stdout).toContain('人工审批后已完成。');
+    expect(result.stdout).not.toContain('"timestamp"');
+    expect(result.stdout).not.toContain('"event":"run.started"');
+    expect(result.stdout).not.toContain('"toolSmokePassed"');
+    expect(result.stderr).toBe('');
+    expect(await readFile(join(cwd, 'approved.txt'), 'utf8')).toBe('approved-content');
+  });
+
   it.skipIf(process.platform === 'win32')('在真实交互终端以可读错误显示启动失败', async () => {
     const cliProcess = startCLI({
       cwd,
