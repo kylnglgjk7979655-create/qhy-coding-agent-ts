@@ -25,7 +25,7 @@ describe.skipIf(process.platform === 'win32')('CLI 会话占用与轮次中断',
     await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
       model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL,
       timeoutMs: 10000, maxSteps: 10,
-      approval: { rules: [{ toolName: 'Bash', action: 'allow' }] },
+      permissions: { allow: ['Bash(sleep:*)'] },
     }));
   }
 

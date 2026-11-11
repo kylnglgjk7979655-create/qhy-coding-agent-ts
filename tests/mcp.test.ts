@@ -162,11 +162,7 @@ it('参数错误先拒绝、固定拒绝优先；固定允许及远端普通失�
     call('local', 'runtimeInfo', {}),
   ] } : { content: '完成' }, () => { throw new Error('固定策略不应审查'); }, {
     mcp: { servers: [{ name: 'alpha', url: remote.url }] },
-    approval: { rules: [
-      { toolName: 'mcp_alpha_echo', action: 'allow' },
-      { toolName: 'mcp_alpha_blocked', action: 'allow' },
-      { toolName: 'mcp_alpha_blocked', action: 'deny' },
-    ] },
+    permissions: { allow: ['MCP(alpha/echo)', 'MCP(alpha/blocked)'], deny: ['MCP(alpha/blocked)'] },
   });
   const result = await run().done;
   expect(result.code).toBe(0);

@@ -98,7 +98,7 @@ it('允许命令仍为重定向审批，cwd 按工作区解析且独立 shell �
     bash('relative', { command: 'pwd', cwd: 'nested' }),
     bash('absolute', { command: 'pwd', cwd: join(cwd, 'work/nested') }),
   ] } : { content: '完成' }, () => ({ content: 'approve' }), {
-    approval: { rules: [{ toolName: 'Bash', action: 'allow' }] },
+    permissions: { allow: ['Bash(cd:*)', 'Bash(export:*)', 'Bash(printf:*)', 'Bash(pwd:*)'] },
     workspace: 'work',
   });
   await mkdir(join(cwd, 'work/nested'), { recursive: true });
@@ -118,14 +118,15 @@ it('Bash 权限按完整命令和参数边界匹配，复合命令及命令替�
     bash('exact', { command: 'printf exact' }),
     bash('prefix', { command: 'printf prefix value' }),
     bash('prefix-lookalike', { command: 'printf prefixish' }),
+    bash('colon-denied', { command: 'touch blocked now' }),
     bash('compound', { command: 'printf before; touch denied-compound' }),
     bash('substitution', { command: 'printf "$(touch denied-substitution)"' }),
     bash('arithmetic-substitution', { command: 'echo $(( $(touch denied-arithmetic; echo 1) ))' }),
     bash('unparseable', { command: 'printf "$(touch missing-close"' }),
   ] } : { content: '权限完成' }, () => ({ content: 'approve' }), {
     permissions: {
-      allow: ['Bash(printf exact)', 'Bash(printf prefix *)'],
-      deny: ['Bash(touch denied-compound)', 'Bash(touch denied-substitution)', 'Bash(touch denied-arithmetic)'],
+      allow: ['Bash(printf exact)', 'Bash(printf prefix:*)'],
+      deny: ['Bash(touch blocked:*)', 'Bash(touch denied-compound)', 'Bash(touch denied-substitution)', 'Bash(touch denied-arithmetic)'],
     },
   });
   const result = await run(undefined, {}, 'bash-permissions').done;
@@ -133,10 +134,12 @@ it('Bash 权限按完整命令和参数边界匹配，复合命令及命令替�
   expect(fixture.requests.length, result.stdout + result.stderr).toBeGreaterThan(0);
   expect(results().map(({ is_error, error }) => ({ is_error, code: error?.code }))).toEqual([
     { is_error: false, code: undefined }, { is_error: false, code: undefined }, { is_error: false, code: undefined },
+    { is_error: true, code: 'PERMISSION_DENIED' },
     { is_error: true, code: 'PERMISSION_DENIED' }, { is_error: true, code: 'PERMISSION_DENIED' },
     { is_error: true, code: 'PERMISSION_DENIED' }, { is_error: true, code: 'INVALID_TOOL_ARGUMENTS' },
   ]);
   expect(fixture.approvalRequests).toHaveLength(1);
+  await expect(readFile(join(cwd, 'blocked'))).rejects.toMatchObject({ code: 'ENOENT' });
   await expect(readFile(join(cwd, 'denied-compound'))).rejects.toMatchObject({ code: 'ENOENT' });
   await expect(readFile(join(cwd, 'denied-substitution'))).rejects.toMatchObject({ code: 'ENOENT' });
   await expect(readFile(join(cwd, 'denied-arithmetic'))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -153,7 +156,7 @@ it('Bash 重定向和工作区外 cwd 必须审批，拒绝或未完成审批前
   ] } : { content: '审批完成' }, async (_request, index) => {
     if (index === 1) { entered(); await gate; }
     return { content: 'approve' };
-  }, { workspace: 'work', permissions: { allow: ['Bash(printf *)', 'Bash(pwd)'] } });
+  }, { workspace: 'work', permissions: { allow: ['Bash(printf:*)', 'Bash(pwd)'] } });
   await mkdir(join(cwd, 'work'));
   await mkdir(join(cwd, 'outside'));
   const running = run(undefined, {}, 'bash-external-cwd');
@@ -169,6 +172,28 @@ it('Bash 重定向和工作区外 cwd 必须审批，拒绝或未完成审批前
   expect(fixture.approvalRequests).toHaveLength(2);
   expect(await readFile(join(cwd, 'work/redirected.txt'), 'utf8')).toBe('redirected');
   expect((await readFile(join(cwd, 'outside/external.txt'), 'utf8')).trim()).toBe(await realpath(join(cwd, 'outside')));
+});
+
+it('Bash cwd 符号链接在审批期间改向后拒绝启动', async () => {
+  await setup((_request, index) => index === 1 ? { calls: [
+    bash('retarget-cwd', { command: 'touch marker', cwd: 'link' }),
+  ] } : { content: '目录变化已处理' }, async () => {
+    await rm(join(cwd, 'work/link'));
+    await symlink(join(cwd, 'outside/b'), join(cwd, 'work/link'));
+    return { content: 'approve' };
+  }, { workspace: 'work' });
+  await mkdir(join(cwd, 'work'));
+  await mkdir(join(cwd, 'outside/a'), { recursive: true });
+  await mkdir(join(cwd, 'outside/b'), { recursive: true });
+  await symlink(join(cwd, 'outside/a'), join(cwd, 'work/link'));
+
+  const result = await run(undefined, {}, 'bash-retarget-cwd').done;
+
+  expect(result.code, result.stderr).toBe(0);
+  expect(results()).toMatchObject([{ is_error: true }]);
+  await expect(readFile(join(cwd, 'outside/a/marker'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(join(cwd, 'outside/b/marker'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(fixture.approvalRequests).toHaveLength(1);
 });
 
 it('目录越界、符号链接逃逸、不可用目录及非法参数在审批前拒绝，后续调用继续', async () => {
@@ -211,7 +236,7 @@ it.each(['fixed', 'model'] as const)('%s 拒绝 Bash 时没有命令副作用或
   await setup((_request, index) => index === 1 ? { calls: [bash('denied', { command: 'touch denied' }),
     { id: 'later', type: 'function', function: { name: 'runtimeInfo', arguments: '{}' } },
   ] } : { content: '拒绝后完成' }, () => ({ content: 'deny' }), mode === 'fixed' ? {
-    approval: { rules: [{ toolName: 'Bash', action: 'allow' }, { toolName: 'Bash', action: 'deny' }] },
+    permissions: { deny: ['Bash(touch:*)'] },
   } : {});
   const result = await run().done;
   expect(result.code).toBe(0);

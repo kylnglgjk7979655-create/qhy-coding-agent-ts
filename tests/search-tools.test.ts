@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join, relative } from 'node:path';
 import { expect, it } from 'vitest';
 import { runAgent } from '../src/query/agent.js';
 import type { ResolvedConfig } from '../src/services/settings/config.js';
@@ -79,18 +79,20 @@ it('搜索工具限定子目录、拒绝越界路径并标记截断结果', asyn
       { id: 'limit-glob', type: 'function', function: { name: 'glob', arguments: '{"pattern":"**/*.txt","path":"only-here"}' } },
       { id: 'limit-grep', type: 'function', function: { name: 'grep', arguments: '{"pattern":"needle","path":"only-here","glob":"*.txt"}' } },
       { id: 'escape-absolute', type: 'function', function: { name: 'glob', arguments: JSON.stringify({ pattern: '**/*', path: outside }) } },
-      { id: 'escape-relative', type: 'function', function: { name: 'grep', arguments: '{"pattern":"needle","path":"../"}' } },
+      { id: 'escape-relative', type: 'function', function: { name: 'grep', arguments: JSON.stringify({ pattern: 'needle', path: `../${basename(outside)}` }) } },
       { id: 'invalid-regex', type: 'function', function: { name: 'grep', arguments: '{"pattern":"["}' } },
     ] } : { content: '边界与截断已验证' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'default', timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
     const events: Array<{ callId: string; status: string; errorCode?: string }> = [];
+    const approvals: string[] = [];
     await runAgent(config, '搜索子目录并检查边界', {
       smokeTool: false,
+      approvalControl: async ({ toolName }) => { approvals.push(toolName); return 'approve'; },
       onToolEvent: (event) => events.push(event),
     });
     const results = fixture.requests[1]!.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ content: string; tool_call_id: string }>;
@@ -99,14 +101,13 @@ it('搜索工具限定子目录、拒绝越界路径并标记截断结果', asyn
     expect(output('limit-glob').output.truncated).toBe(true);
     expect(output('limit-grep').output.matches).toHaveLength(200);
     expect(output('limit-grep').output.truncated).toBe(true);
-    expect(output('escape-absolute').error.code).toBe('INVALID_TOOL_ARGUMENTS');
-    expect(output('escape-relative').error.code).toBe('INVALID_TOOL_ARGUMENTS');
+    expect(output('escape-absolute').output.paths).toEqual([`${relative(workspace, outside)}/private.txt`]);
+    expect(output('escape-relative').output.matches).toEqual([{ path: `${relative(workspace, outside)}/private.txt`, line: 1, text: 'needle outside' }]);
     expect(output('invalid-regex').error.code).toBe('INVALID_TOOL_ARGUMENTS');
     expect(events.filter(({ status }) => status === 'rejected').map(({ callId, errorCode }) => [callId, errorCode]).sort(([left], [right]) => String(left).localeCompare(String(right)))).toEqual([
-      ['escape-absolute', 'INVALID_TOOL_ARGUMENTS'],
-      ['escape-relative', 'INVALID_TOOL_ARGUMENTS'],
       ['invalid-regex', 'INVALID_TOOL_ARGUMENTS'],
     ]);
+    expect(approvals.sort()).toEqual(['glob', 'grep']);
   } finally {
     await closeFixture?.();
     await rm(workspace, { recursive: true, force: true });
@@ -205,5 +206,42 @@ it('搜索审批后新增的 ask 范围不会被未覆盖的先前批准放行',
   } finally {
     await closeFixture?.();
     await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+it('工作区外 Glob 与 Grep 经逐次审批后返回搜索结果', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'qhy-external-search-work-'));
+  const outside = await mkdtemp(join(tmpdir(), 'qhy-external-search-outside-'));
+  let closeFixture: (() => Promise<void>) | undefined;
+  try {
+    await writeFile(join(outside, 'outside.txt'), 'external needle');
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1 ? { calls: [
+      { id: 'external-glob', type: 'function', function: { name: 'glob', arguments: JSON.stringify({ pattern: '*.txt', path: outside }) } },
+      { id: 'external-grep', type: 'function', function: { name: 'grep', arguments: JSON.stringify({ pattern: 'needle', path: outside }) } },
+    ] } : { content: '外部搜索完成' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'default', timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 4,
+    };
+    const approvals: string[] = [];
+
+    await runAgent(config, '搜索工作区外目录', {
+      smokeTool: false,
+      approvalControl: async ({ toolName, details }) => {
+        approvals.push(`${toolName}:${details?.target}`);
+        return 'approve';
+      },
+    });
+
+    expect(approvals).toEqual([`glob:${outside}`, `grep:${outside}`]);
+    const results = fixture.requests[1]!.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ content: string }>;
+    expect(JSON.parse(results[0]!.content)).toMatchObject({ is_error: false, output: { paths: [`../${basename(outside)}/outside.txt`] } });
+    expect(JSON.parse(results[1]!.content)).toMatchObject({ is_error: false, output: { matches: [expect.objectContaining({ text: 'external needle' })] } });
+  } finally {
+    await closeFixture?.();
+    await rm(workspace, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });

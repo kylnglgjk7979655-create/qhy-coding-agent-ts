@@ -7,16 +7,24 @@ import { analyzeBashCommand } from './bash-policy.js';
 
 export async function prepareBashInput<Input extends { command: string; cwd?: string | undefined }>(workspace: string, input: Input) {
   try {
-    const cwd = await realpath(resolve(workspace, input.cwd ?? '.'));
+    const requestedCwd = input.cwd ?? '.';
+    const cwd = await realpath(resolve(workspace, requestedCwd));
     if (!(await stat(cwd)).isDirectory()) throw new Error();
     const analysis = analyzeBashCommand(input.command);
-    return { input: { ...input, cwd }, details: {
+    return { input: { ...input, cwd, requestedCwd, approvedCwd: cwd }, details: {
       cwd,
       bashCommands: JSON.stringify(analysis.commands),
       bashRequiresApproval: String(analysis.requiresApproval || !isWithinWorkspace(resolve(workspace), cwd)),
     } };
   } catch {
     throw new Error('Bash 命令或工作目录无效、无法可靠解析，或无法访问。');
+  }
+}
+
+export async function verifyBashWorkingDirectory(workspace: string, requestedCwd: string, approvedCwd: string): Promise<void> {
+  const current = await realpath(resolve(workspace, requestedCwd));
+  if (current !== approvedCwd || !(await stat(current)).isDirectory()) {
+    throw new Error('Bash 工作目录在审批期间发生变化，请重新提交调用。');
   }
 }
 

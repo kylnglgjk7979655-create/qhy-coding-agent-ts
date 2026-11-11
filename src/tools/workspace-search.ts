@@ -32,8 +32,8 @@ function toPosix(path: string): string {
 async function searchRoot(workspace: string, requestedPath?: string): Promise<string> {
   const candidate = resolve(workspace, requestedPath ?? '.');
   const target = await realpath(candidate);
-  if (!isWithinWorkspace(workspace, target) || !(await stat(target)).isDirectory()) {
-    throw new Error('搜索目录必须是工作区内的目录。');
+  if (!(await stat(target)).isDirectory()) {
+    throw new Error('搜索目录必须是可访问的目录。');
   }
   return target;
 }
@@ -41,7 +41,7 @@ async function searchRoot(workspace: string, requestedPath?: string): Promise<st
 async function gitignoreRules(workspace: string, directory: string): Promise<IgnoreRules | undefined> {
   try {
     const ignoreFile = await realpath(resolve(directory, '.gitignore'));
-    if (!isWithinWorkspace(workspace, ignoreFile)) return undefined;
+    if (isWithinWorkspace(workspace, directory) && !isWithinWorkspace(workspace, ignoreFile)) return undefined;
     const content = await readFile(ignoreFile, 'utf8');
     return { base: directory, matcher: ignore().add(content) };
   } catch (error) {
@@ -52,6 +52,7 @@ async function gitignoreRules(workspace: string, directory: string): Promise<Ign
 
 async function ancestorIgnoreRules(workspace: string, root: string): Promise<IgnoreRules[]> {
   const rules: IgnoreRules[] = [];
+  if (!isWithinWorkspace(workspace, root)) return rules;
   let directory = workspace;
   const relativeRoot = relative(workspace, root);
   for (const segment of relativeRoot === '' ? [] : relativeRoot.split(sep).slice(0, -1)) {
@@ -109,12 +110,12 @@ async function workspaceFiles(
         continue;
       }
 
-      // 目录符号链接不递归，避免循环；文件链接只在工作区边界内读取。
+      // 目录符号链接不递归，避免循环；文件链接只在搜索根目录内读取。
       if (!entry.isFile() && !entry.isSymbolicLink()) continue;
       try {
         if (entry.isSymbolicLink() && (await lstat(candidate)).isSymbolicLink()) {
           const linkTarget = await realpath(candidate);
-          if (!isWithinWorkspace(workspace, linkTarget) || !(await stat(linkTarget)).isFile()) continue;
+          if (!isWithinWorkspace(root, linkTarget) || !(await stat(linkTarget)).isFile()) continue;
           const targetAction = permission?.(linkTarget);
           if (targetAction === 'deny') {
             excluded.push(toPosix(relative(workspace, candidate)));
@@ -125,7 +126,7 @@ async function workspaceFiles(
           continue;
         }
         const canonical = await realpath(candidate);
-        if (!isWithinWorkspace(workspace, canonical) || !(await stat(canonical)).isFile()) continue;
+        if (!isWithinWorkspace(root, canonical) || !(await stat(canonical)).isFile()) continue;
         files.push(candidate);
       } catch {
         // 搜索遇到不可访问或已失效的文件时继续处理其余工作区内容。
@@ -218,7 +219,7 @@ export async function grepWorkspace(
     } catch {
       continue;
     }
-    if (!isWithinWorkspace(workspace, canonical)) continue;
+    if (!isWithinWorkspace(root, canonical)) continue;
     const action = permission?.(canonical);
     if (action === 'deny') {
       excluded.push(toPosix(relative(workspace, path)));

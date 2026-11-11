@@ -113,9 +113,9 @@ pnpm exec vitest run tests/config.test.ts tests/agent-execution.test.ts tests/se
 
 自动测试不等于人工 QA 已完成。人工验收需在本地夹具与可丢弃工作区中逐项确认：
 
-1. 在用户级、项目级和本地 settings 分别配置权限，确认权限数组跨层合并去重、目标路径匹配及 `deny > ask > allow` 决策；检查旧 `approval.rules` 仍兼容。
+1. 在用户级、项目级和本地 settings 分别配置权限，确认每层字段均严格校验、权限数组跨层合并去重、目标路径匹配及 `deny > ask > allow` 决策；确认旧 `approval.rules` 不再提供授权。
 2. 对 `read_file`、`write_file`、`glob`、`grep` 分别试验工作区内外目标、符号链接目标、允许/审批/拒绝规则；搜索结果不得包含被拒绝文件，审批期间不得读取或写入。
-3. 用精确命令和 `Bash(prefix *)` 检查简单命令与复合命令；混合规则中只要一条命令被拒绝，整次调用不得启动。无规则时 Bash 进入所选审批；可识别但需要谨慎执行的复合语法额外要求审批，无法可靠解析的控制结构作为无效参数拒绝。
+3. 用精确命令和 `Bash(prefix:*)` 检查简单命令与复合命令；混合规则中只要一条命令被拒绝，整次调用不得启动。无规则时 Bash 进入所选审批；可识别但需要谨慎执行的复合语法额外要求审批，无法可靠解析的控制结构作为无效参数拒绝。
 4. 检查 MCP 工具默认进入所选审批，`MCP(server/tool)` 规则按完整服务名和工具名生效；等待或拒绝期间不得发送远端调用。
 5. 从 Explore 和 general-purpose 子 Agent 分别请求读取与搜索，确认二者采用相同权限规则；Explore 不能写入、执行命令或委派，子 Agent 不能继续创建子 Agent。测试 `Agent` 拒绝规则。
 6. 在 `approval.mode: "auto"` 下检查模型请求包含规则和受控历史摘要、用户消息、先前工具参数/状态，但不包含工具结果；在人工模式下确认只按当前审批编号批准单次调用。
@@ -130,7 +130,7 @@ pnpm exec vitest run tests/config.test.ts tests/agent-execution.test.ts tests/se
 | 字段 | 产品默认值 / 用途 |
 | --- | --- |
 | `timeoutMs`、`maxSteps` | 60000ms、20；整轮执行预算与主模型步骤上限 |
-| `approval.mode`、`approval.rules` | `default`、空规则；`auto` 使用独立模型审批，规则为 `{toolName, action}` |
+| `approval.mode` | `default`；`auto` 使用独立模型审批。旧 `approval.rules` 不提供授权 |
 | `approval.timeoutMs`、`approval.humanTimeoutMs` | 30000ms、300000ms；人工等待不扣整轮执行预算，不重置此前已消耗时间 |
 | `approval.model` | 可选 `{provider, model, baseURL, apiKeyEnv}`，默认复用主模型；独立审查携带受控上下文，不提供工具 |
 | `permissions.allow`、`permissions.ask`、`permissions.deny` | 分别按文件路径、Bash 命令、MCP 服务/工具及 Agent/RuntimeInfo 能力配置；权限规则各层合并去重，`deny` 优先 |

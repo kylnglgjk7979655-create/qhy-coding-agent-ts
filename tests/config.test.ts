@@ -31,7 +31,7 @@ describe('configuration', () => {
     await mkdir(join(home, '.agent'), { recursive: true });
     await mkdir(join(project, '.agent'), { recursive: true });
     await writeFile(join(home, '.agent', 'settings.json'), JSON.stringify({
-      model: 'user-model', workspace: '../project', permissions: { allow: ['Read', 'Write'], deny: ['Bash(rm *)'] },
+      model: 'user-model', workspace: '../project', permissions: { allow: ['Read', 'Write'], deny: ['Bash(rm:*)'] },
       mcp: { servers: [{ name: 'user', url: 'https://user.example/mcp' }] },
     }));
     await writeFile(join(project, '.agent', 'settings.json'), JSON.stringify({
@@ -48,7 +48,7 @@ describe('configuration', () => {
     expect(config.workspace).toBe(project);
     expect(config.approval.mode).toBe('default');
     expect(config.permissions).toEqual({
-      allow: ['Read', 'Write', 'Glob'], ask: ['Write', 'Bash(npm test)'], deny: ['Bash(rm *)'],
+      allow: ['Read', 'Write', 'Glob'], ask: ['Write', 'Bash(npm test)'], deny: ['Bash(rm:*)'],
     });
     expect(config.mcp?.servers).toEqual([{ name: 'project', url: 'https://project.example/mcp', headers: {} }]);
   });
@@ -87,6 +87,23 @@ describe('configuration', () => {
 
     await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({ permissions: { deny: ['Read('] } }));
     await expect(loadConfig({ cwd, env: { OPENAI_API_KEY: 'key' } })).rejects.toMatchObject({ code: 'CONFIG_ERROR' });
+  });
+
+  it.each([
+    [{ permissions: { deny: 'Read' } }, { permissions: { deny: [] } }],
+    [{ permissions: { allow: 'Read' } }, { permissions: { allow: [] } }],
+    [{ approval: { mode: 'WRONG' } }, { approval: { mode: 'auto' } }],
+  ])('低优先级配置字段非法时，即使高层覆盖也在启动时拒绝', async (lower, upper) => {
+    const home = join(cwd, 'layered-home');
+    const project = join(cwd, 'layered-project');
+    await mkdir(join(home, '.agent'), { recursive: true });
+    await mkdir(join(project, '.agent'), { recursive: true });
+    await writeFile(join(home, '.agent', 'settings.json'), JSON.stringify(lower));
+    await writeFile(join(project, '.agent', 'settings.json'), JSON.stringify(upper));
+
+    await expect(loadConfig({
+      cwd: project, home, env: { HOME: home, OPENAI_API_KEY: 'key' },
+    })).rejects.toMatchObject({ code: 'CONFIG_ERROR' });
   });
 
   it('恢复会话时按其实际工作区重新加载当前 settings', async () => {

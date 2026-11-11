@@ -58,7 +58,8 @@ const permissionRuleSchema = z.string().trim().min(1).refine((rule) => {
   if (!match) return false;
   const [, kind, argument] = match;
   if (['Read', 'Write', 'Glob', 'Grep'].includes(kind!)) return argument === undefined || argument.trim().length > 0;
-  if (kind === 'Bash') return argument !== undefined && argument.trim().length > 0;
+  if (kind === 'Bash') return argument !== undefined && argument.trim().length > 0
+    && (!/[?*]/u.test(argument) || argument.endsWith(':*'));
   if (kind === 'MCP') return argument === undefined || /^[a-z][a-z0-9-]{0,15}\/(?:\*|[^\s()*][^\s()]*)$/u.test(argument);
   return argument === undefined;
 }, '权限规则语法无效');
@@ -84,14 +85,15 @@ export const configSchema = z.strictObject({
   }).optional(),
   approval: z.strictObject({
     mode: z.enum(['default', 'auto']).default('default'),
+    // 保留旧字段的严格解析，避免旧 settings 因迁移字段形状而破损；运行时不应用其中授权。
     rules: z.array(z.strictObject({
       toolName: z.string().trim().min(1),
       action: z.enum(['allow', 'deny', 'ask']),
-    })).default([]),
+    })).optional(),
     timeoutMs: z.number().int().min(1).max(3_600_000).default(30_000),
     humanTimeoutMs: z.number().int().min(1).max(3_600_000).optional(),
     model: reviewModelSchema.optional(),
-  }).default({ mode: 'default', rules: [], timeoutMs: 30_000 }),
+  }).default({ mode: 'default', timeoutMs: 30_000 }),
   permissions: z.strictObject({
     allow: z.array(permissionRuleSchema).default([]),
     ask: z.array(permissionRuleSchema).default([]),
@@ -195,7 +197,17 @@ async function readSettings(path: string, project: boolean): Promise<Record<stri
   if (project && 'workspace' in raw) {
     throw new AgentError('CONFIG_ERROR', '项目 settings 不能设置 workspace；请使用 --workspace 或用户级 settings。');
   }
+  validateSettingsLayer(raw as Record<string, unknown>, path);
   return raw as Record<string, unknown>;
+}
+
+function validateSettingsLayer(raw: Record<string, unknown>, path: string): void {
+  for (const [key, value] of Object.entries(raw)) {
+    const field = configSchema.shape[key as keyof typeof configSchema.shape];
+    if (!field || !field.safeParse(value).success) {
+      throw new AgentError('CONFIG_ERROR', `settings 字段无效：${path}（${key}）。`);
+    }
+  }
 }
 
 function mergeSettings(base: Record<string, unknown>, overlay: Record<string, unknown>): Record<string, unknown> {

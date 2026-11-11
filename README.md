@@ -161,7 +161,7 @@ pnpm dev --workspace ./demo
 | `runtimeInfo` | 返回工作区绝对路径和本轮运行探针 |
 | `Bash` | 接收 `command` 和可选 `cwd`，从工作区默认目录或经审批的其他目录运行独立宿主 Bash |
 
-相对路径从配置的工作区解析。`read_file` 和 `write_file` 可按权限规则或逐次审批访问工作区外的目标；工作区外读取默认需要审批，写入默认进入当前审批策略。符号链接按解析后的实际目标匹配权限。`glob` 和 `grep` 只搜索工作区内部，权限规则可对其中的文件分别允许、要求审批或拒绝。工具权限是应用层策略，不是操作系统沙箱；宿主 Bash 和 MCP 等外部副作用不受内置文件工具边界约束。审批通过不会自动回滚已经发生的副作用。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
+相对路径从配置的工作区解析。`read_file` 和 `write_file` 可按权限规则或逐次审批访问工作区外的目标；工作区外读取默认需要审批，写入默认进入当前审批策略。符号链接按解析后的实际目标匹配权限。`glob` 和 `grep` 默认搜索工作区，指定工作区外搜索根时需要审批；权限规则可对搜索范围分别允许、要求审批或拒绝。工具权限是应用层策略，不是操作系统沙箱；宿主 Bash 和 MCP 等外部副作用不受内置文件工具边界约束。审批通过不会自动回滚已经发生的副作用。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
 
 终端实时显示 `[工具] read_file：开始`、`[工具] read_file：成功`、`[工具] read_file：失败` 或 `[工具] read_file：拒绝` 等执行状态，不直接打印工具参数、文件内容或原始异常。一次调用只显示一个终结状态；普通调用失败后，同批后续调用仍会执行，Agent 会收到各次工具结果并决定如何继续。Agent 的最终回答可以按用户要求引用文件内容。
 
@@ -196,17 +196,17 @@ pnpm dev --workspace ./demo
 {
   "permissions": {
     "allow": ["Read(src/**)", "Glob(src/**)", "Grep(src/**)", "Bash(pnpm test)", "MCP(alpha/lookup)"],
-    "ask": ["Write(src/**)", "Bash(git *)"],
-    "deny": ["Read(.env)", "Bash(rm *)", "MCP(alpha/*)"]
+    "ask": ["Write(src/**)", "Bash(git push:*)"],
+    "deny": ["Read(.env)", "Bash(rm:*)", "MCP(alpha/*)"]
   }
 }
 ```
 
-`Read`、`Write`、`Glob`、`Grep` 可不带参数以匹配该类全部目标，也可带路径模式；相对路径从工作区解析，支持 `*`、`?`、`**`。`Bash` 必须带命令规则：精确匹配完整命令，末尾 ` *` 匹配该前缀及其参数。复合命令按其中每个简单命令分别检查；可识别的管道、串接和重定向等语法额外要求逐次审批，无法可靠解析的控制结构则作为无效参数拒绝。`MCP` 可匹配所有服务，或用 `服务名/工具名`、`服务名/*` 匹配远端工具。`Agent`、`RuntimeInfo` 分别控制 Agent 委派与运行信息工具。
+`Read`、`Write`、`Glob`、`Grep` 可不带参数以匹配该类全部目标，也可带路径模式；相对路径从工作区解析，支持 `*`、`?`、`**`。`Bash` 必须带命令规则：精确匹配完整命令，末尾 `:*` 匹配该前缀及其后续参数，并要求参数边界相符，例如 `Bash(git push:*)`。复合命令按其中每个简单命令分别检查；可识别的管道、串接和重定向等语法额外要求逐次审批，无法可靠解析的控制结构则作为无效参数拒绝。`MCP` 可匹配所有服务，或用 `服务名/工具名`、`服务名/*` 匹配远端工具。`Agent`、`RuntimeInfo` 分别控制 Agent 委派与运行信息工具。
 
 权限按工具能力独立生效：例如 `Read(src/**)` 不会授权 `Write(src/**)`，`Bash(pnpm test)` 也不会授权其他命令。匹配规则的动作优先级为 `deny`、`ask`、`allow`；未匹配时，工作区内读取、搜索、`runtimeInfo` 和 Agent 默认允许，写入、Bash、MCP 默认进入当前审批，工作区外读取默认需要审批。显式 `allow` 可免除相应逐次审批，`deny` 不可由审批放行。Glob/Grep 对被拒绝路径予以排除，对需审批路径暂停该次搜索并在人工审批界面展示范围。
 
-设置分层时，`permissions.allow`、`permissions.ask`、`permissions.deny` 各自跨层合并并去重；其他对象字段递归合并，其他数组由更具体层整体替换。旧版 `approval.rules` 仍按精确工具名称应用，与 `permissions` 一起生效；任一匹配的拒绝优先。它适合兼容旧配置，新配置应使用 `permissions` 表达路径和命令范围。
+设置分层时，`permissions.allow`、`permissions.ask`、`permissions.deny` 各自跨层合并并去重；其他对象字段递归合并，其他数组由更具体层整体替换。旧版 `approval.rules` 不再提供运行授权；请迁移到 `permissions`，无效或未迁移的旧规则不会覆盖默认权限。
 
 Explore 只提供 `glob`、`grep`、`read_file`，并使用同一份权限配置；它始终不能写文件、运行 Bash、调用 MCP 或再次委派。general-purpose 子 Agent 也沿用相同的 `permissions` 与审批策略，并有自己的文件读取基线；它不能继续创建子 Agent。Agent 委派本身可用 `Agent` 规则控制。工具级权限与逐次审批只决定对应调用能否继续，不能隔离进程、限制 Bash 的网络或文件系统访问，也不会撤销已发生的外部副作用。
 
@@ -216,16 +216,12 @@ Explore 只提供 `glob`、`grep`、`read_file`，并使用同一份权限配置
 {
   "approval": {
     "mode": "auto",
-    "timeoutMs": 30000,
-    "rules": [
-      { "toolName": "read_file", "action": "allow" },
-      { "toolName": "write_file", "action": "ask" }
-    ]
+    "timeoutMs": 30000
   }
 }
 ```
 
-`approval.rules` 只精确匹配工具名称，不支持通配符、路径或命令前缀。`allow` 直接执行，`deny` 直接拒绝，`ask` 进入审批；同名冲突时 `deny` 优先，其次 `allow`，然后 `ask`。它与上方 `permissions` 同时生效，路径范围内的 `ask` 不能被旧版工具级 `allow` 覆盖。未知工具或无效参数在审批前拒绝。修改参数或再次调用都需要重新判断，不复用上次批准。
+`approval.rules` 是旧配置字段，不再生效；使用 `permissions.allow`、`permissions.ask` 和 `permissions.deny` 表达规则。权限命中顺序为 `deny`、`ask`、`allow`。未知工具或无效参数在审批前拒绝。修改参数或再次调用都需要重新判断，不复用上次批准。
 
 每次模型审批使用独立请求，提供专用审查提示、本次工具名称和完整参数，以及受控会话上下文：工作区与工具目标、当前权限规则、有效历史中保留的摘要和用户消息、先前工具调用的参数与状态。不会发送工具执行结果，也不给审查模型提供工具。上下文可能不完整，审查不能核验完整用户意图，不提供操作系统隔离。审查只接受 `approve` 或 `deny`。公共 `runAgent` 另提供可等待的 `approvalControl(call, signal)`，返回 `approve` 或 `deny`；固定策略优先，控制接口与仅用于观察的 `onToolEvent` 分离，答复不改变已批准的参数。
 

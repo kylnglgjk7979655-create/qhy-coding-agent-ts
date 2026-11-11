@@ -144,14 +144,14 @@ it('模型审批上下文超出可用预算时停止且不发送审查请求', a
 });
 
 it.each([
-  { rules: [{ toolName: 'write_file', action: 'allow' }], expected: false },
-  { rules: [{ toolName: 'write_file', action: 'deny' }], expected: true },
-  { rules: [{ toolName: 'write_file', action: 'allow' }, { toolName: 'write_file', action: 'ask' }, { toolName: 'write_file', action: 'deny' }], expected: true },
-])('固定策略优先且拒绝胜出：$rules', async ({ rules, expected }) => {
+  { permissions: { allow: ['Write'] }, expected: false },
+  { permissions: { deny: ['Write'] }, expected: true },
+  { permissions: { allow: ['Write'], ask: ['Write'], deny: ['Write'] }, expected: true },
+])('权限规则优先且拒绝胜出：$permissions', async ({ permissions, expected }) => {
   const fixture = await setup((_request, index) => index === 1 ? { calls: [
     call('read', 'read_file', { path: 'note.txt' }),
     call('write', 'write_file', { path: 'note.txt', content: 'after' }),
-  ] } : { content: '处理完毕' }, () => { throw new Error('不应审查'); }, { approval: { rules } });
+  ] } : { content: '处理完毕' }, () => { throw new Error('不应审查'); }, { permissions });
   await writeFile(join(cwd, 'note.txt'), 'before');
   const result = await run().done;
   expect(result.code).toBe(0);
@@ -162,6 +162,19 @@ it.each([
     ? { is_error: true, error: { code: 'PERMISSION_DENIED' } } : { is_error: false });
   expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe(expected ? 'before' : 'after');
   if (expected) expect(result.stdout).not.toContain('write_file：开始');
+});
+
+it('旧 approval.rules 不再授权写入', async () => {
+  const fixture = await setup((_request, index) => index === 1
+    ? { calls: [call('legacy-write', 'write_file', { path: 'legacy-authorized.txt', content: 'must not be written' })] }
+    : { content: '处理完成' }, undefined, { approval: { mode: 'default', rules: [{ toolName: 'write_file', action: 'allow' }] } });
+
+  const result = await run().done;
+
+  expect(result.code).toBe(0);
+  expect(fixture.approvalRequests).toHaveLength(0);
+  expect(JSON.parse(results(fixture)[0]!.content)).toMatchObject({ is_error: true, error: { code: 'PERMISSION_DENIED' } });
+  await expect(readFile(join(cwd, 'legacy-authorized.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('参数与未知工具先拒绝，逐次审批不复用授权，明确拒绝后仍继续同批调用', async () => {
@@ -234,7 +247,8 @@ it('独立审查模型只收到专用输入，ask 可覆盖只读默认豁免', 
   const review = await startLocalOpenAIModel(() => { throw new Error('不应收到主请求'); }, () => ({ content: 'deny' }));
   fixtures.push(review);
   const fixture = await setup((_request, index) => index === 1 ? { calls: [call('read', 'read_file', { path: 'note.txt' })] } : { content: '拒绝读取' }, undefined, {
-    approval: { rules: [{ toolName: 'read_file', action: 'ask' }], model: { model: 'review-fixture', baseURL: review.baseURL, apiKeyEnv: 'TEST_APPROVAL_KEY' } },
+    permissions: { ask: ['Read'] },
+    approval: { model: { model: 'review-fixture', baseURL: review.baseURL, apiKeyEnv: 'TEST_APPROVAL_KEY' } },
   });
   await writeFile(join(cwd, 'note.txt'), 'hidden-file-content');
   const result = await run().done;

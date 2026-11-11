@@ -7,6 +7,7 @@ import { AgentError } from '../utils/errors.js';
 import type { ToolApprovalRequest } from './tool-registry.js';
 import { assertInputBudget } from '../services/compact/context-summary.js';
 import { homedir } from 'node:os';
+import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isWithinWorkspace } from './workspace-files.js';
 
@@ -36,12 +37,14 @@ export async function approveToolCall(
   history: ModelMessage[] = [],
 ): Promise<boolean> {
   signal.throwIfAborted();
-  const actions = config.approval.rules.filter(({ toolName }) => toolName === call.toolName).map(({ action }) => action);
   const readAction = call.toolName === 'read_file' ? readPermissionAction(config, call) : undefined;
   const writeAction = call.toolName === 'write_file' ? pathPermissionAction(config, call, 'Write') : undefined;
   const searchAction = call.toolName === 'glob' || call.toolName === 'grep'
     ? pathPermissionAction(config, call, call.toolName === 'glob' ? 'Glob' : 'Grep') : undefined;
   const searchAsks = call.details?.searchAsk !== undefined;
+  const searchOutsideWorkspace = (call.toolName === 'glob' || call.toolName === 'grep')
+    && searchAction === undefined && call.details?.target !== undefined
+    && !isWithinWorkspace(config.workspace, call.details.target);
   const bashActions = call.toolName === 'Bash' ? bashPermissionActions(config, call) : [];
   const mcpAction = mcpPermissionAction(config, call);
   const basicToolAction = ['agent', 'runtimeInfo'].includes(call.toolName)
@@ -51,13 +54,13 @@ export async function approveToolCall(
   const bashRequiresApproval = call.toolName === 'Bash' && call.details?.bashRequiresApproval === 'true';
   const readOutsideWorkspace = call.toolName === 'read_file' && readAction === undefined && !isReadTargetInWorkspace(config, call);
   const permissionAction = mcpAction ?? basicToolAction ?? readAction ?? writeAction ?? searchAction;
-  const permissionRequiresApproval = permissionAction === 'ask' || readOutsideWorkspace || searchAsks
+  const permissionRequiresApproval = permissionAction === 'ask' || readOutsideWorkspace || searchOutsideWorkspace || searchAsks
     || bashActions.includes('ask') || bashRequiresApproval;
-  if (actions.includes('deny') || permissionAction === 'deny' || bashDenied) return false;
+  if (permissionAction === 'deny' || bashDenied) return false;
   if (call.toolName === 'Bash' && bashAllowed && !permissionRequiresApproval) return true;
-  // 按路径设置的 ask 必须高于旧版工具级 allow。
-  if (!permissionRequiresApproval && (permissionAction === 'allow' || actions.includes('allow'))) return true;
-  if (!permissionRequiresApproval && !actions.includes('ask')
+  // 范围要求审批时，不能被另一条宽泛 allow 跳过。
+  if (!permissionRequiresApproval && permissionAction === 'allow') return true;
+  if (!permissionRequiresApproval
     && ['read_file', 'glob', 'grep', 'runtimeInfo', 'agent'].includes(call.toolName)) return true;
 
   if (config.approval.mode === 'default') {
@@ -96,7 +99,7 @@ export async function approveToolCall(
       });
       const context = {
         environment: { workspace: config.workspace, toolDetails: call.details ?? {} },
-        rules: { toolRules: config.approval.rules, permissions: config.permissions ?? {} },
+        rules: { permissions: config.permissions ?? {} },
         history: extractApprovalHistory(history),
       };
       const prompt = JSON.stringify({ toolName: call.toolName, input: call.input, context });
@@ -225,7 +228,7 @@ function matchesBashRule(rule: string, command: string): boolean {
   const match = /^Bash\((.+)\)$/u.exec(rule);
   if (!match) return false;
   const pattern = match[1]!.trim();
-  if (pattern.endsWith(' *')) {
+  if (pattern.endsWith(':*')) {
     const prefix = pattern.slice(0, -2).trimEnd();
     return command === prefix || command.startsWith(`${prefix} `);
   }
@@ -264,12 +267,12 @@ function pathPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest,
   const requestedPath = call.details?.requestedPath ?? inputPath;
   const target = call.details?.target;
   if (!requestedPath || !target) return undefined;
-  const paths = [resolveUserPath(config, requestedPath), target];
+  const paths = [resolveUserPath(config, requestedPath), target].map(canonicalizePermissionPath);
   const matches = (rule: string): boolean => {
     const match = new RegExp(`^${permission}(?:\\((.+)\\))?$`, 'u').exec(rule);
     if (!match) return false;
     if (match[1] === undefined) return true;
-    const pattern = resolveUserPath(config, match[1]);
+    const pattern = canonicalizePermissionPath(resolveUserPath(config, match[1]));
     const expression = globExpression(pattern);
     return paths.some((path) => expression.test(path));
   };
@@ -287,11 +290,26 @@ export function searchPathPermissionAction(config: ResolvedConfig, toolName: 'gl
       const match = new RegExp(`^${permission}(?:\\((.+)\\))?$`, 'u').exec(rule);
       if (!match) return false;
       if (match[1] === undefined) return true;
-      return globExpression(resolveUserPath(config, match[1])).test(absolutePath.replaceAll('\\', '/'));
+      return globExpression(canonicalizePermissionPath(resolveUserPath(config, match[1]))).test(canonicalizePermissionPath(absolutePath));
     });
     if (matches) return action;
   }
   return undefined;
+}
+
+function canonicalizePermissionPath(path: string): string {
+  const normalized = resolve(path).replaceAll('\\', '/');
+  const segments = normalized.split('/').filter(Boolean);
+  let prefix = normalized.startsWith('/') ? '/' : '';
+  let index = 0;
+  for (; index < segments.length; index += 1) {
+    const segment = segments[index]!;
+    if (segment.includes('*') || segment.includes('?')) break;
+    const candidate = resolve(prefix || '/', segment);
+    try { prefix = realpathSync(candidate).replaceAll('\\', '/'); }
+    catch { prefix = candidate.replaceAll('\\', '/'); index += 1; break; }
+  }
+  return resolve(prefix || '/', ...segments.slice(index)).replaceAll('\\', '/');
 }
 
 function isReadTargetInWorkspace(config: ResolvedConfig, call: ToolApprovalRequest): boolean {

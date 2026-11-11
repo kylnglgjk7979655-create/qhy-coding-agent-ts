@@ -130,13 +130,13 @@ describe('公共工具执行边界', () => {
     await symlink(outside, join(workspace, 'external-dir'));
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [{ id: 'write-denied-outside', type: 'function', function: {
-        name: 'write_file', arguments: JSON.stringify({ path: 'external-dir/denied.txt', content: '不得写入' }),
+        name: 'write_file', arguments: JSON.stringify({ path: target, content: '不得写入' }),
       } }] }
       : { content: '拒绝已处理。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
       approval: { mode: 'default', rules: [], timeoutMs: 30_000 },
-      permissions: { allow: [], ask: [], deny: [`Write(${target})`] },
+      permissions: { allow: [], ask: [], deny: ['Write(external-dir/denied.txt)'] },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -450,7 +450,8 @@ describe('公共工具执行边界', () => {
       : { content: '两项审批均已完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'default', rules: [{ toolName: 'read_file', action: 'ask' }], timeoutMs: 1000, humanTimeoutMs: 500 },
+      approval: { mode: 'default', timeoutMs: 1000, humanTimeoutMs: 500 },
+      permissions: { allow: [], ask: ['Read'], deny: [] },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 100, maxSteps: 5,
     };

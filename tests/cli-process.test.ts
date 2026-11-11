@@ -26,10 +26,7 @@ describe('compiled CLI process driver', () => {
     await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
       model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL,
       timeoutMs: 3000, maxSteps: 10,
-      approval: { rules: [
-        { toolName: 'write_file', action: 'allow' },
-        { toolName: 'Bash', action: 'allow' },
-      ] },
+      permissions: { allow: ['Write', 'Bash(printf:*)', 'Bash(pwd)', 'Bash(sleep:*)'] },
     }));
   }
 

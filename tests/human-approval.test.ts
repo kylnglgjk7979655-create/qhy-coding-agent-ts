@@ -163,7 +163,7 @@ it.skipIf(process.platform === 'win32')('并发人工审批按各自编号独立
     { id: 'parallel-read-one', type: 'function', function: { name: 'read_file', arguments: '{"path":"one.txt"}' } },
     { id: 'parallel-read-two', type: 'function', function: { name: 'read_file', arguments: '{"path":"two.txt"}' } },
   ] } : { content: '两项读取均已批准' }, {
-    approval: { mode: 'default', rules: [{ toolName: 'read_file', action: 'ask' }], humanTimeoutMs: 2000 },
+    approval: { mode: 'default', humanTimeoutMs: 2000 }, permissions: { ask: ['Read'] },
   });
   await writeFile(join(cwd, 'one.txt'), 'one');
   await writeFile(join(cwd, 'two.txt'), 'two');
@@ -263,7 +263,7 @@ it.skipIf(process.platform === 'win32')('人工等待超时只拒绝当前调用
 
 it.skipIf(process.platform === 'win32')('审批中关闭终端输入会直接拒绝当前和后续待审批调用', async () => {
   await setup((_request, index) => index === 1 ? { calls: [write('allowed', 'allowed.txt'), write('closed')] } : { content: '关闭后完成' }, {
-    approval: { mode: 'default', rules: [{ toolName: 'runtimeInfo', action: 'deny' }] },
+    approval: { mode: 'default' }, permissions: { deny: ['RuntimeInfo'] },
   });
   const running = run();
   await running.waitFor('> ');
@@ -354,11 +354,7 @@ it.skipIf(process.platform === 'win32')('默认人工等待上限为五分钟，
     write('allowed'), { id: 'denied', type: 'function', function: { name: 'runtimeInfo', arguments: '{}' } },
     { id: 'asked', type: 'function', function: { name: 'read_file', arguments: '{"path":"note.txt"}' } },
   ] } : { content: '策略完成' }, {
-    approval: { mode: 'default', rules: [
-      { toolName: 'write_file', action: 'allow' },
-      { toolName: 'runtimeInfo', action: 'allow' }, { toolName: 'runtimeInfo', action: 'deny' },
-      { toolName: 'read_file', action: 'ask' },
-    ] },
+    approval: { mode: 'default' }, permissions: { allow: ['Write', 'RuntimeInfo'], deny: ['RuntimeInfo'], ask: ['Read'] },
   });
   const running = run();
   await running.waitFor('> ');
@@ -397,7 +393,7 @@ it.skipIf(process.platform === 'win32').each(['整轮超时', 'SIGTERM'] as cons
       write('later', 'later.txt'),
     ] } : { content: '不应再次请求主模型' }, {
       timeoutMs: 1000, bash: { timeoutMs: 5000 },
-      approval: { mode: 'default', humanTimeoutMs: 3000, rules: [{ toolName: 'write_file', action: 'allow' }] },
+      approval: { mode: 'default', humanTimeoutMs: 3000 }, permissions: { allow: ['Write'] },
     });
     await writeFile(join(cwd, 'worker.cjs'), "const fs = require('node:fs'); fs.writeFileSync('child.pid', String(process.pid)); setTimeout(() => fs.writeFileSync('late.txt', 'leaked'), 1800); setInterval(() => {}, 1000);");
     const running = run();
