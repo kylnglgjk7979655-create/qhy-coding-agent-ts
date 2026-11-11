@@ -26,6 +26,12 @@ function response(content: string | null, call?: { name: string; id?: string; ar
   };
 }
 
+function expectDebugEventsHidden(stdout: string) {
+  expect(stdout).not.toContain('"timestamp"');
+  expect(stdout).not.toContain('"event":"run.started"');
+  expect(stdout).not.toContain('"toolSmokePassed"');
+}
+
 describe('interactive compiled CLI', () => {
   let cwd: string;
   let server: Server;
@@ -172,9 +178,7 @@ describe('interactive compiled CLI', () => {
     expect(result.stdout).toContain('[工具] read_file：开始');
     expect(result.stdout).toContain('[工具] read_file：成功');
     expect(result.stdout).toContain('终端显示已精简。');
-    expect(result.stdout).not.toContain('"timestamp"');
-    expect(result.stdout).not.toContain('"event":"run.started"');
-    expect(result.stdout).not.toContain('"toolSmokePassed"');
+    expectDebugEventsHidden(result.stdout);
     expect(result.stderr).toBe('');
   });
 
@@ -217,9 +221,7 @@ describe('interactive compiled CLI', () => {
     expect(result.stdout).toContain('[工具] write_file：开始');
     expect(result.stdout).toContain('[工具] write_file：成功');
     expect(result.stdout).toContain('人工审批后已完成。');
-    expect(result.stdout).not.toContain('"timestamp"');
-    expect(result.stdout).not.toContain('"event":"run.started"');
-    expect(result.stdout).not.toContain('"toolSmokePassed"');
+    expectDebugEventsHidden(result.stdout);
     expect(result.stderr).toBe('');
     expect(await readFile(join(cwd, 'approved.txt'), 'utf8')).toBe('approved-content');
   });
