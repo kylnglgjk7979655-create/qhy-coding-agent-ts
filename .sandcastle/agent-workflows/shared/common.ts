@@ -65,11 +65,41 @@ export const codexAgent = () => {
   const model = resolveCodexModel({ ...process.env, ...env }, (childEnv) => command(["debug", "models"], childEnv));
   const codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex");
   console.log(`Codex 模型：${model}`);
-  return sandcastle.codex(model, {
+  const provider = sandcastle.codex(model, {
     effort: "high", env: { ...env, CODEX_HOME: codexHome }, captureSessions: true,
     sessionStorage: { hostSessionsDir: path.join(codexHome, "sessions") },
   });
+  const parseStreamLine = provider.parseStreamLine.bind(provider);
+  return {
+    ...provider,
+    parseStreamLine(line: string) {
+      const events = parseStreamLine(line);
+      const contextWindow = parseCodexContextWindowEvent(line);
+      return contextWindow === undefined
+        ? events
+        : [...events, { type: "context_window" as const, contextWindow }];
+    },
+  };
 };
+
+function parseCodexContextWindowEvent(line: string): sandcastle.ContextWindow | undefined {
+  if (!line.startsWith("{")) return undefined;
+  try {
+    const event: unknown = JSON.parse(line);
+    if (!isRecord(event) || event.type !== "event_msg" || !isRecord(event.payload)
+      || event.payload.type !== "token_count" || !isRecord(event.payload.info)
+      || !isRecord(event.payload.info.last_token_usage)) return undefined;
+
+    const tokens = event.payload.info.last_token_usage.input_tokens;
+    if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens <= 0) return undefined;
+    const limit = event.payload.info.model_context_window;
+    return typeof limit === "number" && Number.isFinite(limit) && limit > 0
+      ? { tokens, limit }
+      : { tokens };
+  } catch {
+    return undefined;
+  }
+}
 
 export const standardSchema = <T>(
   validate: (value: unknown) => T,
