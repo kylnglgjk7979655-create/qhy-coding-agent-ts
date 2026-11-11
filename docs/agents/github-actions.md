@@ -59,7 +59,7 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 2. 添加 `agent:to-issues`。预检后移除触发标签，父 Issue 标记 in-progress；只读 Agent 输出 slices，认证回存成功后，由独立发布 job 校验来源快照，自动创建真实子 Issue、ready-for-agent 标签和原生父子／阻塞关系。完成后清除 in-progress。没有人工拆票审批。
 3. 检查子票后，给父 Issue 添加 `agent:implement` 开始实现；拆票本身不会写代码。父需求保留 agent:queued，每次选择一个依赖已完成的开放子票，共用 `agent/parent-父编号` 分支和一个 Draft PR。父内、父间均由订阅队列串行调度。
 4. Agent 使用 `$implement` 写代码、运行 `pnpm check` 并提交；同一会话调用 `$pr` 编写 Summary、Evidence、Merge Danger。Evidence 只列本会话实际执行的验证。Agent 阶段只创建提交，尚未推送；文案说明 workflow 后续在认证回存及校验成功后推送并创建或更新 Draft PR，不得声称推送已发生。
-5. workflow 验证 PR 元数据、保存刷新登录态、复查依赖后推送，创建或更新 PR。普通 implement 后自动请求整体 CR，CR 成功后自动接续 Agent QA；未执行的后续阶段注明由 workflow 接续，不作为固定人工 QA 待办。已有人工 QA 的实际状态保留，只有 Issue 或 Spec 明确要求人工 QA 时才列为待办。共享 PR 的正文包含 `Closes #父编号`；独立 Issue 的 PR 关闭自身。旧共享分支先更新到包含新脚本的 main，下一轮实现才会更新正文。若旧 PR 已完成所有实现，合并前需确认正文已含父票关闭指令。
+5. workflow 验证 PR 元数据、保存刷新登录态、复查依赖后推送，创建或更新 PR。普通 implement 后自动请求整体 CR，CR 成功后自动接续 Agent QA。共享 PR 的正文包含 `Closes #父编号`；独立 Issue 的 PR 关闭自身。旧共享分支先更新到包含新脚本的 main，下一轮实现才会更新正文。若旧 PR 已完成所有实现，合并前需确认正文已含父票关闭指令。
 6. 子票提交到共享 PR 后以 completed 关闭，然后自动接续下一票。有 PAT 时重新贴父票 implement；未配置时直接记录持久队列请求。同父共享 PR 不阻塞后续票，其他开放实现 PR 仍可能阻塞依赖。
 7. 全部子票 completed 后移除父需求 queued，请求整体 CR。审查上下文通过原生父子关系显式读取父 PRD、全部子票及评论；旧 PR 首条 Closes 指向子票时同样会定位父需求。
 8. Review 发布 COMMENT，自动接续 QA；QA 验收并在需要时委派修复、CR、复验，通过后标记 PR Ready。手动添加 `agent:review` 不自动接续 QA。Check 独立执行 `pnpm check` 和 `pnpm demo:test`。维护者决定合并，合入 main 后 GitHub 自动关闭父 Issue，无需再单独验收关闭父票。共享 PR 不自动合并。

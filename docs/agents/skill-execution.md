@@ -7,7 +7,7 @@
 - **拆票**：父 Spec 放在 GitHub Issue 正文，补充要求写评论。`agent:to-issues` 调用 `$to-tickets`，输出带稳定 key 和 blockedBy 的 slices。认证回存成功后，独立发布 job 校验需求未变化，自动创建原生子 Issue 与阻塞关系；无需审批标签。拆票不会启动实现。
 - **实现**：`agent:implement` 调用 `$implement`，支持独立 Issue、子 Issue 和父需求。父需求按原生依赖逐票实施，共用一个分支和 Draft PR。每张子票成功推送后以 completed 关闭，下一票无需等待 PR 合并。
 - **并行实现**：父 Issue 已有开放子任务及原生依赖时，可用 `agent:implement-spec` 调用仓库内 `implement-spec`、`tdd` 和 `code-review`，在单次 Codex 会话中并行委派子代理实施；该入口不拆票，也不调用逐票流程。它仍作为一个任务进入持久队列，仓库级订阅锁继续串行调度会话。
-- **PR 文案**：实现会话在代码、检查及提交完成后调用 `$pr`。按 skill 的 Summary、Evidence、Merge Danger 模板写出中文 PR 元数据文件；Evidence 只列本会话实际执行的验证。Agent 提交后当前阶段尚未推送；workflow 在认证回存及校验成功后推送并创建或更新 Draft PR。普通 implement 后 workflow 自动接续整体 CR，成功后继续 Agent QA；尚未运行的后续阶段说明为 workflow 接续项，不作为固定的人工 QA 待办。已有记录中人工 QA 的实际状态原样保留；只有 Issue 或 Spec 明确要求人工 QA 时才列为待办。父需求共享 PR 始终包含 `Closes #父编号`，合并到 main 后由 GitHub 自动关闭父 Issue。
+- **PR 文案**：实现会话在代码、检查及提交完成后调用 `$pr`。按 skill 的 Summary、Evidence、Merge Danger 模板写出中文 PR 元数据文件；Evidence 只列本会话实际执行的验证。Agent 提交后当前阶段尚未推送；workflow 在认证回存及校验成功后推送并创建或更新 Draft PR。普通 implement 后 workflow 自动接续整体 CR，成功后继续 Agent QA。父需求共享 PR 始终包含 `Closes #父编号`，合并到 main 后由 GitHub 自动关闭父 Issue。
 - **整体审查**：全部子票 completed 后排队调用 `$code-review`，比较基准为 main。上下文显式包含父 PRD、全部子票的正文、状态与评论，按整份需求验收；独立 Issue 按自身验收。审查可修复并提交并发布 COMMENT。implement 发起的整体审查成功后自动排队 `agent:qa`，QA 通过后才标记 Ready；手动添加 `agent:review` 的审查不接续 QA，保持审查后标记 Ready。
 - **按需 QA Only**：同仓库开放 PR 添加 `agent:qa-only`，独立 prompt 显式调用固定的 `$qa-only`。Spec 沿用 parent issue、相关 sub-issues 的正文与评论，比较基准为 main；先生成 QA plan，再运行产品并保存证据。Agent 只验收和报告，workflow 发布结果与 artifact，不修复、不提交、不推送，也不改变 PR Ready 状态。该标签独立运行，不作为 implement 自动接续的入口。
 - **QA**：PR 添加 `agent:qa`，或由 implement 发起的 CR 成功后自动接续；`pnpm agent:qa` 使用 QA 阶段 prompt，分别启动 QA、implement 和 CR subagent，在 fresh context 中显式运行 `$qa-only`、`$implement` 和 `$code-review`。QA 与 CR skill 只返回验收结果或 findings，修复由 prompt 交给 implement subagent；修改后再审查和复验。同一问题最多三次修复（含 CR 后修复），达到上限时在报告中写明未通过、尝试次数和剩余问题。Agent 提交修复；workflow 回存认证后推送、发布报告和证据，仅通过时标记 Ready；fail / blocked 保留报告并标记 blocked，不自动重试。本地命令不推送或发布。`implement-spec` 暂不接续此阶段。
@@ -17,7 +17,7 @@
 
 ## 规范与交付
 
-新增、修改和审查代码统一读取根目录 [CODING_STANDARDS.md](../../CODING_STANDARDS.md)，领域词汇来自 `GLOSSARY.md`，相关决策来自 `docs/adr/`。完成前执行 `pnpm check` 并修复失败；CI 另外运行 `pnpm demo:test`。当前自动链路由 Agent 执行 QA；代码检查本身不代表后续 Agent QA 已执行或通过。历史人工 QA 记录保留其事实状态。
+新增、修改和审查代码统一读取根目录 [CODING_STANDARDS.md](../../CODING_STANDARDS.md)，领域词汇来自 `GLOSSARY.md`，相关决策来自 `docs/adr/`。完成前执行 `pnpm check` 并修复失败；CI 另外运行 `pnpm demo:test`。代码检查本身不代表后续 Agent QA 已执行或通过。
 
 Agent 负责代码与提交；workflow 负责推送、PR、标签和评论。PR 仍由维护者决定合并，本次取消的是拆票审批和父 Issue 的单独关闭验收，不是 PR 合并控制。
 

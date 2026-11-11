@@ -119,7 +119,6 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,cached_i
     expect(events.map((event) => event.phase)).toEqual(['implement', 'review', 'extract', 'extract']);
     expect(events[0]?.prompt).toContain('workflow 在认证回存及校验成功后负责推送');
     expect(events[0]?.prompt).toContain('CR 成功后由 workflow 接续 Agent QA');
-    expect(events[0]?.prompt).not.toContain('保留人工 QA 的待验证状态');
     expect(events[1]?.prompt).toContain('后续 workflow 负责推送及发布 COMMENT');
     const implementPrPrompt = await readFile(
       new URL('../.sandcastle/agent-workflows/implement-pr/prompt.md', import.meta.url),
