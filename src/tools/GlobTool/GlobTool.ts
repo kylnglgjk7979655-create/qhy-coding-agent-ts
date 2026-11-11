@@ -15,7 +15,7 @@ export function registerGlobTool(registry: ToolRegistry, { config }: BuiltInTool
       const permission = (path: string) => searchPathPermissionAction(config, 'glob', path);
       const rootDenied = permission(target) === 'deny';
       const scope = rootDenied ? { asks: [], excluded: [] } : await inspectWorkspaceSearch(config.workspace, input.path, permission);
-      return { input: { ...input, approvedSearchAsks: scope.asks }, details: {
+      return { input: { ...input, approvedSearchAsks: scope.asks, approvedSearchRoot: target }, details: {
         requestedPath: input.path ?? '.', target,
         ...(scope.asks.length ? { searchAsk: JSON.stringify(scope.asks) } : {}),
       } };
@@ -25,6 +25,7 @@ export function registerGlobTool(registry: ToolRegistry, { config }: BuiltInTool
       input,
       (path) => searchPathPermissionAction(config, 'glob', path),
       input.approvedSearchAsks,
+      input.approvedSearchRoot,
     ),
   });
 }

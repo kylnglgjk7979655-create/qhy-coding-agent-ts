@@ -116,6 +116,7 @@ it('允许命令仍为重定向审批，cwd 按工作区解析且独立 shell �
 it('Bash 权限按完整命令和参数边界匹配，复合命令及命令替换逐条检查', async () => {
   await setup((_request, index) => index === 1 ? { calls: [
     bash('exact', { command: 'printf exact' }),
+    bash('exact-glob', { command: "printf '*.txt'" }),
     bash('prefix', { command: 'printf prefix value' }),
     bash('prefix-lookalike', { command: 'printf prefixish' }),
     bash('colon-denied', { command: 'touch blocked now' }),
@@ -125,7 +126,7 @@ it('Bash 权限按完整命令和参数边界匹配，复合命令及命令替�
     bash('unparseable', { command: 'printf "$(touch missing-close"' }),
   ] } : { content: '权限完成' }, () => ({ content: 'approve' }), {
     permissions: {
-      allow: ['Bash(printf exact)', 'Bash(printf prefix:*)'],
+      allow: ['Bash(printf exact)', "Bash(printf '*.txt')", 'Bash(printf prefix:*)'],
       deny: ['Bash(touch blocked:*)', 'Bash(touch denied-compound)', 'Bash(touch denied-substitution)', 'Bash(touch denied-arithmetic)'],
     },
   });
@@ -133,7 +134,7 @@ it('Bash 权限按完整命令和参数边界匹配，复合命令及命令替�
   expect(result.code, result.stderr).toBe(0);
   expect(fixture.requests.length, result.stdout + result.stderr).toBeGreaterThan(0);
   expect(results().map(({ is_error, error }) => ({ is_error, code: error?.code }))).toEqual([
-    { is_error: false, code: undefined }, { is_error: false, code: undefined }, { is_error: false, code: undefined },
+    { is_error: false, code: undefined }, { is_error: false, code: undefined }, { is_error: false, code: undefined }, { is_error: false, code: undefined },
     { is_error: true, code: 'PERMISSION_DENIED' },
     { is_error: true, code: 'PERMISSION_DENIED' }, { is_error: true, code: 'PERMISSION_DENIED' },
     { is_error: true, code: 'PERMISSION_DENIED' }, { is_error: true, code: 'INVALID_TOOL_ARGUMENTS' },

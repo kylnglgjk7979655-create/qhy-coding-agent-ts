@@ -58,8 +58,7 @@ const permissionRuleSchema = z.string().trim().min(1).refine((rule) => {
   if (!match) return false;
   const [, kind, argument] = match;
   if (['Read', 'Write', 'Glob', 'Grep'].includes(kind!)) return argument === undefined || argument.trim().length > 0;
-  if (kind === 'Bash') return argument !== undefined && argument.trim().length > 0
-    && (!/[?*]/u.test(argument) || argument.endsWith(':*'));
+  if (kind === 'Bash') return argument !== undefined && argument.trim().length > 0;
   if (kind === 'MCP') return argument === undefined || /^[a-z][a-z0-9-]{0,15}\/(?:\*|[^\s()*][^\s()]*)$/u.test(argument);
   return argument === undefined;
 }, '权限规则语法无效');

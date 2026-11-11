@@ -80,8 +80,12 @@ async function workspaceFiles(
   requestedPath?: string,
   permission?: SearchPermission,
   approvedAsks?: string[],
+  approvedRoot?: string,
 ): Promise<{ root: string; paths: string[]; excluded: string[]; asks: string[] }> {
   const root = await searchRoot(workspace, requestedPath);
+  if (approvedRoot !== undefined && root !== approvedRoot) {
+    throw new Error('搜索根目录在审批期间发生变化，需重新提交调用。');
+  }
   const files: string[] = [];
   const excluded: string[] = [];
   const asks: string[] = [];
@@ -183,8 +187,9 @@ export async function globWorkspace(
   input: SearchOptions,
   permission?: SearchPermission,
   approvedAsks?: string[],
+  approvedRoot?: string,
 ): Promise<{ paths: string[]; truncated: boolean; permission_excluded?: string[] }> {
-  const { root, paths: candidates, excluded } = await workspaceFiles(workspace, input.path, permission, approvedAsks);
+  const { root, paths: candidates, excluded } = await workspaceFiles(workspace, input.path, permission, approvedAsks, approvedRoot);
   const paths: string[] = [];
   let truncated = false;
   for (const path of candidates) {
@@ -204,9 +209,10 @@ export async function grepWorkspace(
   input: SearchOptions & { glob?: string | undefined },
   permission?: SearchPermission,
   approvedAsks?: string[],
+  approvedRoot?: string,
 ): Promise<{ matches: Array<{ path: string; line: number; text: string }>; truncated: boolean; permission_excluded?: string[] }> {
   const expression = new RegExp(input.pattern);
-  const { root, paths: candidates, excluded } = await workspaceFiles(workspace, input.path, permission, approvedAsks);
+  const { root, paths: candidates, excluded } = await workspaceFiles(workspace, input.path, permission, approvedAsks, approvedRoot);
   const matches: Array<{ path: string; line: number; text: string }> = [];
   let truncated = false;
 

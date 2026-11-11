@@ -209,6 +209,49 @@ it('搜索审批后新增的 ask 范围不会被未覆盖的先前批准放行',
   }
 });
 
+it.each(['glob', 'grep'] as const)('%s 外部搜索根在审批期间改向后拒绝搜索新目标', async (toolName) => {
+  const workspace = await mkdtemp(join(tmpdir(), 'qhy-search-root-change-work-'));
+  const outside = await mkdtemp(join(tmpdir(), 'qhy-search-root-change-outside-'));
+  let closeFixture: (() => Promise<void>) | undefined;
+  try {
+    const first = join(outside, 'first');
+    const second = join(outside, 'second');
+    await mkdir(first);
+    await mkdir(second);
+    await writeFile(join(first, 'first.txt'), 'needle approved target');
+    await writeFile(join(second, 'second.txt'), 'needle unapproved target');
+    await symlink(first, join(workspace, 'link'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1 ? { calls: [
+      { id: 'root-change', type: 'function', function: { name: toolName, arguments: JSON.stringify(
+        toolName === 'glob' ? { pattern: '*.txt', path: 'link' } : { pattern: 'needle', path: 'link' },
+      ) } },
+    ] } : { content: '搜索完成' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'default', timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 4,
+    };
+
+    await runAgent(config, '搜索获批目标', {
+      smokeTool: false,
+      approvalControl: async () => {
+        await rm(join(workspace, 'link'));
+        await symlink(second, join(workspace, 'link'));
+        return 'approve';
+      },
+    });
+
+    const result = JSON.parse(fixture.requests[1]!.messages.find(({ role }) => role === 'tool')!.content);
+    expect(result).toMatchObject({ is_error: true });
+    expect(JSON.stringify(result)).not.toContain('unapproved target');
+  } finally {
+    await closeFixture?.();
+    await rm(workspace, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
 it('工作区外 Glob 与 Grep 经逐次审批后返回搜索结果', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'qhy-external-search-work-'));
   const outside = await mkdtemp(join(tmpdir(), 'qhy-external-search-outside-'));
