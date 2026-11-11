@@ -35,15 +35,24 @@ const help = `用法：node dist/cli.js [选项]
 回答流式输出到 stdout；会话记录保存在用户目录 ~/.qhy-coding-agents/；交互模式隐藏运行 JSON 日志并显示可读错误。
 `;
 
+function isInteractiveTerminal(): boolean {
+  return Boolean(process.stdout.isTTY && process.stderr.isTTY);
+}
+
 function log(event: Record<string, unknown>): void {
-  if (process.stdout.isTTY && process.stderr.isTTY) return;
+  if (isInteractiveTerminal()) return;
   process.stderr.write(`${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`);
 }
 
 function formatUserError(error: unknown): string {
   const failure = publicError(error);
-  const code = process.stdout.isTTY && process.stderr.isTTY ? `（${failure.code}）` : '';
+  const code = isInteractiveTerminal() ? `（${failure.code}）` : '';
   return `错误${code}：${failure.message}`;
+}
+
+function reportCheckpointWarning(event: string, message: string, details: Record<string, unknown>): void {
+  if (isInteractiveTerminal()) process.stdout.write(`\n警告：${message}\n`);
+  else log({ event, ...details, message });
 }
 
 async function main(): Promise<void> {
@@ -360,7 +369,7 @@ async function main(): Promise<void> {
     cancellation.signal.throwIfAborted();
   } catch (error) {
     const failure = publicError(error);
-    if (process.stdout.isTTY && process.stderr.isTTY) process.stderr.write(`${formatUserError(failure)}\n`);
+    if (isInteractiveTerminal()) process.stderr.write(`${formatUserError(failure)}\n`);
     else {
       log({
         event: 'run.finished', runId: lastRunId, status: 'failed',
@@ -407,7 +416,7 @@ async function runTurn(
     if (!smokeTool) {
       const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
       roundId = await startSessionRound(userHome, conversationId, prompt, persistedConfig, () => {
-        log({ event: 'checkpoint.snapshot_failed', conversationId, message: '消息检查点文件快照失败，继续处理。' });
+        reportCheckpointWarning('checkpoint.snapshot_failed', '消息检查点文件快照失败，本轮继续处理。', { conversationId });
       });
       summaryCoverageBase = (await loadSession(userHome, conversationId)).summaries.at(-1)?.coversThrough ?? 0;
     }
@@ -442,7 +451,7 @@ async function runTurn(
         await recordFileBackup(userHome, conversationId, roundId, snapshot);
       },
       onCheckpointError: () => {
-        log({ event: 'checkpoint.backup_failed', conversationId, message: 'write_file 原状态备份失败，继续写入。' });
+        reportCheckpointWarning('checkpoint.backup_failed', 'write_file 原状态备份失败，继续写入。', { conversationId });
       },
       onToolEvent: ({ toolName, description, status }) => {
         if (toolName === 'Bash' && status === 'failed') bashFailed = true;
