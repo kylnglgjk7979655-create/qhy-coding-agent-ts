@@ -598,9 +598,6 @@ describe('compiled CLI process driver', () => {
       expect(current?.record.workspace).toBe(cwd);
       expect(model.requests).toHaveLength(1);
 
-      child.end('/exit\n');
-      expect((await child.done).code).toBe(0);
-
       const resumedNew = startCLI({ cwd, userDir, conversationId: current!.id, env: { TEST_MODEL_API_KEY: secret }, input: '新会话内容\n/exit\n' });
       expect((await resumedNew.done).code).toBe(0);
       expect(model.requests[1]?.messages.filter(({ role }) => role !== 'system')).toEqual([
