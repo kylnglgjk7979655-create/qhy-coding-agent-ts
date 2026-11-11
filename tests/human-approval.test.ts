@@ -315,6 +315,8 @@ it.skipIf(process.platform === 'win32')('默认人工等待上限为五分钟，
   await running.waitFor('approve 1');
   expect(running.output()).toContain('最多等待 300000ms');
   expect(running.output()).toContain('[人工审批 1] read_file');
+  // 审批提示与工具事件异步输出，等待拒绝事件后再检查，仍未答复人工审批。
+  await running.waitFor('runtimeInfo：拒绝');
   expect(running.output()).toContain('runtimeInfo：拒绝');
   expect(running.output()).not.toContain('runtimeInfo：开始');
   expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('内容-allowed');

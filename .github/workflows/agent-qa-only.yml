@@ -37,7 +37,7 @@ jobs:
       - name: Checkout trusted queue scripts
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Verify queued authorization
@@ -74,16 +74,21 @@ jobs:
         with:
           ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
+          path: worktree
           persist-credentials: false
 
       - name: Prepare comparison base
+        working-directory: worktree
         run: git -c credential.helper= -c 'credential.helper=!gh auth git-credential' fetch origin main:main
 
       - name: Setup Node.js and pnpm
         uses: ./.github/actions/setup
 
       - name: Build
-        run: pnpm build
+        working-directory: worktree
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
 
       - name: Restore Codex subscription
         id: auth
@@ -93,9 +98,12 @@ jobs:
           store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
 
       - name: Run QA Only agent
+        working-directory: worktree
         env:
           OUTPUT_DIR: ${{ runner.temp }}
-        run: pnpm agent:qa-only
+        run: |
+          export PATH="$GITHUB_WORKSPACE/node_modules/.bin:$PATH"
+          tsx "$GITHUB_WORKSPACE/.sandcastle/agent-workflows/qa-only/qa-only.ts"
 
       - name: Save refreshed Codex subscription
         if: always() && steps.auth.outputs.restored == 'true'

@@ -31,6 +31,7 @@ try {
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
     promptArgs: {
+      SKILLS_DIRECTORY: path.resolve(import.meta.dirname, '../../../.agents/skills'),
       PR_NUMBER,
       BRANCH,
       PR_TITLE: context.prTitle,

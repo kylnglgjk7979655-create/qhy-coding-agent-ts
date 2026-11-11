@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { trustedRuntime, workflowAgentStep } from './helpers/agent-workflow.js';
 
 const require = createRequire(import.meta.url);
 const queue = require('../.github/scripts/task-queue.cjs') as {
@@ -14,7 +15,8 @@ const queue = require('../.github/scripts/task-queue.cjs') as {
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'pr-stage-'));
-  const work = join(root, 'work');
+  const runtime = await trustedRuntime(root);
+  const work = join(runtime, 'worktree');
   const bin = join(root, 'bin');
   await Promise.all([mkdir(work), mkdir(bin)]);
   const git = (...args: string[]) => execFileSync('git', args, { cwd: work, encoding: 'utf8' }).trim();
@@ -37,12 +39,14 @@ else console.log('null');
 `, { mode: 0o755 });
   return {
     head,
-    run: (stage: string, mode = 'pass', pat = '') => execFileSync(process.execPath, [
+    run: (stage: string, mode = 'pass', pat = '') => execFileSync(stage === 'qa' ? 'bash' : process.execPath, stage === 'qa' ? [
+      '-e', '-o', 'pipefail', '-c', workflowAgentStep('agent-review.yml', 'Request automated QA').script,
+    ] : [
       '--import', require.resolve('tsx'),
       fileURLToPath(new URL('../.sandcastle/agent-workflows/tickets/control.ts', import.meta.url)), stage,
     ], { cwd: work, env: {
       ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, GH_REPO: 'owner/repo',
-      GH_TOKEN: 'fixture-builtin', AGENT_PAT: pat, PR_NUMBER: '2', BRANCH: 'agent/fixture',
+      GITHUB_WORKSPACE: runtime, GH_TOKEN: 'fixture-builtin', AGENT_PAT: pat, PR_NUMBER: '2', BRANCH: 'agent/fixture',
       HEAD_SHA: head, MODE: mode, CALLS: join(root, 'calls.jsonl'), GITHUB_RUN_ID: '123', OUTPUT_DIR: join(root, 'output'),
     }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 }),
     calls: async () => (await readFile(join(root, 'calls.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as {
@@ -74,6 +78,7 @@ describe('implement → CR → QA 的内部接续', () => {
     const h = await fixture();
     try {
       h.run('qa');
+      expect(workflowAgentStep('agent-review.yml', 'Request automated QA').workingDirectory).toBe('worktree');
       const calls = await h.calls();
       const record = queue.decodeRequest(calls.find((call) => call.method === 'POST' && call.resource.endsWith('/comments'))!.body!.body!);
       expect(record).toMatchObject({ kind: 'qa', workflow: 'agent-qa.yml', inputs: { expected_head_sha: h.head, authorization_label: 'agent:qa' } });
