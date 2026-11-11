@@ -4,7 +4,7 @@
 
 ## 首次配置
 
-将迁移后的配置合入默认分支 `main`，标签事件才会使用新 workflow。已有 PR 或父需求共享分支，先在 PR 添加 `agent:update-branch` 同步到包含新脚本的 main，再继续实现或审查；运行阶段脚本来自所检出的任务分支。
+将迁移后的配置合入默认分支 `main`，标签事件才会使用新 workflow。CR、QA、QA Only 和分支更新保留 workflow 对应提交的 runner 与依赖，被测 PR 按授权 SHA 检出到独立的 `worktree/`；在该目录运行产品检查和修复，从保留的版本读取 skill。旧 PR 无需先合并 QA 命令或 skill 即可进入验收。普通实现仍使用任务分支中的脚本；已有父需求共享分支继续实现前，先用 `agent:update-branch` 同步 main。
 
 ### 订阅认证
 
@@ -66,7 +66,7 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 
 ## QA 与 QA Only
 
-配置合入 `main` 后，为同仓库的开放 PR 添加 `agent:qa-only`。已有 PR 先同步到包含新 skill、prompt 和 runner 的 main。标签入口沿用订阅持久队列，绑定入队时的 PR HEAD；不直接运行真实模型 smoke，也不自动修复问题。
+配置合入 `main` 后，为同仓库的开放 PR 添加 `agent:qa-only`。runner、prompt 和 skill 使用 workflow 对应的固定版本，产品代码与依赖使用授权的 PR 快照。标签入口沿用订阅持久队列，绑定入队时的 PR HEAD；不直接运行真实模型 smoke，也不自动修复问题。
 
 ```bash
 gh label create agent:qa-only --color 5319E7 --description '只读功能验收：生成 QA plan、运行产品并报告证据' --force

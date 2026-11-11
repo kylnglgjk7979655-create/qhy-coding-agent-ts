@@ -19,7 +19,7 @@
 
 新增、修改和审查代码统一读取根目录 [CODING_STANDARDS.md](../../CODING_STANDARDS.md)，领域词汇来自 `GLOSSARY.md`，相关决策来自 `docs/adr/`。完成前执行 `pnpm check` 并修复失败；CI 另外运行 `pnpm demo:test`。代码检查不代表人工 QA 已执行。
 
-Agent 负责代码与提交；workflow 负责推送、PR、标签和评论。PR 仍由维护者决定合并，本次取消的是拆票审批和父 Issue 的单独关闭验收，不是 PR 合并控制。
+CR、QA 与 QA Only 的 runner、prompt 和 skill 使用 workflow 对应的固定版本；产品规范、代码及运行入口来自独立检出的 PR 工作目录。Agent 负责代码与提交；workflow 负责推送、PR、标签和评论。PR 仍由维护者决定合并，本次取消的是拆票审批和父 Issue 的单独关闭验收，不是 PR 合并控制。
 
 ## 调度
 

@@ -4,6 +4,8 @@
 
 主 Agent 负责调度。每次启动新的 subagent，在 fresh context 中运行对应 skill，关闭主对话历史继承，显式传入任务所需的 Spec 和输入。本任务明确授权使用 QA、implement 和 CR subagent。
 
+每个 subagent 从 `{{SKILLS_DIRECTORY}}/<skill>/SKILL.md` 读取对应 skill；相对引用按该 skill 文件所在目录解析。产品代码、项目规范和运行入口以当前 PR 工作目录为准。
+
 PR title: {{PR_TITLE}}
 Fixed point: `main`
 Initial HEAD: `{{INITIAL_HEAD}}`

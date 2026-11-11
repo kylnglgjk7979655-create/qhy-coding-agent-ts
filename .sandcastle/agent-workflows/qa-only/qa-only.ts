@@ -32,6 +32,7 @@ try {
     agent: codexAgent(), sandbox: noSandbox(), logging: { type: 'stdout' },
     promptFile: path.join(import.meta.dirname, 'prompt.md'),
     promptArgs: {
+      SKILLS_DIRECTORY: path.resolve(import.meta.dirname, '../../../.agents/skills'),
       PR_NUMBER: prNumber, BRANCH: branch, PR_TITLE: context.prTitle,
       SPEC: context.linkedIssue, PR_BODY: context.prBody,
       DIFF_TO_MAIN: context.diff, PR_COMMENTS_JSON: context.prCommentsJson,

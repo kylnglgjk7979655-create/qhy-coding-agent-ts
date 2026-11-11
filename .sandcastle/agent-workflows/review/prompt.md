@@ -2,7 +2,7 @@
 
 Review PR #{{PR_NUMBER}} on branch `{{BRANCH}}`.
 
-使用 $code-review skill 审查本 PR。向 skill 明确传入固定比较基准 `main`、下方 LINKED ISSUE 的完整需求上下文作为 Spec，以及根目录 `CODING_STANDARDS.md` 作为规范来源。父需求的 Spec 包含父 PRD 和全部子票，不以某一张子票替代整体需求。
+使用 $code-review skill 审查本 PR，读取 `{{SKILLS_DIRECTORY}}/code-review/SKILL.md`；相对引用按该 skill 所在目录解析。产品代码和项目规范以当前 PR 工作目录为准。向 skill 明确传入固定比较基准 `main`、下方 LINKED ISSUE 的完整需求上下文作为 Spec，以及根目录 `CODING_STANDARDS.md` 作为规范来源。父需求的 Spec 包含父 PRD 和全部子票，不以某一张子票替代整体需求。
 
 PR title: {{PR_TITLE}}
 Linked issue: #{{ISSUE_NUMBER}} {{ISSUE_TITLE}}

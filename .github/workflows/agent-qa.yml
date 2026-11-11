@@ -38,7 +38,7 @@ jobs:
       - name: Checkout trusted queue scripts
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Verify queued authorization
@@ -76,9 +76,11 @@ jobs:
         with:
           ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
+          path: worktree
           token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Prepare branch
+        working-directory: worktree
         run: |
           git fetch origin main:main
           git checkout -B "$BRANCH" "$BRANCH_HEAD_SHA"
@@ -89,7 +91,10 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Build
-        run: pnpm build
+        working-directory: worktree
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
 
       - name: Restore Codex subscription
         id: auth
@@ -103,9 +108,12 @@ jobs:
           printf '\n[features]\nmulti_agent = true\n' >> "$CODEX_HOME/config.toml"
 
       - name: Run QA agent
+        working-directory: worktree
         env:
           OUTPUT_DIR: ${{ runner.temp }}
-        run: pnpm agent:qa
+        run: |
+          export PATH="$GITHUB_WORKSPACE/node_modules/.bin:$PATH"
+          tsx "$GITHUB_WORKSPACE/.sandcastle/agent-workflows/qa/qa.ts"
 
       - name: Save refreshed Codex subscription
         if: always() && steps.auth.outputs.restored == 'true'
@@ -123,6 +131,7 @@ jobs:
           retention-days: 14
 
       - name: Push QA repairs
+        working-directory: worktree
         if: success()
         run: |
           set -euo pipefail

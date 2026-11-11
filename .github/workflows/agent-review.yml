@@ -45,7 +45,7 @@ jobs:
       - name: Checkout trusted queue scripts
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
 
       - name: Verify queued authorization
@@ -99,12 +99,14 @@ jobs:
         with:
           ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
+          path: worktree
           token: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
 
       - name: Prepare branch
+        working-directory: worktree
         run: |
           git fetch origin main:main || git fetch origin main
-          git checkout "$BRANCH" 2>/dev/null || git checkout -B "$BRANCH"
+          git checkout -B "$BRANCH" "$BRANCH_HEAD_SHA"
           git config user.name "sandcastle-agent[bot]"
           git config user.email "sandcastle-agent[bot]@users.noreply.github.com"
 
@@ -112,7 +114,10 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Build
-        run: pnpm build
+        working-directory: worktree
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
 
       - name: Restore Codex subscription
         id: auth
@@ -122,9 +127,12 @@ jobs:
           store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
 
       - name: Run review agent
+        working-directory: worktree
         env:
           OUTPUT_DIR: ${{ runner.temp }}
-        run: pnpm exec tsx .sandcastle/agent-workflows/review/review.ts
+        run: |
+          export PATH="$GITHUB_WORKSPACE/node_modules/.bin:$PATH"
+          tsx "$GITHUB_WORKSPACE/.sandcastle/agent-workflows/review/review.ts"
 
       - name: Save refreshed Codex subscription
         if: always() && steps.auth.outputs.restored == 'true'
@@ -133,6 +141,7 @@ jobs:
           store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
 
       - name: Push branch
+        working-directory: worktree
         if: success()
         run: |
           gh pr view "$PR_NUMBER" --json state,headRefOid,labels > "$RUNNER_TEMP/current-pr.json"
@@ -152,6 +161,7 @@ jobs:
           fi
 
       - name: Check review changes without PAT
+        working-directory: worktree
         if: success()
         env:
           AGENT_PAT: ${{ secrets.AGENT_PAT }}
@@ -191,8 +201,11 @@ jobs:
           done
 
       - name: Request automated QA
+        working-directory: worktree
         if: success() && steps.authorization.outputs.qa-after-review == 'true'
-        run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts qa
+        run: |
+          export PATH="$GITHUB_WORKSPACE/node_modules/.bin:$PATH"
+          tsx "$GITHUB_WORKSPACE/.sandcastle/agent-workflows/tickets/control.ts" qa
 
       - name: Mark blocked on failure
         if: failure()

@@ -11,6 +11,7 @@
 - 阶段 prompt 调用仓库固定版本的 `$to-tickets`、`$implement`、`$pr` 和 `$code-review`；项目规范统一在仓库根目录 `CODING_STANDARDS.md`。详细职责见 [skill-execution.md](../docs/agents/skill-execution.md)。
 - `agent:qa-only` 是项目自定义的独立验收入口，阶段 prompt 显式调用 `$qa-only`。只读运行、发布报告和证据，不修复、不提交、不改变 PR Ready 状态。
 - `agent:qa` 沿用阶段 prompt 编排：QA、implement、CR subagent 分别调用对应 skill。验收和审查只返回结果，prompt 负责安排修复及复验。普通 implement 发起的 CR 自动接续 QA；手动 CR 不接续，`implement-spec` 暂不接入。QA 通过后标记 Ready；同一问题达到三次修复上限时，报告保留次数和未解决问题。本地可用 `pnpm agent:qa`，不推送或发布。
+- CR、QA 与 QA Only 保留 workflow 对应提交的 runner、依赖和 skill，在独立的 PR `worktree/` 中运行；旧 PR 无需包含新增的 QA 命令。
 - 实现会话末尾用 `$pr` 编写文案，workflow 创建或更新 Draft PR；没有独立的 write-pr 模型会话。
 - 父需求按原生依赖逐票实施，共享分支与 PR。整体审查读取父需求及全部子票；合并 PR 后关闭父 Issue。
 

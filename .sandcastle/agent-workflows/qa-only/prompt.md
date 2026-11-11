@@ -33,7 +33,7 @@ PR title: {{PR_TITLE}}
 
 # EXECUTION
 
-读取 `AGENTS.md`、`docs/agents/skill-execution.md`、`GLOSSARY.md` 及相关 ADR。遵循仓库固定的 `.agents/skills/qa-only/SKILL.md`：先在 Artifacts directory 保存 `qa-plan.md`，再通过原生入口运行产品并保存脱敏证据。
+读取 `AGENTS.md`、`docs/agents/skill-execution.md`、`GLOSSARY.md` 及相关 ADR。遵循仓库固定的 `{{SKILLS_DIRECTORY}}/qa-only/SKILL.md`：先在 Artifacts directory 保存 `qa-plan.md`，再通过原生入口运行产品并保存脱敏证据。
 
 SPEC 已提供时直接使用。若显示没有关联 issue，按 skill 查找 spec；找不到时记录 blocked，不编造预期。每个本轮 acceptance criterion 都应对应检查；未执行项记录 not-run 或 blocked 及原因。
 

@@ -1,14 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { validate } from '../.sandcastle/agent-workflows/shared/common.js';
 import { qaWorkflowOutputSchema as qaOutputSchema, qaVerdict, renderQaReport } from '../.sandcastle/agent-workflows/qa/report.js';
 
-const require = createRequire(import.meta.url);
+import { trustedRuntime, workflowAgentStep } from './helpers/agent-workflow.js';
 const check = (status = 'pass', evidence = ['QA-001.log']) => ({
   id: 'QA-001', specReference: '#1 acceptance criterion 1',
   steps: '启动 CLI，输入指令，检查文件', expected: '文件内容为 done', actual: '文件内容为 done',
@@ -48,7 +46,9 @@ describe('QA 结果及证据', () => {
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), 'qa-runner-'));
-  const work = join(directory, 'work');
+  const runtime = await trustedRuntime(directory);
+  const work = join(runtime, 'worktree');
+  const agentStep = workflowAgentStep('agent-qa.yml','Run QA agent');
   const bin = join(directory, 'bin');
   const artifacts = join(directory, 'output');
   await Promise.all([mkdir(work), mkdir(bin), mkdir(artifacts)]);
@@ -57,6 +57,7 @@ async function fixture() {
   git('config', 'user.name', 'fixture');
   git('config', 'user.email', 'fixture@localhost');
   git('config', 'commit.gpgsign', 'false');
+  await writeFile(join(work, 'package.json'), JSON.stringify({ private: true, scripts: { 'agent:review': 'node -e \"console.log(1)\"' } }));
   await writeFile(join(work, 'product.txt'), 'before\n');
   git('add', '.'); git('commit', '-m', 'test: baseline');
   git('checkout', '-b', 'agent/qa-fixture');
@@ -123,11 +124,10 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,cached_i
     PR_NUMBER: '2', BRANCH: 'agent/qa-fixture', BRANCH_HEAD_SHA: head,
   };
   return {
-    directory, work, artifacts, head, git,
-    run: (mode = 'pass', overrides: Record<string, string> = {}) => execFileSync(process.execPath, [
-      '--import', require.resolve('tsx'),
-      fileURLToPath(new URL('../.sandcastle/agent-workflows/qa/qa.ts', import.meta.url)),
-    ], { cwd: work, env: { ...env, FIXTURE_MODE: mode, ...overrides }, timeout: 30_000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
+    directory, work, artifacts, head, git, runtime,
+    run: (mode = 'pass', overrides: Record<string, string> = {}) => execFileSync('bash', [
+      '-e', '-o', 'pipefail', '-c', agentStep.script,
+    ], { cwd: agentStep.workingDirectory ? join(runtime, agentStep.workingDirectory) : runtime, env: { ...env, GITHUB_WORKSPACE: runtime, FIXTURE_MODE: mode, ...overrides }, timeout: 30_000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
     cleanup: () => rm(directory, { recursive: true, force: true }),
   };
 }
@@ -136,7 +136,11 @@ describe('QA 的真实 runner 与提取协议', () => {
   it('显式调用 skill、传完整 spec，发布文件绑定 HEAD，产品和 GitHub 保持只读', async () => {
     const h = await fixture();
     try {
+      const productPackage = JSON.parse(await readFile(join(h.work, 'package.json'), 'utf8'));
+      expect(productPackage.scripts['agent:qa']).toBeUndefined();
+      await expect(readFile(join(h.work, '.agents/skills/qa-only/SKILL.md'))).rejects.toThrow();
       h.run();
+      expect(workflowAgentStep('agent-qa.yml','Run QA agent').workingDirectory).toBe('worktree');
       const result = JSON.parse(await readFile(join(h.artifacts, 'qa', 'result.json'), 'utf8'));
       expect(result).toMatchObject({ testedHead: h.head, fixedPoint: 'main', verdict: 'pass' });
       const report = await readFile(join(h.artifacts, 'qa', 'report.md'), 'utf8');
@@ -147,6 +151,9 @@ describe('QA 的真实 runner 与提取协议', () => {
       expect(calls.map((call) => call.extract)).toEqual([false, true]);
       expect(calls[0]?.prompt).toContain('使用 `$qa-only` skill');
       expect(calls[0]?.prompt).toContain('CLI 应写入 done');
+      const skills = await realpath(join(h.runtime, '.agents/skills'));
+      expect(calls[0]?.prompt).toContain(skills);
+      expect(await readFile(join(skills, 'qa-only/SKILL.md'), 'utf8')).toContain('name: qa-only');
       expect(calls[0]?.prompt).toContain(h.head);
       const githubCalls = (await readFile(join(h.directory, 'gh.jsonl'), 'utf8')).trim().split('\n')
         .map((line) => JSON.parse(line) as string[]);
