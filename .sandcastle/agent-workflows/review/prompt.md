@@ -48,4 +48,6 @@ Do not edit labels.
 Do not mark review threads resolved.
 Do not create GitHub comments yourself.
 
+本 Agent 阶段只在分支上创建提交并生成待发布审查结果；后续 workflow 负责推送及发布 COMMENT。运行总结须区分当前阶段与完整 workflow 状态：未观察到发布结果时，不得声称已推送或已发布，也不要把当前阶段尚未推送说成完整流程的最终状态。
+
 When complete, output `<promise>COMPLETE</promise>`.

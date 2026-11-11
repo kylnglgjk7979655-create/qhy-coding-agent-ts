@@ -76,7 +76,7 @@ if (args[0] !== 'exec') throw new Error('Unexpected Codex command');
 const prompt = fs.readFileSync(0, 'utf8');
 const phase = args.includes('resume') ? 'extract' : prompt.includes('Implement issue #1') ? 'implement' : 'review';
 const prior = fs.existsSync(process.env.MOCK_CALLS) ? fs.readFileSync(process.env.MOCK_CALLS,'utf8').trim().split('\\n').map(JSON.parse) : [];
-fs.appendFileSync(process.env.MOCK_CALLS, JSON.stringify({phase,args,home:process.env.CODEX_HOME,apiKey:process.env.CODEX_API_KEY,openaiKey:process.env.OPENAI_API_KEY})+'\\n');
+fs.appendFileSync(process.env.MOCK_CALLS, JSON.stringify({phase,args,home:process.env.CODEX_HOME,apiKey:process.env.CODEX_API_KEY,openaiKey:process.env.OPENAI_API_KEY,prompt})+'\\n');
 const sessionId = phase === 'implement' ? 'fixture-implement' : 'fixture-review';
 const sessions = path.join(process.env.CODEX_HOME, 'sessions', '2026', '11', '07');
 fs.mkdirSync(sessions, {recursive:true});
@@ -114,9 +114,12 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,cached_i
     expect(await readFile(join(output, 'pr_description.txt'), 'utf8')).toContain('Closes #1');
     run('review');
     const events = (await readFile(calls, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as {
-      phase: string; args: string[]; home: string; apiKey: string; openaiKey: string;
+      phase: string; args: string[]; home: string; apiKey: string; openaiKey: string; prompt: string;
     });
     expect(events.map((event) => event.phase)).toEqual(['implement', 'review', 'extract', 'extract']);
+    expect(events[0]?.prompt).toContain('workflow 在认证回存及校验成功后负责推送');
+    expect(events[0]?.prompt).toContain('CR 成功后由 workflow 接续 Agent QA');
+    expect(events[0]?.prompt).not.toContain('保留人工 QA 的待验证状态');
     for (const event of events) {
       expect(event.home).toBe(home);
       expect(event.apiKey).toBe(''); expect(event.openaiKey).toBe('');

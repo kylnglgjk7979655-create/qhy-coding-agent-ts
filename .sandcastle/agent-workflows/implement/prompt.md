@@ -48,7 +48,9 @@ Do not create or edit PRs.
 
 若有父 PRD，标题和总结围绕整个父需求，并通过 `gh api repos/$GH_REPO/issues/{{PR_ISSUE_NUMBER}}/sub_issues` 核对全部子票。清楚区分本轮已实现、之前已完成与仍待实现的内容；草稿 PR 不代表所有子任务已完成。
 
-Evidence 引用本会话实际执行的命令及结果；未获得修改前的运行证据时如实注明，不能把未运行、失败或未完成的检查写成通过。保留人工 QA 的待验证状态。Merge Danger 依 skill 说明回滚难度和影响范围。
+Evidence 只引用本会话实际执行的命令及结果；未获得修改前的运行证据时如实注明，不能把未运行、失败或未完成的检查写成通过。本会话只创建提交，当前 Agent 阶段尚未推送；workflow 在认证回存及校验成功后负责推送并创建或更新 Draft PR。描述状态时明确这是阶段时序，不得声称推送已经发生。
+
+普通 implement 后会自动请求整体 CR，CR 成功后由 workflow 接续 Agent QA。当前会话未执行这些后续阶段时，说明它们将由 workflow 接续；不得把它们描述成固定待办的人工 QA，也不得声称已通过。保留已有记录中人工 QA 实际已执行或待执行的事实；只有当前 Issue 或 Spec 明确要求人工 QA 时，才列为本轮待办。Merge Danger 依 skill 说明回滚难度和影响范围。
 
 把结果写入 `{{PR_METADATA_PATH}}`（位于仓库之外），JSON 格式为：
 
