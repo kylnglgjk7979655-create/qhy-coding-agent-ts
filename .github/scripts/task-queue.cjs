@@ -3,7 +3,9 @@ const ROUTES = {
   implement: { workflow: 'agent-implement.yml', label: 'agent:implement', target: 'issue_number' },
   'implement-spec': { workflow: 'agent-implement-spec.yml', label: 'agent:implement-spec', target: 'issue_number' },
   'implement-pr': { workflow: 'agent-implement-pr.yml', label: 'agent:implement', target: 'pr_number', sha: true },
-  review: { workflow: 'agent-review.yml', label: 'agent:review', target: 'pr_number', sha: true },
+  review: { workflow: 'agent-review.yml', label: 'agent:review', target: 'pr_number', sha: true, extra: ['qa_after_review'] },
+  qa: { workflow: 'agent-qa.yml', label: 'agent:qa', target: 'pr_number', sha: true },
+  'qa-only': { workflow: 'agent-qa-only.yml', label: 'agent:qa-only', target: 'pr_number', sha: true },
   'update-branch': { workflow: 'agent-update-branch.yml', label: 'agent:update-branch', target: 'pr_number', sha: true },
   explore: { workflow: 'agent-explore.yml', label: 'agent:explore', target: 'issue_number', extra: ['dry_run'] },
   split: { workflow: 'agent-to-issues.yml', label: 'agent:to-issues', target: 'issue_number' },
@@ -46,6 +48,8 @@ function isValidRoute(request) {
   if (Object.keys(request.inputs).some((key) => !allowed.has(key))
     || Object.values(request.inputs).some((value) => typeof value !== 'string')) return false;
   if (route.sha && (!request.inputs.expected_head_sha || !/^[a-f0-9]{40}$/i.test(request.inputs.expected_head_sha))) return false;
+  if (request.kind === 'review' && request.inputs.qa_after_review !== undefined
+    && !['true', 'false'].includes(request.inputs.qa_after_review)) return false;
   if (request.kind === 'explore' && !['true', 'false'].includes(request.inputs.dry_run)) return false;
   return true;
 }

@@ -34,7 +34,11 @@
     "to-tickets/SKILL.md": "56ec23c5b2782785d4e65bff9e315b6d3aeb4ef977c174a219e99489fada1995",
     "to-tickets/agents/openai.yaml": "21bc6215fffcd7614e9f772bb1760e87cc5fc7dcc707e7d282bc9414267a6090",
     "implement/SKILL.md": "91348548d8ec80def1bc4ac16dac48debb3079295c091a8dc6d9358e8dcf6f90",
-    "implement/agents/openai.yaml": "8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc"
+    "implement/agents/openai.yaml": "8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc",
+    "qa-only/CREDITS.md": "fe90cb121b576d499605bc78a78a82cff6a1afdd814cff699f2afec2b6572ad5",
+    "qa-only/SKILL.md": "da617621995f20758dc6e6bf8b4d1c8228e800f6a7630f9c8515f80a3b487b40",
+    "qa-only/agents/openai.yaml": "31f1106874de3035fd6d1e2237c52b8092c30bf1aae20d95ad1d4e557360c4a9",
+    "qa-only/report-template.md": "e46d5d2b80ee6a6dd13ca95faf5d2e0385a1d30a61a149365c7f19bfea5c8845"
   },
   "localSnapshots": {
     "implement-spec": {
@@ -53,6 +57,15 @@
       },
       "modifications": [
         "按用户要求移除完成后自动调用 code-review 的步骤。"
+      ]
+    }
+  },
+  "projectSkills": {
+    "qa-only": {
+      "description": "项目自定义的只读功能验收；方法参考 Matt 与 gstack，按标签独立调用。",
+      "references": [
+        "https://github.com/mattpocock/skills/tree/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+        "https://github.com/garrytan/gstack/tree/6b327148e37134e2628d2d20cd98f33dcbeef51c"
       ]
     }
   }

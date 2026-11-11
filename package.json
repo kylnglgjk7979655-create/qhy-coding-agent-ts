@@ -21,6 +21,8 @@
     "demo:init": "node scripts/init-demo.mjs",
     "agent:implement": "tsx .sandcastle/agent-workflows/implement/implement.ts",
     "agent:review": "tsx .sandcastle/agent-workflows/review/review.ts",
+    "agent:qa-only": "tsx .sandcastle/agent-workflows/qa-only/qa-only.ts",
+    "agent:qa": "tsx .sandcastle/agent-workflows/qa/qa.ts",
     "agent:implement-pr": "tsx .sandcastle/agent-workflows/implement-pr/implement-pr.ts",
     "agent:update-branch": "tsx .sandcastle/agent-workflows/update-branch/update-branch.ts",
     "agent:explore": "tsx .sandcastle/agent-workflows/explore/explore.ts",

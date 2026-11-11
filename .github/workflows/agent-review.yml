@@ -11,6 +11,11 @@ on:
         description: '由持久化订阅队列分发的请求编号'
         type: string
         required: true
+      qa_after_review:
+        description: '内部接续参数；实际授权以队列记录为准'
+        type: string
+        default: 'false'
+        required: false
       expected_head_sha:
         description: '入队时记录的 PR 分支版本'
         type: string
@@ -44,6 +49,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify queued authorization
+        id: authorization
         uses: ./.github/actions/queue-authorization
         with:
           queue-request-id: ${{ inputs.queue_request_id }}
@@ -161,7 +167,7 @@ jobs:
         run: gh api --method POST "repos/{owner}/{repo}/pulls/${PR_NUMBER}/reviews" --input "$PAYLOAD"
 
       - name: Mark PR ready
-        if: success()
+        if: success() && steps.authorization.outputs.qa-after-review != 'true'
         run: gh pr ready "$PR_NUMBER" || true
 
       - name: Post thread replies
@@ -183,6 +189,10 @@ jobs:
             fi
             gh api --method POST "repos/{owner}/{repo}/pulls/${PR_NUMBER}/comments/${rest_id}/replies" -f body="$body"
           done
+
+      - name: Request automated QA
+        if: success() && steps.authorization.outputs.qa-after-review == 'true'
+        run: pnpm exec tsx .sandcastle/agent-workflows/tickets/control.ts qa
 
       - name: Mark blocked on failure
         if: failure()

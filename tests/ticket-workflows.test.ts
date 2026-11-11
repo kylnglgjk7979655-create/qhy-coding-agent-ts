@@ -18,7 +18,7 @@ interface FixtureComment {
 }
 interface State {
   issues: Record<number, FixtureIssue>; parents: Record<number, number>; blockers: Record<number, number[]>;
-  comments: Record<number, FixtureComment[]>; pulls: { number: number; body: string; base: { ref: string }; head?: { ref: string; sha?: string; repo?: { full_name: string } }; draft?: boolean; labels?: { name: string }[] }[];
+  comments: Record<number, FixtureComment[]>; pulls: { number: number; state?: string; body: string; base: { ref: string }; head?: { ref: string; sha?: string; repo?: { full_name: string } }; draft?: boolean; labels?: { name: string }[] }[];
   requests: { method: string; resource: string; token: string; body?: unknown }[]; failNext?: string;
   runs?: { path: string; status: string }[];
 }
@@ -221,11 +221,11 @@ describe('GitHub 自动拆票和依赖队列的真实控制脚本', () => {
     }));
   }, 30_000);
 
-  it('无 PAT 时显式调度 Check 并将 Review 放入持久队列，有 PAT 时只贴标签避免重复启动', () => {
+  it('实现发起的 Review 有无 PAT 都写入持久队列，仅无 PAT 时显式调度 Check', () => {
     const h = harness();
     h.update((state) => {
       state.issues[90] = issue(90);
-      state.pulls = [{ number: 90, body: '', base: { ref: 'main' }, head: { ref: 'branch', sha: 'a'.repeat(40), repo: { full_name: 'owner/repo' } } }];
+      state.pulls = [{ number: 90, state: 'open', body: '', base: { ref: 'main' }, head: { ref: 'agent/issue-24', sha: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), repo: { full_name: 'owner/repo' } } }];
     });
     h.ok('review', { PR_NUMBER: '90', BRANCH: 'agent/issue-24', AGENT_PAT: '' });
     expect(h.read().requests.filter((entry) => entry.resource.endsWith('/dispatches'))).toMatchObject([
@@ -235,7 +235,10 @@ describe('GitHub 自动拆票和依赖队列的真实控制脚本', () => {
     expect(h.read().comments[90]?.map((comment) => comment.body).join('\n')).toContain('<!-- agent-subscription-queue:v1 ');
     h.update((state) => { state.requests = []; state.issues[90]!.labels = []; });
     h.ok('review', { PR_NUMBER: '90', BRANCH: 'agent/issue-24' });
-    expect(h.read().requests).toMatchObject([{ method: 'POST', resource: 'issues/90/labels', token: 'dispatch-token' }]);
+    expect(h.read().requests).toContainEqual(expect.objectContaining({ method: 'POST', resource: 'issues/90/labels', token: 'github-token' }));
+    expect(h.read().requests.filter((entry) => entry.resource.endsWith('/dispatches'))).toMatchObject([
+      { resource: 'actions/workflows/agent-queue.yml/dispatches', body: { ref: 'main', inputs: {} } },
+    ]);
   });
 
   it('失败子票不被自动重试，人工重加 implement 后才允许重试；推送前重新检查依赖', () => {
