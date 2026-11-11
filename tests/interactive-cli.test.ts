@@ -104,6 +104,13 @@ describe('interactive compiled CLI', () => {
     return stderr.trim().split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line) as Record<string, unknown>);
   }
 
+  it('documents both commands that start a new conversation', async () => {
+    const result = await run('', ['--help']);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('/new');
+    expect(result.stdout).toContain('/clear');
+  });
+
   it('accepts multiple ordered turns until /exit and persists their full exchange', async () => {
     reply = (_request, index) => ({ body: response(`第${index}轮回答。`) });
     const result = await run('第一条\n第二条\n/exit\n');

@@ -21,6 +21,7 @@ const help = `用法：node dist/cli.js [选项]
 
 启动后直接进入交互式对话，输入 /exit 结束。
   /new                 在当前工作区新建会话
+  /clear               新建会话（等同于 /new）
   /resume [ID]         继续会话；省略 ID 时用方向键选择，/resume all 查看全部
   /rewind              预览并确认恢复到消息级文件检查点
 
@@ -235,7 +236,7 @@ async function main(): Promise<void> {
         continue;
       }
       if (prompt === '/exit') break;
-      if (prompt === '/new') {
+      if (prompt === '/new' || prompt === '/clear') {
         const id = newConversationId();
         const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
         await createSession(userHome, { id, workspace: config.workspace, config: persistedConfig });

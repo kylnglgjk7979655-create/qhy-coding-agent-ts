@@ -570,7 +570,7 @@ describe('compiled CLI process driver', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('creates an empty session with /new and keeps the previous session', async () => {
+  it.skipIf(process.platform === 'win32').each(['/new', '/clear'])('creates an empty session with %s and keeps the previous session', async (command) => {
     const cwd = await directory('new-session-cwd');
     const userDir = await directory('new-session-user');
     const model = await startLocalOpenAIModel(() => ({ content: '回答' }));
@@ -578,7 +578,9 @@ describe('compiled CLI process driver', () => {
       await configure(cwd, model.baseURL);
       let output = '';
       const child = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
-      child.send('/new\n');
+      child.send('保留的原对话\n');
+      await waitForOutput(() => output, '回答', 1);
+      child.send(`${command}\n`);
       await waitForOutput(() => output, '已新建会话：', 1);
       child.end('/exit\n');
       expect((await child.done).code).toBe(0);
@@ -586,12 +588,28 @@ describe('compiled CLI process driver', () => {
       const sessionRoot = join(userDir, '.qhy-coding-agents', 'sessions');
       const ids = await readdir(sessionRoot);
       expect(ids).toHaveLength(2);
-      const records = await Promise.all(ids.map(async (id) => JSON.parse(await readFile(join(sessionRoot, id, 'record.json'), 'utf8')) as { workspace: string; transcript: unknown[] }));
-      expect(records).toEqual(expect.arrayContaining([
-        expect.objectContaining({ workspace: cwd, transcript: [] }),
-        expect.objectContaining({ workspace: cwd, transcript: [] }),
-      ]));
-      expect(model.requests).toHaveLength(0);
+      const records = await Promise.all(ids.map(async (id) => ({
+        id,
+        record: JSON.parse(await readFile(join(sessionRoot, id, 'record.json'), 'utf8')) as { workspace: string; transcript: unknown[] },
+      })));
+      const previous = records.find(({ record }) => JSON.stringify(record.transcript).includes('保留的原对话'));
+      const current = records.find(({ record }) => record.transcript.length === 0);
+      expect(previous?.record.workspace).toBe(cwd);
+      expect(current?.record.workspace).toBe(cwd);
+      expect(model.requests).toHaveLength(1);
+
+      child.end('/exit\n');
+      expect((await child.done).code).toBe(0);
+
+      const resumedNew = startCLI({ cwd, userDir, conversationId: current!.id, env: { TEST_MODEL_API_KEY: secret }, input: '新会话内容\n/exit\n' });
+      expect((await resumedNew.done).code).toBe(0);
+      expect(model.requests[1]?.messages.filter(({ role }) => role !== 'system')).toEqual([
+        { role: 'user', content: '新会话内容' },
+      ]);
+
+      const resumed = startCLI({ cwd, userDir, conversationId: previous!.id, env: { TEST_MODEL_API_KEY: secret }, input: '恢复旧对话\n/exit\n' });
+      expect((await resumed.done).code).toBe(0);
+      expect(JSON.stringify(model.requests[2])).toContain('保留的原对话');
     } finally {
       await model.close();
     }
