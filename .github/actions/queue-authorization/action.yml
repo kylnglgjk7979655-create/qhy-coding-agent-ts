@@ -9,10 +9,6 @@ inputs:
     required: true
   expected-head-sha:
     required: false
-outputs:
-  qa-after-review:
-    description: '仅实现流程创建的审查请求自动接续 QA'
-    value: ${{ steps.authorize.outputs.qa-after-review }}
 runs:
   using: composite
   steps:
@@ -47,7 +43,6 @@ runs:
           if (!request) {
             throw new Error('队列请求不存在、未领取或不属于当前工作流。');
           }
-          core.setOutput('qa-after-review', request.kind === 'review' && request.inputs.qa_after_review === 'true' ? 'true' : 'false');
           const { data: source } = await github.rest.issues.get({ ...context.repo, issue_number: number });
           const labels = source.labels.map((label) => typeof label === 'string' ? label : label.name);
           if (source.state !== 'open' || !labels.includes(request.inputs.authorization_label)) {

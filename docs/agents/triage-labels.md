@@ -18,9 +18,9 @@
 | `agent:implement` | Issue：开始或恢复实现；PR：处理已有反馈 |
 | `agent:implement-spec` | 父 Issue：对已有子任务按 `implement-spec` 并行实现并交付集成 PR，不拆票 |
 | `agent:queued` | Issue／父 Issue：保留实现授权，等待依赖或下一张子票 |
-| `agent:review` | PR：整体审查、允许修复并发布 COMMENT；手动 CR 标记 Ready，implement 发起的 CR 自动接 QA |
-| `agent:qa` | PR：验收、implement 修复、CR 和复验；发布报告，全部通过后标记 Ready |
-| `agent:qa-only` | 同仓库开放 PR：只读功能验收，发布 QA 报告与证据，不修复、不提交、不改变 Ready |
+| `agent:review` | PR：整体审查、允许修复并发布 COMMENT；成功后标记 Ready，不自动接续 QA |
+| `agent:qa` | PR：手动按需触发验收、implement 修复、CR 和复验；发布报告，全部通过后标记 Ready |
+| `agent:qa-only` | 同仓库开放 PR：手动按需触发只读功能验收，发布 QA 报告与证据，不修复、不提交、不改变 Ready |
 | `agent:update-branch` | 同仓库 PR：合并基准分支并处理冲突 |
 | `agent:explore` | 批量调查开放的 explore Issue，识别重复并转交 |
 | `agent:in-progress` | 当前任务执行中 |

@@ -21,7 +21,6 @@ export function requestPrStage(github: GitHub, pr: number, stage: 'review' | 'qa
     kind: stage, number: pr, workflow: `agent-${stage}.yml`,
     inputs: {
       pr_number: String(pr), authorization_label: `agent:${stage}`, expected_head_sha: head,
-      ...(stage === 'review' ? { qa_after_review: 'true' } : {}),
     },
   });
 }

@@ -12,7 +12,7 @@ on:
         type: string
         required: true
       qa_after_review:
-        description: '内部接续参数；实际授权以队列记录为准'
+        description: '兼容旧队列参数；当前不自动接续 QA'
         type: string
         default: 'false'
         required: false
@@ -177,7 +177,7 @@ jobs:
         run: gh api --method POST "repos/{owner}/{repo}/pulls/${PR_NUMBER}/reviews" --input "$PAYLOAD"
 
       - name: Mark PR ready
-        if: success() && steps.authorization.outputs.qa-after-review != 'true'
+        if: success()
         run: gh pr ready "$PR_NUMBER" || true
 
       - name: Post thread replies
@@ -199,13 +199,6 @@ jobs:
             fi
             gh api --method POST "repos/{owner}/{repo}/pulls/${PR_NUMBER}/comments/${rest_id}/replies" -f body="$body"
           done
-
-      - name: Request automated QA
-        working-directory: worktree
-        if: success() && steps.authorization.outputs.qa-after-review == 'true'
-        run: |
-          export PATH="$GITHUB_WORKSPACE/node_modules/.bin:$PATH"
-          tsx "$GITHUB_WORKSPACE/.sandcastle/agent-workflows/tickets/control.ts" qa
 
       - name: Mark blocked on failure
         if: failure()

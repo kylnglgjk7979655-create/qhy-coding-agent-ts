@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { trustedRuntime, workflowAgentStep } from './helpers/agent-workflow.js';
+import { trustedRuntime } from './helpers/agent-workflow.js';
 
 const require = createRequire(import.meta.url);
 const queue = require('../.github/scripts/task-queue.cjs') as {
@@ -39,9 +39,7 @@ else console.log('null');
 `, { mode: 0o755 });
   return {
     head,
-    run: (stage: string, mode = 'pass', pat = '') => execFileSync(stage === 'qa' ? 'bash' : process.execPath, stage === 'qa' ? [
-      '-e', '-o', 'pipefail', '-c', workflowAgentStep('agent-review.yml', 'Request automated QA').script,
-    ] : [
+    run: (stage: string, mode = 'pass', pat = '') => execFileSync(process.execPath, [
       '--import', require.resolve('tsx'),
       fileURLToPath(new URL('../.sandcastle/agent-workflows/tickets/control.ts', import.meta.url)), stage,
     ], { cwd: work, env: {
@@ -56,29 +54,31 @@ else console.log('null');
   };
 }
 
-describe('implement → CR → QA 的内部接续', () => {
-  it.each(['', 'fixture-pat'])('实现发起 CR 时保留 QA 接续，不因 PAT 配置重复入队：%s', async (pat) => {
+describe('默认实现审查与按需 QA', () => {
+  it.each(['', 'fixture-pat'])('实现仅请求 CR，不接续 QA，也不因 PAT 配置重复入队：%s', async (pat) => {
     const h = await fixture();
     try {
       h.run('review', 'pass', pat);
       const calls = await h.calls();
       const comments = calls.filter((call) => call.resource.endsWith('/comments') && call.method === 'POST');
       expect(comments).toHaveLength(1);
-      expect(queue.decodeRequest(comments[0]!.body!.body!)).toMatchObject({
+      const record = queue.decodeRequest(comments[0]!.body!.body!);
+      expect(record).toMatchObject({
         kind: 'review', workflow: 'agent-review.yml',
-        inputs: { expected_head_sha: h.head, qa_after_review: 'true', authorization_label: 'agent:review' },
+        inputs: { expected_head_sha: h.head, authorization_label: 'agent:review' },
       });
+      expect(record!.inputs.qa_after_review).toBeUndefined();
+      expect(calls.find((call) => call.resource.endsWith('/labels'))?.body?.labels).toEqual(['agent:review']);
       expect(calls.every((call) => call.usesBuiltinToken)).toBe(true);
       expect(calls.filter((call) => call.resource.endsWith('agent-queue.yml/dispatches'))).toHaveLength(1);
       expect(calls.filter((call) => call.resource.endsWith('check.yml/dispatches'))).toHaveLength(pat ? 0 : 1);
     } finally { await h.cleanup(); }
   });
 
-  it('CR 接续的是可修复 QA，不是 QA Only，也不建立新的 CR 外层循环', async () => {
+  it('保留显式请求可修复 QA 的控制入口', async () => {
     const h = await fixture();
     try {
       h.run('qa');
-      expect(workflowAgentStep('agent-review.yml', 'Request automated QA').workingDirectory).toBe('worktree');
       const calls = await h.calls();
       const record = queue.decodeRequest(calls.find((call) => call.method === 'POST' && call.resource.endsWith('/comments'))!.body!.body!);
       expect(record).toMatchObject({ kind: 'qa', workflow: 'agent-qa.yml', inputs: { expected_head_sha: h.head, authorization_label: 'agent:qa' } });
@@ -95,7 +95,7 @@ describe('implement → CR → QA 的内部接续', () => {
     } finally { await h.cleanup(); }
   });
 
-  it.each([undefined, 'false', 'true'])('队列授权从持久化记录读取 QA 接续：%s', async (flag) => {
+  it.each([undefined, 'false', 'true'])('兼容旧审查请求的 QA 字段，但不输出自动接续授权：%s', async (flag) => {
     const source = readFileSync(new URL('../.github/actions/queue-authorization/action.yml', import.meta.url), 'utf8');
     const script = source.split('        script: |\n')[1]!.split('\n').map((line) => line.slice(10)).join('\n');
     const record = { version: 1, id: 'request', number: 2, kind: 'review', workflow: 'agent-review.yml', status: 'running', runId: 99,
@@ -108,6 +108,6 @@ describe('implement → CR → QA 的内部接续', () => {
     }, { repo: { owner: 'owner', repo: 'repo' }, runId: 99 }, { setOutput: (key: string, value: string) => { outputs[key] = value; } }, {
       env: { ITEM_NUMBER: '2', QUEUE_REQUEST_ID: 'request', EXPECTED_WORKFLOW: 'agent-review.yml' },
     });
-    expect(outputs['qa-after-review']).toBe(flag === 'true' ? 'true' : 'false');
+    expect(outputs['qa-after-review']).toBeUndefined();
   });
 });

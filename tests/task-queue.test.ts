@@ -171,7 +171,7 @@ describe('订阅 Agent 持久化队列', () => {
     }));
   });
 
-  it('手动 CR 不带自动 QA 接续；只有内部 review 请求可记录明确布尔值', async () => {
+  it('手动 CR 不带 QA 接续字段；旧 review 请求的布尔值仍可解析', async () => {
     const h = fixture();
     const manual = request('manual', 12, '2026-11-08T10:01:00Z', 'review', 'agent-review.yml');
     await queue.enqueue({ github: h.github, context, request: manual });

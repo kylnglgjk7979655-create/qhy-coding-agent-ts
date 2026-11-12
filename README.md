@@ -380,7 +380,7 @@ pnpm exec node dist/cli.js --workspace ./demo 2> run.jsonl
 
 按需功能验收：为同仓库开放 PR 添加 `agent:qa-only`，独立 prompt 显式调用 `$qa-only`，生成 QA plan、运行产品并发布报告和证据，不修复或提交。添加 `agent:qa` 则执行验收、修复、CR 和复验。使用及恢复见 [QA 指南](docs/agents/github-actions.md#qa-与-qa-only)。
 
-仓库的 GitHub Actions 采用 Sandcastle 官方仓库的 Explore、Issue 实现、PR 审查、反馈修改和分支更新流程，模型继续使用 Codex 订阅。给独立 Issue 添加 `agent:implement` 后，Agent 实现并提交，workflow 创建草稿 PR 并通过 `agent:review` 请求审查；该自动 CR 完成后接续 `agent:qa`，QA 通过后标记 Ready，由人决定合并。手动 `agent:review` 不接续 QA，`implement-spec` 暂不接入 QA。`agent:explore` 会批量调查，自动转交明确任务并关闭重复 Issue；`ready-for-agent` 仅表示准备状态。普通实现支持按依赖逐票完成父需求，共用分支和 Draft PR，全部完成后整体 CR 和 QA；`agent:to-issues` 用于创建原生子 Issue 与依赖。定时架构审查未启用。
+仓库的 GitHub Actions 采用 Sandcastle 官方仓库的 Explore、Issue 实现、PR 审查、反馈修改和分支更新流程，模型继续使用 Codex 订阅。给独立 Issue 添加 `agent:implement` 后，Agent 实现并提交，workflow 创建草稿 PR 并通过 `agent:review` 请求审查；CR 成功后直接标记 Ready，由人决定合并。默认不触发 QA，QA skill 和 workflow 保留为手动按需入口。`agent:explore` 会批量调查，自动转交明确任务并关闭重复 Issue；`ready-for-agent` 仅表示准备状态。普通实现支持按依赖逐票完成父需求，共用分支和 Draft PR，全部完成后整体 CR；`agent:to-issues` 用于创建原生子 Issue 与依赖。定时架构审查未启用。
 
 首次使用需把配置合入 GitHub 默认分支，并设置 `CODEX_AUTH_JSON`（CI 专用订阅登录）和 `CODEX_AUTH_STORE_PAT`（保存刷新结果）。工作流只在私有仓库运行，不需要 OpenAI API Key。完整配置与使用命令见 [GitHub Actions 与 Codex 订阅](docs/agents/github-actions.md)。
 

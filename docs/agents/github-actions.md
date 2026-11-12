@@ -25,7 +25,7 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 
 父需求共享 PR 的子任务之间优先使用 `AGENT_PAT` 重新给父 Issue 添加 `agent:implement` 接续；未配置 PAT 时，完成脚本直接把父票接续写入持久队列。内置 Token 推送后仍显式调度分支的 `Check` 和同仓库 PR 的 `Agent Review`，审查产生新提交时再对新版本调度 `Check`。GitHub 官方将 dispatch 列为 GITHUB_TOKEN 不触发后续 workflow 的例外，来源见[调查记录](../notes/course-video-manager-ticket-workflows.md#无-agent_pat-时的内部接续)。
 
-配置 `AGENT_PAT`：权限至少为本仓库 **Contents、Issues、Pull requests → Read and write**，推送 workflow 修改时另需 **Workflows → Read and write**。配置后使用该 Token 推送和贴父任务接续标签，由 ingress 记录队列请求。普通 implement → CR → QA 的接续统一使用内置 Token 写持久队列，以保留来源并避免 PAT 标签事件重复入队。没有 PAT 时，内置 Token 通过持久队列完成内部接续；对不会触发后续 workflow 的推送，脚本会显式 dispatch 检查流程。
+配置 `AGENT_PAT`：权限至少为本仓库 **Contents、Issues、Pull requests → Read and write**，推送 workflow 修改时另需 **Workflows → Read and write**。配置后使用该 Token 推送和贴父任务接续标签，由 ingress 记录队列请求。普通 implement → CR 的接续统一使用内置 Token 写持久队列，CR 成功后标记 Ready，不自动接续 QA。没有 PAT 时，内置 Token 通过持久队列完成内部接续；对不会触发后续 workflow 的推送，脚本会显式 dispatch 检查流程。
 
 | Secret / Variable | 用途 |
 | --- | --- |
@@ -43,9 +43,9 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 | 父 Issue：`agent:to-issues` | 调用 `$to-tickets`，校验需求后自动创建子 Issue 和原生依赖 |
 | Issue／父 Issue：`agent:implement` | 调用 `$implement`；完成后同会话调用 `$pr`，workflow 推送并创建／更新 Draft PR |
 | 父 Issue：`agent:implement-spec` | 使用已有原生子 Issue 和依赖，在单次 Codex 会话内并行委派实现、整体审查并交付 PR；不拆票 |
-| PR：`agent:review` | 调用 `$code-review`，读取完整 spec 并发布 COMMENT；手动 CR 完成后标记 Ready，implement 发起的 CR 完成后接 QA |
-| PR：`agent:qa` | 验收、委派 implement 修复、CR 和复验，发布报告及证据；通过后标记 Ready |
-| PR：`agent:qa-only` | 显式调用 `$qa-only`，读取完整 spec，实际运行验收并发布报告和证据；保持代码与 Ready 状态不变 |
+| PR：`agent:review` | 调用 `$code-review`，读取完整 spec 并发布 COMMENT；成功后标记 Ready，不自动接续 QA |
+| PR：`agent:qa` | 手动按需验收、委派 implement 修复、CR 和复验，发布报告及证据；通过后标记 Ready |
+| PR：`agent:qa-only` | 手动按需显式调用 `$qa-only`，读取完整 spec，实际运行验收并发布报告和证据；保持代码与 Ready 状态不变 |
 | PR：评论后加 `agent:implement` | 处理反馈，需要改代码时调用 `$implement` |
 | PR：`agent:update-branch` | 合并最新基准；有冲突时调用 Agent |
 | Issue：`agent:explore` | 批量调查全部开放的 explore Issue，识别重复、发布结论和转交 |
@@ -62,11 +62,13 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 5. workflow 验证 PR 元数据、保存刷新登录态、复查依赖后推送，创建或更新 PR。共享 PR 的正文包含 `Closes #父编号`；独立 Issue 的 PR 关闭自身。旧共享分支先更新到包含新脚本的 main，下一轮实现才会更新正文。若旧 PR 已完成所有实现，合并前需确认正文已含父票关闭指令。
 6. 子票提交到共享 PR 后以 completed 关闭，然后自动接续下一票。有 PAT 时重新贴父票 implement；未配置时直接记录持久队列请求。同父共享 PR 不阻塞后续票，其他开放实现 PR 仍可能阻塞依赖。
 7. 全部子票 completed 后移除父需求 queued，请求整体 CR。审查上下文通过原生父子关系显式读取父 PRD、全部子票及评论；旧 PR 首条 Closes 指向子票时同样会定位父需求。
-8. Review 发布 COMMENT，自动接续 QA；QA 验收并在需要时委派修复、CR、复验，通过后标记 PR Ready。手动添加 `agent:review` 不自动接续 QA。Check 独立执行 `pnpm check` 和 `pnpm demo:test`。维护者决定合并，合入 main 后 GitHub 自动关闭父 Issue，无需再单独验收关闭父票。共享 PR 不自动合并。
+8. Review 发布 COMMENT，成功后直接标记 PR Ready。默认流程不运行 QA，QA skill 和 workflow 保留为手动按需入口。Check 独立执行 `pnpm check` 和 `pnpm demo:test`。维护者决定合并，合入 main 后 GitHub 自动关闭父 Issue，无需再单独验收关闭父票。共享 PR 不自动合并。
 
 ## QA 与 QA Only
 
-配置合入 `main` 后，为同仓库的开放 PR 添加 `agent:qa-only`。runner、prompt 和 skill 使用 workflow 对应的固定版本，产品代码与依赖使用授权的 PR 快照。标签入口沿用订阅持久队列，绑定入队时的 PR HEAD；不直接运行真实模型 smoke，也不自动修复问题。
+QA 默认不参与自动交付流程；验收环境由维护者按项目需要准备。保留 QA skill、workflow、标签及本地命令，需要时显式触发。
+
+配置合入 `main` 后，为同仓库的开放 PR 手动添加 `agent:qa-only`。runner、prompt 和 skill 使用 workflow 对应的固定版本，产品代码与依赖使用授权的 PR 快照。标签入口沿用订阅持久队列，绑定入队时的 PR HEAD；不直接运行真实模型 smoke，也不自动修复问题。
 
 ```bash
 gh label create agent:qa-only --color 5319E7 --description '只读功能验收：生成 QA plan、运行产品并报告证据' --force
@@ -79,7 +81,7 @@ gh pr edit <PR编号> --add-label agent:qa-only
 
 fail / blocked 会使该次 workflow 失败并标记 `agent:blocked`，但不改变 PR 的 Draft/Ready 状态。处理原因后重新添加 `agent:qa-only`；失败不会自动重试。运行失败时仍尝试保存已生成的证据。人工 QA 的已执行、待执行状态独立保留。
 
-`agent:qa` 是验收与修复入口，`agent:qa-only` 保留为只读报告入口，两者均使用只读的 `$qa-only` skill。普通 implement 完成后自动请求整体 CR，并在持久队列记录 `qa_after_review=true`；该 CR 成功后排队 QA。手动添加 `agent:review` 不记录接续标志，不自动运行 QA。`implement-spec` 暂不接入。
+`agent:qa` 是验收与修复入口，`agent:qa-only` 是只读报告入口，两者均使用只读的 `$qa-only` skill，均需显式触发。普通 implement 完成后只自动请求整体 CR，CR 成功后直接标记 Ready。旧队列中的 `qa_after_review` 参数保留兼容，但不再触发 QA，也不阻止 CR 标记 Ready。
 
 ```bash
 gh label create agent:qa --color 5319E7 --description '功能验收、修复、CR 和复验' --force
@@ -88,7 +90,7 @@ gh pr edit <PR编号> --add-label agent:qa
 
 QA 主 Agent 只调度，在独立上下文中分别启动 QA、implement 和 CR subagent，显式调用 `$qa-only`、`$implement` 和 `$code-review`。发现范围内缺陷后由 implement 修复并提交，CR 只返回 findings；新增修改重新经过 CR 和 QA。范围外旧问题仅记录。同一问题最多三次修复，CR 后修复也计入；达到上限时报告 fail、累计次数及剩余问题，不因更换 subagent 重置。
 
-workflow 保存刷新登录态、确认远程 PR 仍为入队版本后推送修复，并发布最终版本的报告。`qa-PR编号-run编号` artifact 保存 spec、各轮计划、证据和结果，保留 14 天。通过结果必须绑定实际复验的最终 HEAD，有修复时还必须绑定最后一次通过 CR 的 HEAD。fail / blocked 也发布报告，然后标记 `agent:blocked`；失败不会自动重试。只有 QA 通过才将普通自动链路的 Draft PR 标记 Ready。
+workflow 保存刷新登录态、确认远程 PR 仍为入队版本后推送修复，并发布最终版本的报告。`qa-PR编号-run编号` artifact 保存 spec、各轮计划、证据和结果，保留 14 天。通过结果必须绑定实际复验的最终 HEAD，有修复时还必须绑定最后一次通过 CR 的 HEAD。fail / blocked 也发布报告，然后标记 `agent:blocked`；失败不会自动重试。显式运行 `agent:qa` 时，只有 QA 通过才由该工作流将 Draft PR 标记 Ready；默认流程的 Ready 状态由 CR 完成后设置。
 
 本地验收并修复时，在待验收分支设置 `PR_NUMBER`、`BRANCH` 和可读仓库的 `GH_REPO`，运行 `pnpm agent:qa`。该命令会提交修复，不推送或发布 GitHub 结果；`OUTPUT_DIR` 必须位于仓库外，每次使用新的输出目录。产品文件变化检测不提供操作系统沙箱；测试副作用应限定到隔离 fixture。
 
