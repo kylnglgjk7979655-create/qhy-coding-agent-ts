@@ -1,5 +1,18 @@
 # 基础 CLI 验收记录
 
+## Issue #101 权限策略文档同步与回归验收
+
+日期：2026-11-10。分支 `agent/parent-92`，基于前序子任务提交 `f4d5a6b`。本 Issue 同步 README、术语表、文件权限 ADR 和本地 QA 指南；没有修改运行时代码或测试。
+
+| 检查 | 结果 |
+| --- | --- |
+| `pnpm check` | 通过：TypeScript 类型检查、构建；Vitest 30 个测试文件、407 项测试全部通过（测试运行 229.58 秒） |
+| `pnpm demo:test` | 通过：3 项演示回归测试，0 失败 |
+| `git diff --check` | 通过：文档补丁无空白错误 |
+| 人工权限 QA | 待执行；自动化结果不代表人工验收完成 |
+
+回归覆盖分层 settings、文件读取与写入、Glob/Grep、Bash、MCP、审批上下文、Explore/子 Agent、会话恢复及演示项目。人工验收步骤见[本地 QA 指南](qa-tool-capabilities.md)“权限规则回归与人工 QA”。本次没有运行真实模型服务，也没有执行该人工清单；此前已有副作用保留、失败隔离、取消和 MCP 延期专项状态继续按本文对应记录，不因本轮自动检查而改变。
+
 ## 工具权限、宿主 Bash、基础 MCP 与摘要组合验证
 
 日期：2026-11-05。子任务 #16，基于本轮输入版本 `e56ae3f` 叠加工作区修改；Node.js 24.22.2、pnpm 9.12.3，Linux 临时 Runner。本轮只交付组合验证和人工验收准备，最终人工 QA #17 仍待人执行。
@@ -90,4 +103,4 @@ pnpm exec node dist/cli.js --workspace ./demo "介绍你的能力"
 pnpm smoke
 ```
 
-正常回答须非空、退出 0。工具验收须退出 0，且终态日志包含 `toolSmokePassed: true`。配置其他服务时，修改 `agent.config.json` 的 `baseURL`、`model` 和 `apiKeyEnv`，重新运行上述验收。
+正常回答须非空、退出 0。工具验收须退出 0，且终态日志包含 `toolSmokePassed: true`。配置其他服务时，修改工作区 `.agent/settings.json` 的 `baseURL`、`model` 和 `apiKeyEnv`，重新运行上述验收。

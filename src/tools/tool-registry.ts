@@ -99,15 +99,16 @@ export class ToolRegistry {
     approve?: (call: ToolApprovalRequest, signal?: AbortSignal) => Promise<boolean>;
   }) {}
 
-  register<Input, Output>(definition: {
+  register<Input, Output, PreparedInput = Input>(definition: {
     name: string;
     description: string;
     inputSchema: FlexibleSchema<Input>;
     concurrency?: 'parallel' | 'exclusive';
-    prepare?: (input: Input) => Promise<{ input: Input; details?: Record<string, string> }>;
-    execute: (input: Input, options: ToolExecutionOptions<unknown>) => Promise<Output> | Output;
+    approvalDetails?: Record<string, string>;
+    prepare?: (input: Input) => Promise<{ input: PreparedInput; details?: Record<string, string> }>;
+    execute: (input: PreparedInput, options: ToolExecutionOptions<unknown>) => Promise<Output> | Output;
   }): void {
-    const { name, description, inputSchema, execute, prepare, concurrency = 'exclusive' } = definition;
+    const { name, description, inputSchema, execute, prepare, concurrency = 'exclusive', approvalDetails } = definition;
     if (this.registered.has(name)) {
       throw new AgentError('CONFIG_ERROR', `工具名称重复注册：${name}。`);
     }
@@ -120,9 +121,9 @@ export class ToolRegistry {
           ? { description: input.description }
           : {};
         execution.abortSignal?.throwIfAborted();
-        let prepared;
+        let prepared: { input: PreparedInput; details?: Record<string, string> };
         try {
-          prepared = prepare ? await prepare(input) : { input };
+          prepared = prepare ? await prepare(input) : { input: input as unknown as PreparedInput };
         } catch {
           execution.abortSignal?.throwIfAborted();
           this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'rejected', errorCode: 'INVALID_TOOL_ARGUMENTS' });
@@ -131,7 +132,8 @@ export class ToolRegistry {
         execution.abortSignal?.throwIfAborted();
         await this.options.beforeTool?.({ callId: execution.toolCallId, toolName: name, input });
         execution.abortSignal?.throwIfAborted();
-        if (this.options.approve && !await this.options.approve({ callId: execution.toolCallId, toolName: name, input, ...(prepared.details ? { details: prepared.details } : {}) }, execution.abortSignal)) {
+        const details = { ...approvalDetails, ...prepared.details };
+        if (this.options.approve && !await this.options.approve({ callId: execution.toolCallId, toolName: name, input, ...(Object.keys(details).length > 0 ? { details } : {}) }, execution.abortSignal)) {
           this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'rejected', errorCode: 'PERMISSION_DENIED' });
           return { is_error: true as const, error: { code: 'PERMISSION_DENIED' as const, message: '本次工具调用未获权限批准。' } };
         }

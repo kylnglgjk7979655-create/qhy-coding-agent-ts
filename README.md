@@ -86,7 +86,7 @@ pnpm dev --workspace ./demo
 
 ## 模型及运行配置
 
-默认读取当前目录的 `agent.config.json`，项目已配置火山方舟 Coding 服务及 `doubao-seed-2.0-mini`。`--config ./path.json` 指定的文件必须存在。配置文件路径和工作区路径相对启动命令所在目录解析；`--workspace` 优先于文件配置。工作区必须是已存在的可访问目录，会解析为绝对路径，不会改变进程工作目录。文件工具的相对路径从工作区解析。
+配置由用户级 `~/.agent/settings.json`、项目级 `<工作区>/.agent/settings.json` 和项目本地 `<工作区>/.agent/settings.local.json` 按此顺序合并；更具体的字段覆盖同名字段，权限列表跨层合并去重，其他数组整体替换。项目本地文件已加入 Git 忽略规则。工作区依次由 `--workspace`、用户级设置和启动目录确定；项目设置不能重定向工作区，也不会向父目录逐级发现。仓库示例位于 `demo/.agent/settings.json`，启动示例使用 `--workspace ./demo`。发现旧的 `agent.config.json` 时会提示迁移，但不会加载该文件。
 
 ```json
 {
@@ -94,7 +94,6 @@ pnpm dev --workspace ./demo
   "model": "doubao-seed-2.0-mini",
   "apiKeyEnv": "ARK_API_KEY",
   "baseURL": "https://ark.cn-beijing.volces.com/api/coding/v3",
-  "workspace": "./demo",
   "timeoutMs": 60000,
   "maxSteps": 20,
   "explore": {
@@ -110,7 +109,7 @@ pnpm dev --workspace ./demo
 | `model` | 实际模型 ID，必须支持 function/tool calling；当前配置 `doubao-seed-2.0-mini` |
 | `apiKeyEnv` | 密钥的环境变量名，仅引用凭据；不接受 `apiKey` 等明文字段 |
 | `baseURL` | 可选，默认 `https://api.openai.com/v1`；必须是无内嵌凭据、查询参数及片段的 HTTP(S) 地址 |
-| `workspace` | 默认 `./demo`；CLI 可覆盖 |
+| `workspace` | 仅用户级 settings 可指定；命令行 `--workspace` 优先，缺省使用启动目录 |
 | `timeoutMs` | 1–3,600,000ms；每轮独立计时，覆盖该轮的生成与工具循环；人工审批等待单独计时，超时通过 AbortSignal 中止请求 |
 | `maxSteps` | 1–100，默认 20；每轮独立计步，达到上限仍在调用工具时该轮失败，交互模式继续等待输入 |
 | `explore.model` | 可选；Explore 默认模型，未配置时使用主 Agent 的 `model`。`agent` 单次调用可用 `model` 覆盖；连接地址和凭据沿用主 Agent |
@@ -119,7 +118,7 @@ pnpm dev --workspace ./demo
 
 未知字段、无效类型及越界数值会在网络请求前报错。自动重试关闭，避免鉴权失败反复请求。Ctrl+C 会中止当前请求。
 
-自定义 `baseURL` 的服务必须兼容 OpenAI Chat Completions 及函数调用；仅能返回文本不足以认定工具兼容。项目配置文件不存在时，内置默认值使用 OpenAI 地址、`gpt-4.1-mini-2025-04-14` 和 `OPENAI_API_KEY`；正常启动请保留本项目的方舟配置文件。
+自定义 `baseURL` 的服务必须兼容 OpenAI Chat Completions 及函数调用；仅能返回文本不足以认定工具兼容。缺少 settings 时，内置默认值使用 OpenAI 地址、`gpt-4.1-mini-2025-04-14` 和 `OPENAI_API_KEY`。
 
 2026-11-03 的基础版本曾通过方舟真实模型和 `runtimeInfo` 工具验收，详见 [历史验收记录](docs/verification.md)。当前工具权限、Bash、基础 MCP 与摘要的离线验收入口见 [本地 QA 指南](docs/qa-tool-capabilities.md)；早期交互式文件工具的验收项目保留在 [QA 清单](.scratch/interactive-cli-file-tools/qa-checklist.md)。
 
@@ -157,12 +156,12 @@ pnpm dev --workspace ./demo
 
 | 工具 | 能力 |
 | --- | --- |
-| `read_file` | 接收 `path`，读取工作区内文本文件，将内容返回给 Agent |
+| `read_file` | 接收 `path`，按权限规则读取文本文件并将内容返回给 Agent |
 | `write_file` | 接收 `path` 和 `content`，完整替换目标文件；文件不存在时创建，不自动创建父目录 |
 | `runtimeInfo` | 返回工作区绝对路径和本轮运行探针 |
-| `Bash` | 接收 `command` 和可选 `cwd`，在工作区内的启动目录运行独立宿主 Bash |
+| `Bash` | 接收 `command` 和可选 `cwd`，从工作区默认目录或经审批的其他目录运行独立宿主 Bash |
 
-相对路径从配置的工作区解析；绝对路径仅在解析后的目标仍位于工作区内时允许。指向工作区外的符号链接会被拒绝。read_file 和 runtimeInfo 默认直接执行；write_file 默认在独立模型审批通过后执行。固定允许或审批通过均不能放宽文件路径与符号链接边界。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
+相对路径从配置的工作区解析。`read_file` 和 `write_file` 可按权限规则或逐次审批访问工作区外的目标；工作区外读取默认需要审批，写入默认进入当前审批策略。符号链接按解析后的实际目标匹配权限。`glob` 和 `grep` 默认搜索工作区，指定工作区外搜索根时需要审批；权限规则可对搜索范围分别允许、要求审批或拒绝。工具权限是应用层策略，不是操作系统沙箱；宿主 Bash 和 MCP 等外部副作用不受内置文件工具边界约束。审批通过不会自动回滚已经发生的副作用。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
 
 终端实时显示 `[工具] read_file：开始`、`[工具] read_file：成功`、`[工具] read_file：失败` 或 `[工具] read_file：拒绝` 等执行状态，不直接打印工具参数、文件内容或原始异常。一次调用只显示一个终结状态；普通调用失败后，同批后续调用仍会执行，Agent 会收到各次工具结果并决定如何继续。Agent 的最终回答可以按用户要求引用文件内容。
 
@@ -170,7 +169,7 @@ pnpm dev --workspace ./demo
 
 宿主 Bash 在支持 POSIX 进程组的系统（Linux/macOS）上使用 PATH 中的 `bash`，以 CLI 当前用户权限执行。它不提供操作系统沙箱、文件系统隔离或网络隔离。`cwd` 只限制启动位置，命令仍可能访问工作区外的资源；内置文件工具的工作区边界继续有效。
 
-`command` 必须为非空命令。省略 `cwd` 时从配置工作区启动；相对 `cwd` 从工作区解析，绝对路径也须位于工作区内。审批前解析实际目录，拒绝路径穿越、指向工作区外的符号链接、缺失目录及文件路径。人工审批展示原始完整参数和解析后的实际工作目录；启动前再次核验该目录，变化或不可用时拒绝执行并要求重新提交。批准不能放宽这些检查。
+`command` 必须为非空命令。省略 `cwd` 时从配置工作区启动；相对 `cwd` 从工作区解析。审批前解析实际目录并检查其可用；工作区外目录以及指向外部位置的符号链接都要求逐次审批。人工审批展示原始完整参数和实际启动目录；启动前再次核验该目录，变化或不可用时拒绝执行并要求重新提交。Bash 权限规则匹配命令，不会单独放行工作区外的启动目录。
 
 每次调用使用独立 shell，继承 CLI 环境，不保留上次调用的 `cd`、环境修改或其他 shell 状态；不接受 `env` 或其他模型自定义环境参数。Bash 默认进入所选审批，固定规则使用精确工具名称 `Bash`。等待或拒绝期间不会启动命令。
 
@@ -179,7 +178,7 @@ pnpm dev --workspace ./demo
 ```json
 {
   "bash": { "timeoutMs": 10000 },
-  "approval": { "mode": "human", "humanTimeoutMs": 300000 }
+  "approval": { "mode": "default", "humanTimeoutMs": 300000 }
 }
 ```
 
@@ -191,24 +190,40 @@ pnpm dev --workspace ./demo
 
 ## 工具策略与审批
 
-可在配置中添加 `approval`，省略时采用模型审批：
+`permissions` 按能力和目标分别控制工具；省略时采用下表中的默认值。可在用户级、项目级或本地 settings 中设置：
 
 ```json
 {
-  "approval": {
-    "mode": "model",
-    "timeoutMs": 30000,
-    "rules": [
-      { "toolName": "read_file", "action": "allow" },
-      { "toolName": "write_file", "action": "ask" }
-    ]
+  "permissions": {
+    "allow": ["Read(src/**)", "Glob(src/**)", "Grep(src/**)", "Bash(pnpm test)", "MCP(alpha/lookup)"],
+    "ask": ["Write(src/**)", "Bash(git push:*)"],
+    "deny": ["Read(.env)", "Bash(rm:*)", "MCP(alpha/*)"]
   }
 }
 ```
 
-`rules` 只精确匹配工具名称，不支持通配符、路径或命令前缀。`allow` 直接执行，`deny` 直接拒绝，`ask` 进入审批。同名规则冲突时 `deny` 优先，其次 `allow`，然后 `ask`；无匹配规则时 read_file、runtimeInfo 默认允许，其他工具默认审批。未知工具或无效参数在审批前拒绝。修改参数或再次调用都需要重新判断，不复用上次批准。
+`Read`、`Write`、`Glob`、`Grep` 可不带参数以匹配该类全部目标，也可带路径模式；相对路径从工作区解析，支持 `*`、`?`、`**`。`Bash` 必须带命令规则：精确匹配完整命令，末尾 `:*` 匹配该前缀及其后续参数，并要求参数边界相符，例如 `Bash(git push:*)`。复合命令按其中每个简单命令分别检查；可识别的管道、串接和重定向等语法额外要求逐次审批，无法可靠解析的控制结构则作为无效参数拒绝。`MCP` 可匹配所有服务，或用 `服务名/工具名`、`服务名/*` 匹配远端工具。`Agent`、`RuntimeInfo` 分别控制 Agent 委派与运行信息工具。
 
-每次模型审批使用独立请求，仅发送专用审查提示词和本次工具名称、完整参数，不发送用户目标、对话历史或文件执行结果，也不给审查模型提供工具。审查只接受 `approve` 或 `deny`，不能核验完整用户意图，不提供操作系统隔离。公共 `runAgent` 另提供可等待的 `approvalControl(call, signal)`，返回 `approve` 或 `deny`；固定策略优先，控制接口与仅用于观察的 `onToolEvent` 分离，答复不改变已批准的参数。
+权限按工具能力独立生效：例如 `Read(src/**)` 不会授权 `Write(src/**)`，`Bash(pnpm test)` 也不会授权其他命令。匹配规则的动作优先级为 `deny`、`ask`、`allow`；未匹配时，工作区内读取、搜索、`runtimeInfo` 和 Agent 默认允许，写入、Bash、MCP 默认进入当前审批，工作区外读取默认需要审批。显式 `allow` 可免除相应逐次审批，`deny` 不可由审批放行。Glob/Grep 对被拒绝路径予以排除，对需审批路径暂停该次搜索并在人工审批界面展示范围。
+
+设置分层时，`permissions.allow`、`permissions.ask`、`permissions.deny` 各自跨层合并并去重；其他对象字段递归合并，其他数组由更具体层整体替换。旧版 `approval.rules` 不再提供运行授权；请迁移到 `permissions`，无效或未迁移的旧规则不会覆盖默认权限。
+
+Explore 只提供 `glob`、`grep`、`read_file`，并使用同一份权限配置；它始终不能写文件、运行 Bash、调用 MCP 或再次委派。general-purpose 子 Agent 也沿用相同的 `permissions` 与审批策略，并有自己的文件读取基线；它不能继续创建子 Agent。Agent 委派本身可用 `Agent` 规则控制。工具级权限与逐次审批只决定对应调用能否继续，不能隔离进程、限制 Bash 的网络或文件系统访问，也不会撤销已发生的外部副作用。
+
+可在 settings 中添加 `approval`，省略时采用人工审批：
+
+```json
+{
+  "approval": {
+    "mode": "auto",
+    "timeoutMs": 30000
+  }
+}
+```
+
+`approval.rules` 是旧配置字段，不再生效；使用 `permissions.allow`、`permissions.ask` 和 `permissions.deny` 表达规则。权限命中顺序为 `deny`、`ask`、`allow`。未知工具或无效参数在审批前拒绝。修改参数或再次调用都需要重新判断，不复用上次批准。
+
+每次模型审批使用独立请求，提供专用审查提示、本次工具名称和完整参数，以及受控会话上下文：工作区与工具目标、当前权限规则、有效历史中保留的摘要和用户消息、先前工具调用的参数与状态。不会发送工具执行结果，也不给审查模型提供工具。上下文可能不完整，审查不能核验完整用户意图，不提供操作系统隔离。审查只接受 `approve` 或 `deny`。公共 `runAgent` 另提供可等待的 `approvalControl(call, signal)`，返回 `approve` 或 `deny`；固定策略优先，控制接口与仅用于观察的 `onToolEvent` 分离，答复不改变已批准的参数。
 
 默认复用主模型名称、地址和凭据；也可设置独立审查模型（凭据仅引用环境变量）：
 
@@ -234,13 +249,13 @@ pnpm dev --workspace ./demo
 ```json
 {
   "approval": {
-    "mode": "human",
+    "mode": "default",
     "humanTimeoutMs": 300000
   }
 }
 ```
 
-`approval.mode` 接受 `model`（默认）和 `human`。人工模式逐次展示工具名称、调用 ID 和完整参数，例如 `[人工审批 1] write_file`。输入 `approve 1` 批准，或 `deny 1` 拒绝；数字须与当前提示一致。答复只对应本次调用，不能用旧编号批准后续调用。无效输入（包括新的用户需求）不会被当作批准；请完成审批后再提交新需求。进入等待前已经排队的需求仍作为后续对话处理，不能成为审批答复。
+`approval.mode` 接受 `default`（默认人工审批）和 `auto`（独立模型审批）。`ask` 在两种模式下分别交给人工或模型审批。人工模式逐次展示工具名称、调用 ID 和完整参数，例如 `[人工审批 1] write_file`。输入 `approve 1` 批准，或 `deny 1` 拒绝；数字须与当前提示一致。答复只对应本次调用，不能用旧编号批准后续调用。无效输入（包括新的用户需求）不会被当作批准；请完成审批后再提交新需求。进入等待前已经排队的需求仍作为后续对话处理，不能成为审批答复。
 
 人工等待独立上限 `approval.humanTimeoutMs` 默认五分钟（300,000ms），范围为 1–3,600,000 毫秒；它与模型审批上限分别配置。非交互管道、输入关闭或等待超时直接拒绝本次调用，其他普通调用继续，不请求模型代为审批。人工等待不消耗整轮执行预算；批准或拒绝后继续使用等待前的剩余时间，多次等待不会重置已消耗时间。Ctrl+C、SIGTERM 和公共入口的父级取消信号仍能立即中断等待并停止本轮。公共入口在人工模式下未提供 `approvalControl` 时直接拒绝。
 

@@ -8,6 +8,7 @@ import type { FixtureToolCall } from './helpers/local-openai-fixture.js';
 
 const cli = resolve('dist/cli.js');
 let cwd = '';
+let workspaceArgs: string[] = [];
 let fixture: Awaited<ReturnType<typeof startLocalOpenAIModel>>;
 const managedPids: number[] = [];
 afterEach(async () => {
@@ -23,14 +24,19 @@ function bash(id: string, input: unknown): FixtureToolCall {
 }
 async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0], review?: Parameters<typeof startLocalOpenAIModel>[1], extra = {}) {
   cwd = await mkdtemp(join(tmpdir(), 'qhy-bash-'));
+  const { workspace, approval, ...settings } = extra as Record<string, unknown> & {
+    workspace?: string; approval?: Record<string, unknown>;
+  };
+  workspaceArgs = workspace ? ['--workspace', workspace] : [];
   fixture = await startLocalOpenAIModel(respond, review);
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'bash-fixture', baseURL: fixture.baseURL, apiKeyEnv: 'TEST_BASH_KEY',
-    workspace: '.', timeoutMs: 4000, ...extra,
+    timeoutMs: 4000, approval: { mode: 'auto', ...approval }, ...settings,
   }));
 }
-function run(input = '运行受控命令\n/exit\n', env: NodeJS.ProcessEnv = {}) {
-  const child = spawn(process.execPath, [cli, '--conversation-id', 'bash'], {
+function run(input = '运行受控命令\n/exit\n', env: NodeJS.ProcessEnv = {}, conversationId = 'bash') {
+  const child = spawn(process.execPath, [cli, '--conversation-id', conversationId, ...workspaceArgs], {
     cwd, env: { ...process.env, HOME: cwd, USERPROFILE: cwd, TEST_BASH_KEY: 'fake-bash-key', TEST_BASH_ENV: 'inherited-marker', ...env },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -71,7 +77,7 @@ it('Bash 默认独立审批，批准前无启动或副作用，批准后返回�
     await expect(readFile(join(cwd, 'kept.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     const review = fixture.approvalRequests[0]!;
     expect(review.tools ?? []).toEqual([]);
-    expect(JSON.parse(review.messages[1]!.content)).toEqual({ toolName: 'Bash', input: { command } });
+    expect(JSON.parse(review.messages[1]!.content)).toMatchObject({ toolName: 'Bash', input: { command } });
   } finally { release(); }
   const result = await running.done;
   expect(result.code, result.stderr).toBe(0);
@@ -85,14 +91,14 @@ it('Bash 默认独立审批，批准前无启动或副作用，批准后返回�
   expect(fixture.requests[0]!.messages[0]!.content).toContain('不得声称操作成功或把失败调用的输出当成已验证结果');
 });
 
-it('固定允许下 cwd 按工作区解析，独立 shell 继承 CLI 环境但不保留先前状态', async () => {
+it('允许命令仍为重定向审批，cwd 按工作区解析且独立 shell 不保留先前状态', async () => {
   await setup((_request, index) => index === 1 ? { calls: [
     bash('first', { command: 'cd nested; export LOCAL_STATE=changed; printf first > first.txt' }),
     bash('default', { command: 'printf "%s|%s|%s" "$PWD" "${LOCAL_STATE-unset}" "$TEST_BASH_ENV"' }),
     bash('relative', { command: 'pwd', cwd: 'nested' }),
     bash('absolute', { command: 'pwd', cwd: join(cwd, 'work/nested') }),
-  ] } : { content: '完成' }, () => { throw new Error('固定允许不应审查'); }, {
-    approval: { rules: [{ toolName: 'Bash', action: 'allow' }] },
+  ] } : { content: '完成' }, () => ({ content: 'approve' }), {
+    permissions: { allow: ['Bash(cd:*)', 'Bash(export:*)', 'Bash(printf:*)', 'Bash(pwd:*)'] },
     workspace: 'work',
   });
   await mkdir(join(cwd, 'work/nested'), { recursive: true });
@@ -100,16 +106,100 @@ it('固定允许下 cwd 按工作区解析，独立 shell 继承 CLI 环境但�
   const result = await running.done;
   expect(result.code, result.stderr).toBe(0);
   expect(results().map(({ is_error }) => is_error)).toEqual([false, false, false, false]);
+  expect(fixture.approvalRequests).toHaveLength(1);
   const canonical = await realpath(join(cwd, 'work'));
   expect(results()[1]!.output!.stdout).toBe(`${canonical}|unset|inherited-marker`);
   expect(results().slice(2).map(({ output }) => output!.stdout.trim())).toEqual([join(canonical, 'nested'), join(canonical, 'nested')]);
   expect(await readFile(join(cwd, 'work/nested/first.txt'), 'utf8')).toBe('first');
-  expect(fixture.approvalRequests).toHaveLength(0);
+});
+
+it('Bash 权限按完整命令和参数边界匹配，复合命令及命令替换逐条检查', async () => {
+  await setup((_request, index) => index === 1 ? { calls: [
+    bash('exact', { command: 'printf exact' }),
+    bash('exact-glob', { command: "printf '*.txt'" }),
+    bash('prefix', { command: 'printf prefix value' }),
+    bash('prefix-lookalike', { command: 'printf prefixish' }),
+    bash('colon-denied', { command: 'touch blocked now' }),
+    bash('compound', { command: 'printf before; touch denied-compound' }),
+    bash('substitution', { command: 'printf "$(touch denied-substitution)"' }),
+    bash('arithmetic-substitution', { command: 'echo $(( $(touch denied-arithmetic; echo 1) ))' }),
+    bash('unparseable', { command: 'printf "$(touch missing-close"' }),
+  ] } : { content: '权限完成' }, () => ({ content: 'approve' }), {
+    permissions: {
+      allow: ['Bash(printf exact)', "Bash(printf '*.txt')", 'Bash(printf prefix:*)'],
+      deny: ['Bash(touch blocked:*)', 'Bash(touch denied-compound)', 'Bash(touch denied-substitution)', 'Bash(touch denied-arithmetic)'],
+    },
+  });
+  const result = await run(undefined, {}, 'bash-permissions').done;
+  expect(result.code, result.stderr).toBe(0);
+  expect(fixture.requests.length, result.stdout + result.stderr).toBeGreaterThan(0);
+  expect(results().map(({ is_error, error }) => ({ is_error, code: error?.code }))).toEqual([
+    { is_error: false, code: undefined }, { is_error: false, code: undefined }, { is_error: false, code: undefined }, { is_error: false, code: undefined },
+    { is_error: true, code: 'PERMISSION_DENIED' },
+    { is_error: true, code: 'PERMISSION_DENIED' }, { is_error: true, code: 'PERMISSION_DENIED' },
+    { is_error: true, code: 'PERMISSION_DENIED' }, { is_error: true, code: 'INVALID_TOOL_ARGUMENTS' },
+  ]);
+  expect(fixture.approvalRequests).toHaveLength(1);
+  await expect(readFile(join(cwd, 'blocked'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(join(cwd, 'denied-compound'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(join(cwd, 'denied-substitution'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(join(cwd, 'denied-arithmetic'))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('Bash 重定向和工作区外 cwd 必须审批，拒绝或未完成审批前不启动', async () => {
+  let entered!: () => void;
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await setup((_request, index) => index === 1 ? { calls: [
+    bash('redirect', { command: 'printf redirected > redirected.txt' }),
+    bash('external', { command: 'pwd > external.txt', cwd: join(cwd, 'outside') }),
+  ] } : { content: '审批完成' }, async (_request, index) => {
+    if (index === 1) { entered(); await gate; }
+    return { content: 'approve' };
+  }, { workspace: 'work', permissions: { allow: ['Bash(printf:*)', 'Bash(pwd)'] } });
+  await mkdir(join(cwd, 'work'));
+  await mkdir(join(cwd, 'outside'));
+  const running = run(undefined, {}, 'bash-external-cwd');
+  try {
+    await Promise.race([waiting, running.done]);
+    expect(running.output()).not.toContain('Bash：开始');
+    await expect(readFile(join(cwd, 'work/redirected.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(cwd, 'outside/external.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally { release(); }
+  const result = await running.done;
+  expect(result.code, result.stderr).toBe(0);
+  expect(results().map(({ is_error }) => is_error)).toEqual([false, false]);
+  expect(fixture.approvalRequests).toHaveLength(2);
+  expect(await readFile(join(cwd, 'work/redirected.txt'), 'utf8')).toBe('redirected');
+  expect((await readFile(join(cwd, 'outside/external.txt'), 'utf8')).trim()).toBe(await realpath(join(cwd, 'outside')));
+});
+
+it('Bash cwd 符号链接在审批期间改向后拒绝启动', async () => {
+  await setup((_request, index) => index === 1 ? { calls: [
+    bash('retarget-cwd', { command: 'touch marker', cwd: 'link' }),
+  ] } : { content: '目录变化已处理' }, async () => {
+    await rm(join(cwd, 'work/link'));
+    await symlink(join(cwd, 'outside/b'), join(cwd, 'work/link'));
+    return { content: 'approve' };
+  }, { workspace: 'work' });
+  await mkdir(join(cwd, 'work'));
+  await mkdir(join(cwd, 'outside/a'), { recursive: true });
+  await mkdir(join(cwd, 'outside/b'), { recursive: true });
+  await symlink(join(cwd, 'outside/a'), join(cwd, 'work/link'));
+
+  const result = await run(undefined, {}, 'bash-retarget-cwd').done;
+
+  expect(result.code, result.stderr).toBe(0);
+  expect(results()).toMatchObject([{ is_error: true }]);
+  await expect(readFile(join(cwd, 'outside/a/marker'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(join(cwd, 'outside/b/marker'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(fixture.approvalRequests).toHaveLength(1);
 });
 
 it('目录越界、符号链接逃逸、不可用目录及非法参数在审批前拒绝，后续调用继续', async () => {
   await setup((_request, index) => index === 1 ? { calls: [
-    ...['..', join(cwd, 'outside'), 'escape', 'missing', 'file'].map((directory, index) => bash(`cwd-${index}`, { command: 'touch must-not-start', cwd: directory })),
+    ...['missing', 'file'].map((directory, index) => bash(`cwd-${index}`, { command: 'touch must-not-start', cwd: directory })),
     bash('env', { command: 'touch must-not-start', env: { MODEL_ENV: 'forbidden' } }),
     bash('extra', { command: 'touch must-not-start', extra: true }),
     bash('missing-command', { cwd: '.' }), bash('wrong-command', { command: 42 }), bash('empty', { command: '  ' }),
@@ -121,7 +211,7 @@ it('目录越界、符号链接逃逸、不可用目录及非法参数在审批�
   await writeFile(join(cwd, 'work/file'), 'not-directory');
   const result = await run().done;
   expect(result.code, result.stderr).toBe(0);
-  expect(results().slice(0, -1).map(({ error }) => error!.code)).toEqual(Array(10).fill('INVALID_TOOL_ARGUMENTS'));
+  expect(results().slice(0, -1).map(({ error }) => error!.code)).toEqual(Array(7).fill('INVALID_TOOL_ARGUMENTS'));
   expect(results().at(-1)).toMatchObject({ id: 'valid', is_error: false, output: { stdout: 'valid' } });
   expect(fixture.approvalRequests).toHaveLength(1);
   await expect(readFile(join(cwd, 'must-not-start'))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -147,7 +237,7 @@ it.each(['fixed', 'model'] as const)('%s 拒绝 Bash 时没有命令副作用或
   await setup((_request, index) => index === 1 ? { calls: [bash('denied', { command: 'touch denied' }),
     { id: 'later', type: 'function', function: { name: 'runtimeInfo', arguments: '{}' } },
   ] } : { content: '拒绝后完成' }, () => ({ content: 'deny' }), mode === 'fixed' ? {
-    approval: { rules: [{ toolName: 'Bash', action: 'allow' }, { toolName: 'Bash', action: 'deny' }] },
+    permissions: { deny: ['Bash(touch:*)'] },
   } : {});
   const result = await run().done;
   expect(result.code).toBe(0);

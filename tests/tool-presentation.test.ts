@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -21,9 +21,10 @@ describe('CLI 工具状态、历史与冒烟', () => {
   async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0]) {
     cwd = await mkdtemp(join(tmpdir(), 'qhy-tool-presentation-'));
     model = await startLocalOpenAIModel(respond);
-    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+    await mkdir(join(cwd, '.agent'), { recursive: true });
+    await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
       model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL,
-      workspace: '.', timeoutMs: 3000, maxSteps: 20,
+      timeoutMs: 3000, maxSteps: 20, approval: { mode: 'auto' },
     }));
     return model;
   }

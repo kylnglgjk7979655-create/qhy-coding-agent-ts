@@ -27,7 +27,6 @@ const help = `用法：node dist/cli.js [选项]
 
 选项：
   --workspace <目录>  覆盖配置的工作区（相对当前目录）
-  --config <文件>     指定 JSON 配置（默认 agent.config.json）
   --conversation-id <ID>  继续指定会话（省略时新建会话）
   --smoke-tool        强制读取探针文件并验证模型使用结果
   --help              显示帮助
@@ -81,12 +80,14 @@ async function main(): Promise<void> {
     const smokeTool = args.values['smoke-tool'] ?? false;
     let conversationId = args.values['conversation-id'] ?? newConversationId();
     const userHome = homedir();
-    const loadCurrentConfig = () => loadConfig({
-      cwd: process.cwd(),
-      env: process.env,
-      ...(args.values.config === undefined ? {} : { configPath: args.values.config }),
-      ...(args.values.workspace === undefined ? {} : { workspace: args.values.workspace }),
-    });
+    const loadCurrentConfig = async () => {
+      const loaded = await loadConfig({
+        cwd: process.cwd(),
+        env: process.env,
+        ...(args.values.workspace === undefined ? {} : { workspace: args.values.workspace }),
+      });
+      return loaded;
+    };
     let config: Awaited<ReturnType<typeof loadConfig>>;
     let session: Awaited<ReturnType<typeof loadSession>> | undefined;
     let legacyHistory: ModelMessage[] | undefined;
@@ -99,7 +100,7 @@ async function main(): Promise<void> {
         config = await loadCurrentConfig();
         const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
         legacyHistory = await loadLegacyConversation(legacyDirectory, conversationId);
-        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, migrationWarnings: _migrationWarnings, ...persistedConfig } = config;
         session = await createSession(userHome, {
           id: conversationId,
           workspace: config.workspace,
@@ -111,7 +112,7 @@ async function main(): Promise<void> {
       config = await loadCurrentConfig();
       if (smokeTool) session = undefined;
       else {
-        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, migrationWarnings: _migrationWarnings, ...persistedConfig } = config;
         session = await createSession(userHome, { id: conversationId, workspace: config.workspace, config: persistedConfig });
       }
     }
@@ -396,7 +397,7 @@ async function runTurn(
   });
   try {
     if (!smokeTool) {
-      const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+      const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, migrationWarnings: _migrationWarnings, ...persistedConfig } = config;
       roundId = await startSessionRound(userHome, conversationId, prompt, persistedConfig, () => {
         log({ event: 'checkpoint.snapshot_failed', conversationId, message: '消息检查点文件快照失败，继续处理。' });
       });
@@ -455,7 +456,7 @@ async function runTurn(
         process.stdout.write(`\n[工具] ${toolName}：${label}\n`);
       },
       signal,
-      ...(config.approval.mode === 'human' && approvalControl ? { approvalControl } : {}),
+      ...(config.approval.mode === 'default' && approvalControl ? { approvalControl } : {}),
     });
     signal.throwIfAborted();
     const nextHistory = smokeTool ? history : result.effectiveHistory;
@@ -510,7 +511,6 @@ function parseCliArgs() {
   return parseArgs({
     options: {
       workspace: { type: 'string' },
-      config: { type: 'string' },
       'conversation-id': { type: 'string' },
       'smoke-tool': { type: 'boolean' },
       help: { type: 'boolean' },

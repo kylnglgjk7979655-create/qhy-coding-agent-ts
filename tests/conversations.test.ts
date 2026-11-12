@@ -26,7 +26,7 @@ describe('user-level session storage', () => {
       workspace: '/work/project',
       timeoutMs: 60_000,
       maxSteps: 20,
-      approval: { mode: 'model' as const, rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto' as const, rules: [], timeoutMs: 30_000 },
     };
 
     const created = await createSession(home, {
@@ -52,7 +52,7 @@ describe('user-level session storage', () => {
       timeoutMs: 60_000,
       maxSteps: 20,
       explore: { model: 'explore-model', loadRootAgents: true },
-      approval: { mode: 'model' as const, rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto' as const, rules: [], timeoutMs: 30_000 },
     };
 
     await createSession(home, { id: 'explore-session', workspace: '/work/project', config });
@@ -70,7 +70,7 @@ describe('user-level session storage', () => {
       workspace: '/work/project',
       timeoutMs: 60_000,
       maxSteps: 20,
-      approval: { mode: 'model' as const, rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto' as const, rules: [], timeoutMs: 30_000 },
     };
     const session = await createSession(home, { id: 'titled-session', workspace: '/work/project', config });
     await startSessionRound(home, session.id, '  第一个需求\n请修改文件  ', config);
@@ -96,7 +96,7 @@ describe('user-level session storage', () => {
     await createSession(home, {
       id: 'damaged-session', workspace: '/work/project', config: {
         provider: 'openai', model: 'fixture-model', apiKeyEnv: 'TEST_API_KEY', workspace: '/work/project',
-        timeoutMs: 60_000, maxSteps: 20, approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+        timeoutMs: 60_000, maxSteps: 20, approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       },
     });
     await writeFile(path, '{truncated');
@@ -105,7 +105,7 @@ describe('user-level session storage', () => {
     await expect(createSession(home, {
       id: 'damaged-session', workspace: '/work/other', config: {
         provider: 'openai', model: 'new-model', apiKeyEnv: 'TEST_API_KEY', workspace: '/work/other',
-        timeoutMs: 60_000, maxSteps: 20, approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+        timeoutMs: 60_000, maxSteps: 20, approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       },
     })).rejects.toThrow(/会话记录.*损坏/);
     expect(await readFile(path, 'utf8')).toBe('{truncated');

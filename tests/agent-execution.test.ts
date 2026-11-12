@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,12 +8,222 @@ import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 
 describe('公共工具执行边界', () => {
   let workspace: string;
+  let outside: string;
   let closeFixture: (() => Promise<void>) | undefined;
 
   afterEach(async () => {
     await closeFixture?.();
     closeFixture = undefined;
     if (workspace) await rm(workspace, { recursive: true, force: true });
+    if (outside) await rm(outside, { recursive: true, force: true });
+  });
+
+  it('Read 权限按目标路径判定，审批展示符号链接实际目标且目标变化后不读取', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-read-permissions-'));
+    outside = await mkdtemp(join(tmpdir(), 'qhy-read-outside-'));
+    await writeFile(join(workspace, 'secret.txt'), '机密');
+    await writeFile(join(workspace, 'nested.txt'), '嵌套规则');
+    await writeFile(join(outside, 'first.txt'), '批准前目标');
+    await writeFile(join(outside, 'second.txt'), '等待期间替换的目标');
+    await symlink(join(outside, 'first.txt'), join(workspace, 'external-link.txt'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [
+        { id: 'read-denied', type: 'function', function: { name: 'read_file', arguments: '{"path":"secret.txt"}' } },
+        { id: 'read-asked', type: 'function', function: { name: 'read_file', arguments: '{"path":"nested.txt"}' } },
+        { id: 'read-outside-link', type: 'function', function: { name: 'read_file', arguments: '{"path":"external-link.txt"}' } },
+      ] }
+      : { content: '读取权限检查完成。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'default', rules: [], timeoutMs: 30_000 },
+      permissions: {
+        allow: ['Read(nested*)'],
+        ask: ['Read(nested.txt)'],
+        deny: ['Read(secret.txt)'],
+      },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+    const approvals: Array<{ path: string; target?: string }> = [];
+    await runAgent(config, '读取三个文件', {
+      smokeTool: false,
+      approvalControl: async ({ input, details }) => {
+        approvals.push({ path: (input as { path: string }).path, ...(details?.target === undefined ? {} : { target: details.target }) });
+        return 'approve';
+      },
+    });
+    const toolResults = fixture.requests[1]?.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ tool_call_id: string; content: string }>;
+    const resultFor = (id: string) => JSON.parse(toolResults.find(({ tool_call_id }) => tool_call_id === id)!.content) as { is_error: boolean; output?: { content: string } };
+    expect(resultFor('read-denied').is_error).toBe(true);
+    expect(resultFor('read-asked')).toMatchObject({ is_error: false, output: { content: '嵌套规则' } });
+    expect(resultFor('read-outside-link')).toMatchObject({ is_error: false, output: { content: '批准前目标' } });
+    expect(approvals.sort((left, right) => left.path.localeCompare(right.path))).toEqual([
+      { path: 'external-link.txt', target: join(outside, 'first.txt') },
+      { path: 'nested.txt', target: join(workspace, 'nested.txt') },
+    ].sort((left, right) => left.path.localeCompare(right.path)));
+  });
+
+  it('等待 Read 审批时符号链接改向会拒绝读取新目标', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-read-target-change-'));
+    outside = await mkdtemp(join(tmpdir(), 'qhy-read-targets-'));
+    await writeFile(join(outside, 'first.txt'), '原始目标');
+    await writeFile(join(outside, 'second.txt'), '新目标');
+    await symlink(join(outside, 'first.txt'), join(workspace, 'link.txt'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'read-changing-link', type: 'function', function: { name: 'read_file', arguments: '{"path":"link.txt"}' } }] }
+      : { content: '审批后重新处理。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'default', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+    await runAgent(config, '读取链接', {
+      smokeTool: false,
+      approvalControl: async () => {
+        await rm(join(workspace, 'link.txt'));
+        await symlink(join(outside, 'second.txt'), join(workspace, 'link.txt'));
+        return 'approve';
+      },
+    });
+    const toolMessage = fixture.requests[1]?.messages.find(({ role }) => role === 'tool') as unknown as { content: string };
+    expect(JSON.parse(toolMessage.content)).toMatchObject({ is_error: true });
+    expect(toolMessage.content).not.toContain('新目标');
+  });
+
+  it('审批后可写入工作区外文件，并将审批绑定到解析后的实际目标', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-write-permissions-'));
+    outside = await mkdtemp(join(tmpdir(), 'qhy-write-outside-'));
+    const target = join(outside, 'approved.txt');
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'write-outside', type: 'function', function: {
+        name: 'write_file', arguments: JSON.stringify({ path: target, content: '已批准的外部内容' }),
+      } }] }
+      : { content: '外部写入已处理。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'default', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+    const approvals: Array<{ path: string; target?: string }> = [];
+
+    await runAgent(config, '写入获批的外部目标', {
+      smokeTool: false,
+      approvalControl: async (call) => {
+        approvals.push({
+          path: (call.input as { path: string }).path,
+          ...(call.details?.target === undefined ? {} : { target: call.details.target }),
+        });
+        return 'approve';
+      },
+    });
+
+    expect(approvals).toEqual([{ path: target, target }]);
+    expect(await readFile(target, 'utf8')).toBe('已批准的外部内容');
+  });
+
+  it('Write 路径 deny 规则阻止工作区外写入且不请求审批', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-write-deny-'));
+    outside = await mkdtemp(join(tmpdir(), 'qhy-write-denied-'));
+    const target = join(outside, 'denied.txt');
+    await symlink(outside, join(workspace, 'external-dir'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'write-denied-outside', type: 'function', function: {
+        name: 'write_file', arguments: JSON.stringify({ path: target, content: '不得写入' }),
+      } }] }
+      : { content: '拒绝已处理。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'default', rules: [], timeoutMs: 30_000 },
+      permissions: { allow: [], ask: [], deny: ['Write(external-dir/denied.txt)'] },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+    const approvals: string[] = [];
+
+    await runAgent(config, '拒绝外部写入', {
+      smokeTool: false,
+      approvalControl: async (call) => { approvals.push(call.callId); return 'approve'; },
+    });
+
+    expect(approvals).toEqual([]);
+    await expect(readFile(target, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('Write 路径拒绝优先且等待审批期间目标变化时不写入新目标', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-write-target-change-'));
+    outside = await mkdtemp(join(tmpdir(), 'qhy-write-targets-'));
+    const firstTarget = join(outside, 'first.txt');
+    const secondTarget = join(outside, 'second.txt');
+    await writeFile(firstTarget, '保留第一目标');
+    await writeFile(secondTarget, '保留第二目标');
+    await symlink(firstTarget, join(workspace, 'link.txt'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'write-changing-link', type: 'function', function: {
+        name: 'write_file', arguments: '{"path":"link.txt","content":"不得写入"}',
+      } }] }
+      : { content: '审批后目标变化已处理。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'default', rules: [], timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+
+    await runAgent(config, '审批符号链接写入', {
+      smokeTool: false,
+      approvalControl: async (call) => {
+        expect(call.details?.target).toBe(firstTarget);
+        await rm(join(workspace, 'link.txt'));
+        await symlink(secondTarget, join(workspace, 'link.txt'));
+        return 'approve';
+      },
+    });
+
+    const toolMessage = fixture.requests[1]?.messages.find(({ role }) => role === 'tool') as unknown as { content: string };
+    expect(JSON.parse(toolMessage.content)).toMatchObject({ is_error: true });
+    expect(await readFile(firstTarget, 'utf8')).toBe('保留第一目标');
+    expect(await readFile(secondTarget, 'utf8')).toBe('保留第二目标');
+  });
+
+  it('Read 路径规则支持绝对路径、单字符问号和跨层双星号', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-read-globs-'));
+    await mkdir(join(workspace, 'nested'));
+    await mkdir(join(workspace, 'deep', 'one', 'two'), { recursive: true });
+    await writeFile(join(workspace, 'nested', 'data1.txt'), '问号匹配');
+    await writeFile(join(workspace, 'deep', 'one', 'two', 'secret.txt'), '双星号匹配');
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [
+        { id: 'read-question-mark', type: 'function', function: { name: 'read_file', arguments: '{"path":"nested/data1.txt"}' } },
+        { id: 'read-double-star', type: 'function', function: { name: 'read_file', arguments: '{"path":"deep/one/two/secret.txt"}' } },
+      ] }
+      : { content: '路径规则匹配完成。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'default', rules: [], timeoutMs: 30_000 },
+      permissions: {
+        allow: [`Read(${join(workspace, 'nested', 'data?.txt')})`],
+        ask: ['Read(deep/**/secret.txt)'],
+        deny: [],
+      },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+    const approvals: string[] = [];
+    await runAgent(config, '读取匹配文件', {
+      smokeTool: false,
+      approvalControl: async ({ input }) => {
+        approvals.push((input as { path: string }).path);
+        return 'approve';
+      },
+    });
+    const toolMessages = fixture.requests[1]?.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ tool_call_id: string; content: string }>;
+    expect(JSON.parse(toolMessages.find(({ tool_call_id }) => tool_call_id === 'read-question-mark')!.content))
+      .toMatchObject({ is_error: false, output: { content: '问号匹配' } });
+    expect(JSON.parse(toolMessages.find(({ tool_call_id }) => tool_call_id === 'read-double-star')!.content))
+      .toMatchObject({ is_error: false, output: { content: '双星号匹配' } });
+    expect(approvals).toEqual(['deep/one/two/secret.txt']);
   });
 
   it('执行事件通知失败时只输出诊断，模型仍收到正确工具结果', async () => {
@@ -28,7 +238,7 @@ describe('公共工具执行边界', () => {
       : { content: '读取完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -88,7 +298,7 @@ describe('公共工具执行边界', () => {
     });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 8,
     };
@@ -109,7 +319,7 @@ describe('公共工具执行边界', () => {
       : { content: '参数已修正。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -134,7 +344,7 @@ describe('公共工具执行边界', () => {
       : { content: '后续模型请求完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -167,7 +377,7 @@ describe('公共工具执行边界', () => {
       : { content: '读取完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -199,7 +409,7 @@ describe('公共工具执行边界', () => {
       : { content: '全部运行完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -240,7 +450,8 @@ describe('公共工具执行边界', () => {
       : { content: '两项审批均已完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'human', rules: [{ toolName: 'read_file', action: 'ask' }], timeoutMs: 1000, humanTimeoutMs: 500 },
+      approval: { mode: 'default', timeoutMs: 1000, humanTimeoutMs: 500 },
+      permissions: { allow: [], ask: ['Read'], deny: [] },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 100, maxSteps: 5,
     };
@@ -267,7 +478,7 @@ describe('公共工具执行边界', () => {
       : { content: '屏障完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -322,7 +533,7 @@ describe('公共工具执行边界', () => {
       : { content: '不应收到的回答。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -346,7 +557,7 @@ describe('公共工具执行边界', () => {
     ] } : { content: '人工决定已处理' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'human', rules: [], timeoutMs: 30_000, humanTimeoutMs: 500 },
+      approval: { mode: 'default', rules: [], timeoutMs: 30_000, humanTimeoutMs: 500 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };

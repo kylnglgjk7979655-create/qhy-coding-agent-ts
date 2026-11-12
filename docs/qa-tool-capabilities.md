@@ -15,12 +15,12 @@ pnpm build
 pnpm exec tsx tests/helpers/local-qa-fixture.ts --directory "$PWD/.scratch/qa-local-normal" --scenario normal
 ```
 
-`--directory` 必须指向不存在的新目录，父目录须存在。重复验收请使用新的目录名，夹具拒绝覆盖已有记录。出现 `QA_READY` 后，模型与两个 MCP 服务均已就绪，实际 URL 已填入生成的 `config.json`，不必手工替换端口。目录内包含：
+`--directory` 必须指向不存在的新目录，父目录须存在。重复验收请使用新的目录名，夹具拒绝覆盖已有记录。出现 `QA_READY` 后，模型与两个 MCP 服务均已就绪，实际 URL 已填入 `work/.agent/settings.json`，不必手工替换端口。目录内包含：
 
 ```text
 qa-local-normal/
-├── config.json                   # 仅引用假凭据环境变量，文件权限 0600
 ├── work/
+│   ├── .agent/settings.json      # 项目 settings，仅引用假凭据环境变量
 │   ├── note.txt                  # 初始文本
 │   ├── large.txt                 # 轮内增长触发摘要
 │   ├── huge.txt                  # 必要内容无法容纳
@@ -39,7 +39,7 @@ QA_ROOT="$REPO/.scratch/qa-local-normal"
 export TEST_MODEL_API_KEY=local-qa-model
 export QA_MCP_HEADER=local-qa-mcp
 cd "$QA_ROOT"
-"$CLI_NODE" "$REPO/dist/cli.js" --config "$QA_ROOT/config.json" --workspace "$QA_ROOT/work" --conversation-id qa-normal
+"$CLI_NODE" "$REPO/dist/cli.js" --workspace "$QA_ROOT/work" --conversation-id qa-normal
 ```
 
 这两个环境变量只设置本地假值。配置中的 `apiKeyEnv` 引用 `TEST_MODEL_API_KEY`，`mcp.servers[0].headers.Authorization.env` 引用 `QA_MCP_HEADER`；不把真实令牌写入配置或验收记录。模型、审查及摘要共用本地模型地址；连接器将假请求头值注入 alpha 的请求头，不进入模型输入或产品历史。
@@ -93,7 +93,7 @@ cd "$QA_ROOT"
 
 结束 CLI 后在编辑器修改生成配置，再重启；配置仅在启动时读取。每个取消或进程实验使用全新验收目录，避免混淆上次留下的 PID 和标记文件。
 
-将审批配置改为 `{"mode":"human","humanTimeoutMs":5000}`，`timeoutMs` 设为 1000，`bash` 设为 `{"timeoutMs":4000}`。输入 `slow`，人工界面展示完整命令及实际 `work` 目录；等超过一秒再按当前编号批准。等待中 `shell.pid`、`started.txt` 不存在，且不报整轮超时。批准后命令启动，继续消耗等待前剩余的执行预算；本轮在剩余时间耗尽时报告 `TIMEOUT`，后续 `later.txt` 和远端调用均不发生。
+将审批配置改为 `{"mode":"default","humanTimeoutMs":5000}`，`timeoutMs` 设为 1000，`bash` 设为 `{"timeoutMs":4000}`。输入 `slow`，人工界面展示完整命令及实际 `work` 目录；等超过一秒再按当前编号批准。等待中 `shell.pid`、`started.txt` 不存在，且不报整轮超时。批准后命令启动，继续消耗等待前剩余的执行预算；本轮在剩余时间耗尽时报告 `TIMEOUT`，后续 `later.txt` 和远端调用均不发生。
 
 在另一全新目录将整轮上限改为 5000、Bash 上限改为 400，可验证单命令超时：Bash 返回普通调用失败，后续写入和远端普通调用继续，区别于整轮停止。`slow` 中的工作进程会在启动 2.5 秒后尝试写 `late.txt`；超时或取消后等待超过此时长，文件不应出现。
 
@@ -103,6 +103,26 @@ cd "$QA_ROOT"
 
 Bash 使用宿主当前用户权限；cwd 仅约束启动目录，不提供文件系统、网络或操作系统隔离。只在可丢弃的 QA 工作区执行受控命令。
 
+## 权限规则回归与人工 QA
+
+自动化回归覆盖分层 settings 合并与校验、实际文件目标读取/写入、Glob/Grep 路径过滤与审批、Bash 命令拆分及规则匹配、MCP 默认审批、模型审批会话上下文、Explore/子 Agent 委派和会话恢复。运行项目完整检查后，可单独用以下测试文件定位失败：
+
+```sh
+pnpm exec vitest run tests/config.test.ts tests/agent-execution.test.ts tests/search-tools.test.ts tests/bash.test.ts tests/mcp.test.ts tests/tool-approval.test.ts tests/explore-delegation.test.ts tests/conversations.test.ts tests/cli-process.test.ts
+```
+
+自动测试不等于人工 QA 已完成。人工验收需在本地夹具与可丢弃工作区中逐项确认：
+
+1. 在用户级、项目级和本地 settings 分别配置权限，确认每层字段均严格校验、权限数组跨层合并去重、目标路径匹配及 `deny > ask > allow` 决策；确认旧 `approval.rules` 不再提供授权。
+2. 对 `read_file`、`write_file`、`glob`、`grep` 分别试验工作区内外目标、符号链接目标、允许/审批/拒绝规则；搜索结果不得包含被拒绝文件，审批期间不得读取或写入。
+3. 用精确命令和 `Bash(prefix:*)` 检查简单命令与复合命令；混合规则中只要一条命令被拒绝，整次调用不得启动。无规则时 Bash 进入所选审批；可识别但需要谨慎执行的复合语法额外要求审批，无法可靠解析的控制结构作为无效参数拒绝。
+4. 检查 MCP 工具默认进入所选审批，`MCP(server/tool)` 规则按完整服务名和工具名生效；等待或拒绝期间不得发送远端调用。
+5. 从 Explore 和 general-purpose 子 Agent 分别请求读取与搜索，确认二者采用相同权限规则；Explore 不能写入、执行命令或委派，子 Agent 不能继续创建子 Agent。测试 `Agent` 拒绝规则。
+6. 在 `approval.mode: "auto"` 下检查模型请求包含规则和受控历史摘要、用户消息、先前工具参数/状态，但不包含工具结果；在人工模式下确认只按当前审批编号批准单次调用。
+7. 验证审批失败、取消、超时和跨进程续聊：失败轮不进入有效历史，已有文件或远端副作用保留，不应描述为自动回滚。
+
+记录 QA 运行的版本、操作系统、配置层级、每项结果和缺陷。当前提交的自动化通过状态不会自动将人工 QA 标记为完成；执行记录追加到 [verification.md](verification.md)。
+
 ## 配置字段与验证入口
 
 以下均为产品配置，不是夹具命令行参数。完整严格校验范围和示例见 [README](../README.md)。未知字段、错误类型和无效凭据引用应在工具操作前报 `CONFIG_ERROR`。
@@ -110,9 +130,10 @@ Bash 使用宿主当前用户权限；cwd 仅约束启动目录，不提供文�
 | 字段 | 产品默认值 / 用途 |
 | --- | --- |
 | `timeoutMs`、`maxSteps` | 60000ms、20；整轮执行预算与主模型步骤上限 |
-| `approval.mode`、`approval.rules` | `model`、空规则；规则为 `{toolName, action}`，只精确匹配名称，`deny` 优先于 `allow` 和 `ask` |
+| `approval.mode` | `default`；`auto` 使用独立模型审批。旧 `approval.rules` 不提供授权 |
 | `approval.timeoutMs`、`approval.humanTimeoutMs` | 30000ms、300000ms；人工等待不扣整轮执行预算，不重置此前已消耗时间 |
-| `approval.model` | 可选 `{provider, model, baseURL, apiKeyEnv}`，默认复用主模型，独立审查不携带历史且不提供工具 |
+| `approval.model` | 可选 `{provider, model, baseURL, apiKeyEnv}`，默认复用主模型；独立审查携带受控上下文，不提供工具 |
+| `permissions.allow`、`permissions.ask`、`permissions.deny` | 分别按文件路径、Bash 命令、MCP 服务/工具及 Agent/RuntimeInfo 能力配置；权限规则各层合并去重，`deny` 优先 |
 | `bash.timeoutMs` | 30000ms；单命令上限，不能延长整轮预算 |
 | `mcp.servers` | 每项 `{name, url, headers}`；请求头值仅用 `{env: "变量名"}` 引用 |
 | `mcp.connectTimeoutMs`、`mcp.discoveryTimeoutMs`、`mcp.callTimeoutMs` | 10000ms、10000ms、30000ms；接入共用时限与取消入口，不代表延期专项边界已验收 |

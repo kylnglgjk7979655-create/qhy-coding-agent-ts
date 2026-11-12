@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -21,10 +21,11 @@ describe.skipIf(process.platform === 'win32')('CLI 会话占用与轮次中断',
   }
 
   async function configure(cwd: string, baseURL: string): Promise<void> {
-    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+    await mkdir(join(cwd, '.agent'), { recursive: true });
+    await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
       model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL,
-      workspace: '.', timeoutMs: 10000, maxSteps: 10,
-      approval: { rules: [{ toolName: 'Bash', action: 'allow' }] },
+      timeoutMs: 10000, maxSteps: 10,
+      permissions: { allow: ['Bash(sleep:*)'] },
     }));
   }
 

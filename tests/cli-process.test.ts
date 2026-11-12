@@ -22,13 +22,11 @@ describe('compiled CLI process driver', () => {
   }
 
   async function configure(cwd: string, baseURL: string): Promise<void> {
-    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+    await mkdir(join(cwd, '.agent'), { recursive: true });
+    await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
       model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL,
-      workspace: '.', timeoutMs: 3000, maxSteps: 10,
-      approval: { rules: [
-        { toolName: 'write_file', action: 'allow' },
-        { toolName: 'Bash', action: 'allow' },
-      ] },
+      timeoutMs: 3000, maxSteps: 10,
+      permissions: { allow: ['Write', 'Bash(printf:*)', 'Bash(pwd)', 'Bash(sleep:*)'] },
     }));
   }
 
@@ -144,6 +142,69 @@ describe('compiled CLI process driver', () => {
       expect(JSON.stringify(record.transcript)).toContain('已收到后台调查结果。');
       expect(record.rounds.map(({ status }) => status)).toEqual(['succeeded', 'succeeded']);
       expect(result.stdout).toContain('[后台任务通知] 后台调查：succeeded');
+    } finally {
+      await model.close();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('compiled CLI keeps delegated tool permissions and approval history in the child context', async () => {
+    const cwd = await directory('delegated-permissions-cwd');
+    const userDir = await directory('delegated-permissions-user');
+    await mkdir(join(cwd, '.agent'), { recursive: true });
+    await mkdir(join(cwd, 'private'), { recursive: true });
+    await writeFile(join(cwd, 'private', 'secret.txt'), 'CHILD_PRIVATE_SECRET');
+    const model = await startLocalOpenAIModel((_request, index) => {
+      if (index === 1) return { calls: [{ id: 'cli-delegate', type: 'function', function: { name: 'agent', arguments: JSON.stringify({
+        description: '验证子 Agent 权限',
+        prompt: '子任务审批上下文标记 CHILD_TASK_SENTINEL：读取并搜索 private/secret.txt，然后写入 child-output.txt。',
+      }) } }] };
+      if (index === 2) return { calls: [
+        { id: 'child-read-denied', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'private/secret.txt' }) } },
+        { id: 'child-grep-denied', type: 'function', function: { name: 'grep', arguments: JSON.stringify({ pattern: 'CHILD_PRIVATE_SECRET', path: 'private' }) } },
+        { id: 'child-read-settings', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: '.agent/settings.json' }) } },
+        { id: 'child-change-settings', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: '.agent/settings.json', content: JSON.stringify({ permissions: { allow: ['Read', 'Grep'] } }) }) } },
+        { id: 'child-write-approved', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'child-output.txt', content: 'CHILD_WRITE_APPROVED' }) } },
+      ] };
+      if (index === 3) return { calls: [
+        { id: 'child-read-after-settings-change', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'private/secret.txt' }) } },
+        { id: 'child-grep-after-settings-change', type: 'function', function: { name: 'grep', arguments: JSON.stringify({ pattern: 'CHILD_PRIVATE_SECRET', path: 'private' }) } },
+      ] };
+      if (index === 4) return { content: '子 Agent 已处理权限检查。' };
+      return { content: '父 Agent 已收到子 Agent 报告。' };
+    }, () => ({ content: 'approve' }));
+    try {
+      await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
+        model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL,
+        timeoutMs: 5000, maxSteps: 8, approval: { mode: 'auto', timeoutMs: 3000 },
+        permissions: { deny: ['Read(./private/**)', 'Grep(./private)'] },
+      }));
+      const child = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '父会话私有标记 PARENT_PRIVATE_SENTINEL\n/exit\n' });
+      const result = await child.done;
+
+      expect(result.code).toBe(0);
+      expect(model.requests).toHaveLength(5);
+      expect(model.requests[1]!.tools.map(({ function: fn }) => fn.name)).not.toContain('agent');
+      const childResults = model.requests[2]!.messages.filter(({ role }) => role === 'tool');
+      expect(childResults).toHaveLength(5);
+      expect(childResults.slice(0, 2).map(({ content }) => JSON.parse(content))).toEqual([
+        expect.objectContaining({ is_error: true, error: expect.objectContaining({ code: 'PERMISSION_DENIED' }) }),
+        expect.objectContaining({ is_error: true, error: expect.objectContaining({ code: 'PERMISSION_DENIED' }) }),
+      ]);
+      expect(JSON.parse(childResults[2]!.content)).toMatchObject({ is_error: false });
+      expect(JSON.parse(childResults[3]!.content)).toMatchObject({ is_error: false });
+      expect(JSON.parse(childResults[4]!.content)).toMatchObject({ is_error: false });
+      expect(model.requests[3]!.messages.filter(({ role }) => role === 'tool').slice(-2).map(({ content }) => JSON.parse(content))).toEqual([
+        expect.objectContaining({ is_error: true, error: expect.objectContaining({ code: 'PERMISSION_DENIED' }) }),
+        expect.objectContaining({ is_error: true, error: expect.objectContaining({ code: 'PERMISSION_DENIED' }) }),
+      ]);
+      expect(model.approvalRequests).toHaveLength(2);
+      const approvalContext = JSON.stringify(model.approvalRequests.map(({ messages }) => messages));
+      expect(approvalContext).toContain('CHILD_TASK_SENTINEL');
+      expect(approvalContext).toContain('child-output.txt');
+      expect(approvalContext).toContain('settings.json');
+      expect(approvalContext).not.toContain('PARENT_PRIVATE_SENTINEL');
+      expect(await readFile(join(cwd, 'child-output.txt'), 'utf8')).toBe('CHILD_WRITE_APPROVED');
+      expect(JSON.parse(await readFile(join(cwd, '.agent', 'settings.json'), 'utf8'))).toEqual({ permissions: { allow: ['Read', 'Grep'] } });
     } finally {
       await model.close();
     }

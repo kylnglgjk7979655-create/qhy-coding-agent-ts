@@ -151,7 +151,7 @@ export class CliInput {
         close: () => finish('deny'),
       });
       signal.addEventListener('abort', abort, { once: true });
-      process.stdout.write(`\n[人工审批 ${number}] ${call.toolName}（调用 ${call.callId}；最多等待 ${this.humanTimeoutMs}ms）\n${JSON.stringify(call.input, null, 2)}\n${call.details?.cwd ? `实际工作目录：${call.details.cwd}\n` : ''}批准请输入 approve ${number}，拒绝请输入 deny ${number}：\n`);
+      process.stdout.write(`\n[人工审批 ${number}] ${call.toolName}（调用 ${call.callId}；最多等待 ${this.humanTimeoutMs}ms）\n${JSON.stringify(call.input, null, 2)}\n${call.details?.target ? `实际文件目标：${call.details.target}\n` : ''}${call.details?.cwd ? `实际工作目录：${call.details.cwd}\n` : ''}${call.details?.searchAsk ? `需审批的搜索范围：${call.details.searchAsk}\n` : ''}批准请输入 approve ${number}，拒绝请输入 deny ${number}：\n`);
     });
   };
 

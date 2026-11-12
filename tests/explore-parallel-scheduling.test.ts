@@ -7,6 +7,7 @@ import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 
 const search = vi.hoisted(() => ({
   validateSearchRoot: vi.fn(),
+  inspectWorkspaceSearch: vi.fn(),
   globWorkspace: vi.fn(),
   grepWorkspace: vi.fn(),
 }));
@@ -24,6 +25,7 @@ describe('Explore 只读工具并发调度', () => {
     closeFixture = undefined;
     if (workspace) await rm(workspace, { recursive: true, force: true });
     search.validateSearchRoot.mockReset();
+    search.inspectWorkspaceSearch.mockReset();
     search.globWorkspace.mockReset();
     search.grepWorkspace.mockReset();
   });
@@ -37,7 +39,8 @@ describe('Explore 只读工具并发调度', () => {
     let started = 0;
     let releaseGate!: () => void;
     const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
-    search.validateSearchRoot.mockResolvedValue(undefined);
+    search.validateSearchRoot.mockResolvedValue(workspace);
+    search.inspectWorkspaceSearch.mockResolvedValue({ asks: [], excluded: [] });
     const waitForPeer = async (): Promise<void> => {
       active += 1;
       peakActive = Math.max(peakActive, active);
@@ -62,7 +65,7 @@ describe('Explore 只读工具并发调度', () => {
       : index === 2 ? { content: 'module.ts 中找到 answer；两项搜索均已完成。' } : undefined);
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
     };
@@ -91,7 +94,8 @@ describe('Explore 只读工具并发调度', () => {
     const firstTenStarted = new Promise<void>((resolve) => { tenStarted = resolve; });
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    search.validateSearchRoot.mockResolvedValue(undefined);
+    search.validateSearchRoot.mockResolvedValue(workspace);
+    search.inspectWorkspaceSearch.mockResolvedValue({ asks: [], excluded: [] });
     const waitForRelease = async (id: string): Promise<void> => {
       started.push(id);
       active += 1;
@@ -118,7 +122,7 @@ describe('Explore 只读工具并发调度', () => {
       : { content: '调查已完成。' });
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
-      approval: { mode: 'model', rules: [], timeoutMs: 30_000 },
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
     };

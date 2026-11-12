@@ -90,6 +90,7 @@ export async function runAgent(
   const signal = options.signal === undefined
     ? AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal])
     : AbortSignal.any([deadline.signal, pairingAbort.signal, frameworkAbort.signal, options.signal]);
+  let preparedHistory: ModelMessage[] = [];
   function pauseDeadline(): void {
     signal.throwIfAborted();
     deadlinePauseDepth += 1;
@@ -115,7 +116,7 @@ export async function runAgent(
     approve: async (call) => {
       signal.throwIfAborted();
       try {
-        return await approveToolCall(config, call, signal, options.approvalControl, { pause: pauseDeadline, resume: resumeDeadline });
+        return await approveToolCall(config, call, signal, options.approvalControl, { pause: pauseDeadline, resume: resumeDeadline }, preparedHistory);
       } catch (error) {
         if (!signal.aborted) {
           frameworkError = error instanceof AgentError ? error : new AgentError('APPROVAL_ERROR', '工具审批故障，已停止本轮。');
@@ -168,7 +169,7 @@ export async function runAgent(
     const instructions = [
         '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
         '搜索文件路径时优先使用 glob，搜索文件内容时优先使用 grep；两者默认搜索整个工作区，也可限定子目录，遵循 .gitignore 并包含隐藏目录。',
-        '可使用 read_file 读取工作区文件，使用 write_file 完整替换或创建工作区文件；文件访问仅限配置的工作区。',
+        '可使用 read_file 读取文件：工作区内默认允许，工作区外需要审批；使用 write_file 完整替换或创建文件，工作区外写入默认需要审批。Read 与 Write 权限规则按请求路径和实际目标执行。',
         'write_file 和 Bash 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
         'Bash 可运行命令和项目测试，每次使用独立 shell，继承 CLI 环境并以宿主当前用户权限执行；cwd 只约束启动位置，不提供文件系统或网络隔离。',
         '工具结果中的 is_error: true 表示该调用失败；必须在答复中明确说明失败，不得声称操作成功或把失败调用的输出当成已验证结果。',
@@ -181,7 +182,6 @@ export async function runAgent(
         ] : []),
     ].join('\n');
     const tools = registry.tools();
-    let preparedHistory: ModelMessage[] = [];
     let preparedResponseCount = 0;
     const summaries: RunResult['summaries'] = [];
     let summaryCoverageBase = options.summaryCoverageBase ?? 0;
@@ -210,6 +210,7 @@ export async function runAgent(
           summaryCoverageBase = coversThrough;
           hasSummary = true;
         });
+        preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;
         signal.throwIfAborted();
         return {

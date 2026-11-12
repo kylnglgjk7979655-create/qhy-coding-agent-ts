@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -22,8 +22,10 @@ async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0], revie
   cwd = await mkdtemp(join(tmpdir(), 'qhy-mcp-'));
   const model = await startLocalOpenAIModel(respond, review);
   cleanup.push(model.close);
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
-    model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL, workspace: '.', timeoutMs: 4000, ...extra,
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
+    model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL, timeoutMs: 4000,
+    approval: { mode: 'auto' }, ...extra,
   }));
   return model;
 }
@@ -36,6 +38,52 @@ function run(input = '执行远程工具\n/exit\n', onOutput?: (stdout: string) 
 function results(model: Awaited<ReturnType<typeof setup>>) {
   return model.requests.at(-1)!.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ tool_call_id: string; content: string }>;
 }
+
+it.each([
+  { name: 'MCP 默认审批', permissions: undefined, expectedApprovals: 1, expectedCalls: 1 },
+  { name: '全局 MCP 允许', permissions: { allow: ['MCP'] }, expectedApprovals: 0, expectedCalls: 1 },
+  { name: '服务身份允许', permissions: { allow: ['MCP(alpha/*)'] }, expectedApprovals: 0, expectedCalls: 1 },
+  { name: '原始工具身份拒绝优先于全局允许', permissions: { allow: ['MCP'], deny: ['MCP(alpha/echo)'] }, expectedApprovals: 0, expectedCalls: 0 },
+  { name: '服务级 ask 优先于全局允许', permissions: { allow: ['MCP'], ask: ['MCP(alpha/*)'] }, expectedApprovals: 1, expectedCalls: 1 },
+  { name: '原始工具身份 ask 优先于全局允许', permissions: { allow: ['MCP'], ask: ['MCP(alpha/echo)'] }, expectedApprovals: 1, expectedCalls: 1 },
+])('$name', async ({ permissions, expectedApprovals, expectedCalls }) => {
+  const remote = await mcp();
+  const model = await setup((_request, index) => index === 1
+    ? { calls: [call('remote', 'mcp_alpha_echo', { text: '受权限控制' })] }
+    : { content: '完成' }, async () => ({ content: 'approve' }), {
+    mcp: { servers: [{ name: 'alpha', url: remote.url }] },
+    ...(permissions === undefined ? {} : { permissions }),
+  });
+
+  const result = await run().done;
+
+  expect(result.code, result.stderr).toBe(0);
+  expect(model.approvalRequests).toHaveLength(expectedApprovals);
+  expect(remote.calls).toHaveLength(expectedCalls);
+  if (expectedCalls === 0) {
+    expect(JSON.parse(results(model)[0]!.content)).toMatchObject({ error: { code: 'PERMISSION_DENIED' } });
+  }
+});
+
+it('MCP 工具名包含特殊字符时仍按远端原名应用规则', async () => {
+  const remote = await mcp();
+  remote.setTools([{ name: 'echo.special', description: '特殊名称', inputSchema: {
+    type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false,
+  } }]);
+  const model = await setup((_request, index) => index === 1
+    ? { calls: [call('remote', 'mcp_alpha_6563686f2e7370656369616c', { text: '不应执行' })] }
+    : { content: '完成' }, undefined, {
+    mcp: { servers: [{ name: 'alpha', url: remote.url }] },
+    permissions: { deny: ['MCP(alpha/echo.special)'] },
+  });
+
+  const result = await run().done;
+
+  expect(result.code).toBe(0);
+  expect(model.approvalRequests).toEqual([]);
+  expect(remote.calls).toEqual([]);
+  expect(JSON.parse(results(model)[0]!.content)).toMatchObject({ error: { code: 'PERMISSION_DENIED' } });
+});
 
 it('发现同名远端工具，独立审批后通过真实协议调用；凭据只进入连接器请求头', async () => {
   const a = await mcp(), b = await mcp(true);
@@ -54,7 +102,7 @@ it('发现同名远端工具，独立审批后通过真实协议调用；凭据�
   expect(model.requests[0]!.tools.map(({ function: f }) => f.name)).toEqual(expect.arrayContaining(['mcp_alpha_echo', 'mcp_beta_echo', 'runtimeInfo', 'Bash']));
   expect(a.calls).toEqual([{ name: 'echo', arguments: { text: '第一条' } }]);
   expect(b.calls).toEqual([{ name: 'echo', arguments: { text: '第二条' } }]);
-  expect(model.approvalRequests.map((request) => JSON.parse(request.messages[1]!.content))).toEqual([
+  expect(model.approvalRequests.map((request) => JSON.parse(request.messages[1]!.content))).toMatchObject([
     { toolName: 'mcp_alpha_echo', input: { text: '第一条' } }, { toolName: 'mcp_beta_echo', input: { text: '第二条' } },
   ]);
   expect(results(model).map(({ tool_call_id }) => tool_call_id)).toEqual(['a', 'b', 'local']);
@@ -114,11 +162,7 @@ it('参数错误先拒绝、固定拒绝优先；固定允许及远端普通失�
     call('local', 'runtimeInfo', {}),
   ] } : { content: '完成' }, () => { throw new Error('固定策略不应审查'); }, {
     mcp: { servers: [{ name: 'alpha', url: remote.url }] },
-    approval: { rules: [
-      { toolName: 'mcp_alpha_echo', action: 'allow' },
-      { toolName: 'mcp_alpha_blocked', action: 'allow' },
-      { toolName: 'mcp_alpha_blocked', action: 'deny' },
-    ] },
+    permissions: { allow: ['MCP(alpha/echo)', 'MCP(alpha/blocked)'], deny: ['MCP(alpha/blocked)'] },
   });
   const result = await run().done;
   expect(result.code).toBe(0);
@@ -231,7 +275,7 @@ it('同一服务重复公布工具名称时明确报错，不能静默覆盖或�
 it('人工模式的非交互拒绝沿用同一路径，远端调用为零', async () => {
   const remote = await mcp();
   const model = await setup((_request, index) => index === 1 ? { calls: [call('denied', 'mcp_alpha_echo', { text: '不能执行' })] } : { content: '已拒绝' }, undefined, {
-    mcp: { servers: [{ name: 'alpha', url: remote.url }] }, approval: { mode: 'human' },
+    mcp: { servers: [{ name: 'alpha', url: remote.url }] }, approval: { mode: 'default' },
   });
   const result = await run().done;
   expect(result.code).toBe(0);

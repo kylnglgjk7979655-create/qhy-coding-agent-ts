@@ -77,8 +77,7 @@ export function registerAgentTool(
       }
       if (background === true) throw new ToolExecutionError('Explore 暂不支持后台模式。', undefined);
       if (type !== 'explore') throw new ToolExecutionError(`未知子智能体类型“${subagent_type}”；可用类型：general-purpose、Explore。`, undefined);
-      // TODO: 将 Explore 内部只读工具纳入工具策略与审批；当前仅外层 agent 调用受策略控制。
-      const report = await runExplore(config, description, prompt, model, execution.abortSignal);
+      const report = await runExplore(config, description, prompt, model, execution.abortSignal, approvalControl);
       return { report };
     },
   });

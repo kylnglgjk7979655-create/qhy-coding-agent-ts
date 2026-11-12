@@ -1,5 +1,6 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { isStepCount, ToolLoopAgent } from 'ai';
+import type { ModelMessage } from 'ai';
 import type { ResolvedConfig } from '../services/settings/config.js';
 import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
 import { registerFileReadTool } from '../tools/FileReadTool/FileReadTool.js';
@@ -8,6 +9,8 @@ import { registerGrepTool } from '../tools/GrepTool/GrepTool.js';
 import type { BuiltInToolContext } from '../tools/register-built-in-tools.js';
 import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.js';
 import { readWorkspaceFile } from '../tools/workspace-files.js';
+import { approveToolCall } from '../tools/tool-approval.js';
+import type { ApprovalControl } from '../tools/tool-approval.js';
 
 const exploreInstructions = [
   '你是只读 Explore 调查 Agent。使用独立的新对话，只调查用户指定的工作区问题。',
@@ -25,6 +28,7 @@ export async function runExplore(
   prompt: string,
   modelOverride?: string,
   signal?: AbortSignal,
+  approvalControl?: ApprovalControl,
 ): Promise<string> {
   signal?.throwIfAborted();
   const provider = createOpenAI({
@@ -32,7 +36,11 @@ export async function runExplore(
     fetch: validatedOpenAIFetch,
     ...(config.baseURL === undefined ? {} : { baseURL: config.baseURL }),
   });
-  const registry = new ToolRegistry({});
+  let approvalHistory: ModelMessage[] = [];
+  const approvalSignal = signal ?? new AbortController().signal;
+  const registry = new ToolRegistry({
+    approve: (call) => approveToolCall(config, call, approvalSignal, approvalControl, undefined, approvalHistory),
+  });
   const context: BuiltInToolContext = {
     config,
     probe: '',
@@ -61,6 +69,10 @@ export async function runExplore(
     toolCallConcurrency: MAX_TOOL_CALL_CONCURRENCY,
     stopWhen: isStepCount(config.maxSteps),
     maxRetries: 0,
+    prepareStep: async ({ messages }) => {
+      approvalHistory = [...messages];
+      return {};
+    },
   });
   const result = await agent.stream({
     prompt: `任务说明：${description}\n调查任务：${prompt}`,

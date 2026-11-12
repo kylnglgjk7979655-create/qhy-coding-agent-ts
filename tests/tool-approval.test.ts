@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -17,11 +17,13 @@ function call(id: string, name: string, input: unknown): FixtureToolCall {
 }
 async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0], review?: Parameters<typeof startLocalOpenAIModel>[1], extra = {}) {
   cwd = await mkdtemp(join(tmpdir(), 'qhy-approval-'));
+  const { approval, ...settings } = extra as Record<string, unknown> & { approval?: Record<string, unknown> };
   const fixture = await startLocalOpenAIModel(respond, review);
   fixtures.push(fixture);
-  await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'main-fixture', baseURL: fixture.baseURL, apiKeyEnv: 'TEST_APPROVAL_KEY',
-    workspace: '.', timeoutMs: 3000, ...extra,
+    timeoutMs: 3000, approval: { mode: 'auto', ...approval }, ...settings,
   }));
   return fixture;
 }
@@ -54,8 +56,8 @@ it('默认只读豁免，写入在独立审批通过之前无副作用或开始�
     expect(review.model).toBe('main-fixture');
     expect(review.tools ?? []).toEqual([]);
     expect(review.messages.map(({ role }) => role)).toEqual(['system', 'user']);
-    expect(JSON.parse(review.messages[1]!.content)).toEqual({ toolName: 'write_file', input: { path: 'note.txt', content: 'approved-content' } });
-    expect(JSON.stringify(review)).not.toContain('私有用户目标');
+    expect(JSON.parse(review.messages[1]!.content)).toMatchObject({ toolName: 'write_file', input: { path: 'note.txt', content: 'approved-content' } });
+    expect(JSON.stringify(review)).toContain('私有用户目标');
     expect(JSON.stringify(review)).not.toContain('before');
   } finally { release(); }
   const result = await running.done;
@@ -66,15 +68,90 @@ it('默认只读豁免，写入在独立审批通过之前无副作用或开始�
   expect(result.stdout + result.stderr).not.toContain('fake-approval-secret');
 });
 
+it('模型审批仅提取用户文本和历史工具输入，不含助手回复、工具输出或当前调用副本', async () => {
+  const fixture = await setup((_request, index) => index === 1
+    ? { calls: [call('read-one', 'read_file', { path: 'note.txt' })] }
+    : index === 2
+      ? { calls: [call('write-current', 'write_file', { path: 'out.txt', content: 'current-secret' })] }
+        : { content: '已完成' }, () => ({ content: 'deny' }));
+  await writeFile(join(cwd, 'note.txt'), '工具原始输出不应进入审批');
+  const result = await run().done;
+
+  expect(result.code, result.stdout + result.stderr).toBe(0);
+  expect(fixture.approvalRequests).toHaveLength(1);
+  const review = fixture.approvalRequests[0]!;
+  expect(review.tools ?? []).toEqual([]);
+  const payload = JSON.parse(review.messages.at(-1)!.content) as {
+    toolName: string;
+    input: unknown;
+    context: { history: { entries: Array<Record<string, unknown>> }; rules: unknown; environment: unknown };
+  };
+  expect(payload).toMatchObject({ toolName: 'write_file', input: { path: 'out.txt', content: 'current-secret' } });
+  expect(payload.context.history.entries).toEqual([
+    { type: 'user', text: '私有用户目标' },
+    { type: 'tool', toolName: 'read_file', input: { path: 'note.txt' }, status: 'succeeded' },
+  ]);
+  expect(JSON.stringify(payload)).not.toContain('工具原始输出');
+  expect(JSON.stringify(payload.context.history)).not.toContain('current-secret');
+  expect(payload.context.rules).toBeDefined();
+  expect(payload.context.environment).toBeDefined();
+});
+
+it('模型审批复用已有摘要，只提取摘要之后的用户文本和工具输入', async () => {
+  const fixture = await setup((_request, index) => index === 1
+    ? { calls: [call('write-current', 'write_file', { path: 'out.txt', content: 'new value' })] }
+    : { content: '已完成' }, () => ({ content: 'deny' }));
+  await writeFile(join(cwd, 'CLAUDE.md'), 'UNLOADED_PROJECT_INSTRUCTIONS');
+  await mkdir(join(cwd, '.agent', 'conversations'), { recursive: true });
+  await writeFile(join(cwd, '.agent', 'conversations', 'approval.json'), JSON.stringify([
+    { role: 'assistant', content: '[对话摘要]\nSUMMARY_SECRET：保留目标和限制。' },
+    { role: 'user', content: '摘要之后的用户文本' },
+    { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'history-failed', toolName: 'Bash', input: { command: 'false', cwd: '/hidden/path', extra: 'UNRELATED_PARAMETER' } }] },
+    { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'history-failed', toolName: 'Bash', output: { type: 'json', value: { is_error: true, output: 'RAW_OUTPUT_SECRET' } } }] },
+    { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'history-cancelled', toolName: 'read_file', input: { path: 'cancelled.txt' } }] },
+    { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'history-cancelled', toolName: 'read_file', output: { type: 'json', value: { is_error: true, error: { code: 'CANCELLED' } } } }] },
+  ]));
+
+  const result = await run('本轮用户文本\n/exit\n').done;
+
+  expect(result.code).toBe(0);
+  const payload = JSON.parse(fixture.approvalRequests[0]!.messages.at(-1)!.content) as {
+    context: { history: { summary: string; entries: Array<Record<string, unknown>> } };
+  };
+  expect(payload.context.history.summary).toBe('[对话摘要]\nSUMMARY_SECRET：保留目标和限制。');
+  expect(payload.context.history.entries).toEqual([
+    { type: 'user', text: '摘要之后的用户文本' },
+    { type: 'tool', toolName: 'Bash', input: { command: 'false' }, status: 'failed' },
+    { type: 'tool', toolName: 'read_file', input: { path: 'cancelled.txt' }, status: 'cancelled' },
+    { type: 'user', text: '本轮用户文本' },
+  ]);
+  expect(JSON.stringify(payload)).not.toContain('RAW_OUTPUT_SECRET');
+  expect(JSON.stringify(payload)).not.toContain('UNLOADED_PROJECT_INSTRUCTIONS');
+  expect(JSON.stringify(payload)).not.toContain('UNRELATED_PARAMETER');
+});
+
+it('模型审批上下文超出可用预算时停止且不发送审查请求', async () => {
+  const fixture = await setup((_request, index) => index === 1
+    ? { calls: [call('oversized', 'write_file', { path: 'large.txt', content: '超长参数'.repeat(8000) })] }
+    : { content: '不应到达' }, undefined, { context: { capacityTokens: 12_000, answerReserveTokens: 1_000 } });
+  const result = await run().done;
+
+  expect(result.code).toBe(0);
+  expect(result.stdout + result.stderr).toContain('CONTEXT_ERROR');
+  expect(fixture.approvalRequests).toHaveLength(0);
+  expect(fixture.requests).toHaveLength(1);
+  await expect(readFile(join(cwd, 'large.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
 it.each([
-  { rules: [{ toolName: 'write_file', action: 'allow' }], expected: false },
-  { rules: [{ toolName: 'write_file', action: 'deny' }], expected: true },
-  { rules: [{ toolName: 'write_file', action: 'allow' }, { toolName: 'write_file', action: 'ask' }, { toolName: 'write_file', action: 'deny' }], expected: true },
-])('固定策略优先且拒绝胜出：$rules', async ({ rules, expected }) => {
+  { permissions: { allow: ['Write'] }, expected: false },
+  { permissions: { deny: ['Write'] }, expected: true },
+  { permissions: { allow: ['Write'], ask: ['Write'], deny: ['Write'] }, expected: true },
+])('权限规则优先且拒绝胜出：$permissions', async ({ permissions, expected }) => {
   const fixture = await setup((_request, index) => index === 1 ? { calls: [
     call('read', 'read_file', { path: 'note.txt' }),
     call('write', 'write_file', { path: 'note.txt', content: 'after' }),
-  ] } : { content: '处理完毕' }, () => { throw new Error('不应审查'); }, { approval: { rules } });
+  ] } : { content: '处理完毕' }, () => { throw new Error('不应审查'); }, { permissions });
   await writeFile(join(cwd, 'note.txt'), 'before');
   const result = await run().done;
   expect(result.code).toBe(0);
@@ -85,6 +162,19 @@ it.each([
     ? { is_error: true, error: { code: 'PERMISSION_DENIED' } } : { is_error: false });
   expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe(expected ? 'before' : 'after');
   if (expected) expect(result.stdout).not.toContain('write_file：开始');
+});
+
+it('旧 approval.rules 不再授权写入', async () => {
+  const fixture = await setup((_request, index) => index === 1
+    ? { calls: [call('legacy-write', 'write_file', { path: 'legacy-authorized.txt', content: 'must not be written' })] }
+    : { content: '处理完成' }, undefined, { approval: { mode: 'default', rules: [{ toolName: 'write_file', action: 'allow' }] } });
+
+  const result = await run().done;
+
+  expect(result.code).toBe(0);
+  expect(fixture.approvalRequests).toHaveLength(0);
+  expect(JSON.parse(results(fixture)[0]!.content)).toMatchObject({ is_error: true, error: { code: 'PERMISSION_DENIED' } });
+  await expect(readFile(join(cwd, 'legacy-authorized.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('参数与未知工具先拒绝，逐次审批不复用授权，明确拒绝后仍继续同批调用', async () => {
@@ -157,7 +247,8 @@ it('独立审查模型只收到专用输入，ask 可覆盖只读默认豁免', 
   const review = await startLocalOpenAIModel(() => { throw new Error('不应收到主请求'); }, () => ({ content: 'deny' }));
   fixtures.push(review);
   const fixture = await setup((_request, index) => index === 1 ? { calls: [call('read', 'read_file', { path: 'note.txt' })] } : { content: '拒绝读取' }, undefined, {
-    approval: { rules: [{ toolName: 'read_file', action: 'ask' }], model: { model: 'review-fixture', baseURL: review.baseURL, apiKeyEnv: 'TEST_APPROVAL_KEY' } },
+    permissions: { ask: ['Read'] },
+    approval: { model: { model: 'review-fixture', baseURL: review.baseURL, apiKeyEnv: 'TEST_APPROVAL_KEY' } },
   });
   await writeFile(join(cwd, 'note.txt'), 'hidden-file-content');
   const result = await run().done;
