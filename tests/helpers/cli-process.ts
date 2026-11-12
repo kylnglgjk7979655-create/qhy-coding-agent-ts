@@ -15,7 +15,9 @@ export function startCLI(options: {
   const args = [...(options.conversationId === undefined ? [] : ['--conversation-id', options.conversationId]), ...(options.args ?? [])];
   const command = [process.execPath, cli, ...args].map(shellQuote).join(' ');
   const child = options.pty
-    ? spawn('script', ['-qefc', command, '/dev/null'], {
+    ? spawn(process.platform === 'darwin' ? '/bin/sh' : 'script', process.platform === 'darwin'
+      ? ['-c', 'cat | script "$@"', 'cli-test', '-q', '/dev/null', '/bin/sh', '-c', command]
+      : ['-qefc', command, '/dev/null'], {
       cwd: options.cwd,
       env: {
         ...process.env,

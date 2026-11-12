@@ -166,11 +166,22 @@ describe('interactive compiled CLI', () => {
       : { body: response('终端显示已精简。') };
     await writeFile(join(cwd, 'note.txt'), '文件内容');
 
-    const cliProcess = startCLI({
+    let sent = false;
+    let exited = false;
+    let cliProcess!: ReturnType<typeof startCLI>;
+    cliProcess = startCLI({
       cwd,
       pty: true,
-      input: '读取文件\n/exit\n',
       env: { TEST_MODEL_API_KEY: secret },
+    }, (stdout) => {
+      if (!sent && stdout.includes('> ')) {
+        sent = true;
+        cliProcess.send('读取文件\n');
+      }
+      if (!exited && stdout.includes('终端显示已精简。')) {
+        exited = true;
+        cliProcess.end('/exit\n');
+      }
     });
     const result = await cliProcess.done;
 
@@ -552,9 +563,12 @@ describe('interactive compiled CLI', () => {
     let output = '';
     let ready: () => void;
     const terminalReady = new Promise<void>((done) => { ready = done; });
+    let interrupted: () => void;
+    const terminalInterrupted = new Promise<void>((done) => { interrupted = done; });
     const collect = (chunk: Buffer): void => {
       output += chunk.toString();
       if (output.includes('> ')) ready();
+      if (output.includes('Interrupt by user')) interrupted();
     };
     child.stdout.on('data', collect);
     child.stderr.on('data', collect);
@@ -572,7 +586,14 @@ describe('interactive compiled CLI', () => {
         child.stdin.write('取消当前轮次\n');
         await requestStarted;
       }
-      child.stdin.end('\x03');
+      if (requestInProgress) {
+        child.stdin.write('\x03');
+        await Promise.race([
+          terminalInterrupted,
+          exited.then((code) => { throw new Error(`终端在中断前退出：${code}\n${output}`); }),
+        ]);
+        child.stdin.end('/exit\n');
+      } else child.stdin.end('\x03');
       expect(await exited).toBe(0);
       if (requestInProgress) expect(output).toContain('Interrupt by user');
       expect(requests).toHaveLength(requestInProgress ? 2 : 1);

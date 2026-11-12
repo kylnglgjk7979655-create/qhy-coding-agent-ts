@@ -1,0 +1,31 @@
+computer: {}
+agent:
+  testId: interactive-cli-qa
+tasks:
+  - name: 多轮对话与工具进度
+    flow:
+      - aiAssert: 前台终端显示 CLI 的输入提示符，正在等待输入。
+      - aiAct: 在当前 CLI 输入 hello 并按回车，等待固定回复和新的输入提示符。
+      - aiAssert: 终端显示“固定回复：测试成功。”，没有运行事件 JSON 或 timestamp 字段。
+      - aiAct: 在当前 CLI 输入 second 并按回车，等待第二次固定回复。
+      - aiAssert: 终端中两次固定回复均可见，且没有运行事件 JSON。
+      - aiAct: 在当前 CLI 输入“读取文件”并按回车，等待工具执行和最终回复。
+      - aiAssert: 终端显示 read_file 的开始和成功状态以及“工具处理完成。”，没有运行事件 JSON。
+  - name: 人工审批批准
+    flow:
+      - aiAct: 输入“批准写入”并按回车，等待人工审批提示，不要提前批准。
+      - aiAssert: 审批提示显示 write_file、approved.txt、approved-content，以及 approve 1 和 deny 1 指令。
+      - aiAct: 输入 approve 1 并按回车，等待工具完成和最终回复。
+      - aiAssert: write_file 显示开始与成功，终端显示“工具处理完成。”，没有运行事件 JSON。
+  - name: 人工审批拒绝
+    flow:
+      - aiAct: 输入“拒绝写入”并按回车，等待人工审批提示，不要提前处理。
+      - aiAssert: 审批提示显示 write_file、denied.txt，以及 approve 2 和 deny 2 指令。
+      - aiAct: 输入 deny 2 并按回车，等待工具拒绝状态和最终回复。
+      - aiAssert: 终端显示 write_file 已拒绝和“工具处理完成。”，且出现可继续输入的提示符。
+  - name: 错误恢复
+    flow:
+      - aiAct: 输入“故障”并按回车，等待错误信息出现。
+      - aiAssert: 终端显示 PROVIDER_ERROR 和 HTTP 500 的可读错误，没有运行事件 JSON。
+      - aiAct: 输入 hello 并按回车，等待回复。
+      - aiAssert: 终端显示“固定回复：测试成功。”并可继续输入。

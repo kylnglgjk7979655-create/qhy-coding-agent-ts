@@ -233,7 +233,11 @@ it.skipIf(process.platform === 'win32').each(['Ctrl+C', 'SIGTERM'] as const)('�
   await running.waitFor('> ');
   running.child.stdin.write('取消审批\n');
   await running.waitFor('approve 1');
-  if (stop === 'Ctrl+C') running.child.stdin.end('\x03');
+  if (stop === 'Ctrl+C') {
+    running.child.stdin.write('\x03');
+    await running.waitFor('Interrupt by user');
+    running.child.stdin.end('/exit\n');
+  }
   else {
     process.kill(Number(await readFile(join(cwd, 'cli.pid'), 'utf8')), 'SIGTERM');
     running.child.stdin.end();
@@ -315,11 +319,11 @@ it.skipIf(process.platform === 'win32')('默认人工等待上限为五分钟，
   await running.waitFor('approve 1');
   expect(running.output()).toContain('最多等待 300000ms');
   expect(running.output()).toContain('[人工审批 1] read_file');
-  expect(running.output()).toContain('runtimeInfo：拒绝');
   expect(running.output()).not.toContain('runtimeInfo：开始');
   expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('内容-allowed');
   running.child.stdin.write('deny 1\n');
   await running.waitFor('策略完成');
+  expect(running.output()).toContain('runtimeInfo：拒绝');
   running.child.stdin.end('/exit\n');
   expect((await running.done).code).toBe(0);
   expect(results().map(({ content }) => JSON.parse(content).is_error)).toEqual([false, true, true]);

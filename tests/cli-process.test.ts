@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -16,7 +16,7 @@ describe('compiled CLI process driver', () => {
   });
 
   async function directory(name: string): Promise<string> {
-    const root = await mkdtemp(join(tmpdir(), `qhy-${name}-`));
+    const root = await realpath(await mkdtemp(join(tmpdir(), `qhy-${name}-`)));
     roots.push(root);
     return root;
   }
