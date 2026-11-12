@@ -19,9 +19,10 @@ try {
 
   const prMetadataPath = path.join(outputDir(), "pr-metadata.json");
   rmSync(prMetadataPath, { force: true });
+  const agent = codexAgent();
   const result = await sandcastle.run({
     name: `implement-#${ISSUE_NUMBER}`,
-    agent: codexAgent(),
+    agent,
     sandbox: noSandbox(),
     logging: { type: "stdout" },
     promptFile: path.join(import.meta.dirname, "prompt.md"),
@@ -35,15 +36,38 @@ try {
     },
   });
 
-  const contextWindow = result.iterations.at(-1)?.contextWindow;
+  let contextWindow: (typeof result.iterations)[number]["contextWindow"];
+  let contextWindowIteration = -1;
+  const lastIteration = result.iterations.at(-1);
+  if (lastIteration?.sessionId && agent.sessionStorage && agent.parseSessionContextWindow) {
+    try {
+      const session = await agent.sessionStorage.readHostSession(process.cwd(), lastIteration.sessionId);
+      if (session) {
+        contextWindow = agent.parseSessionContextWindow(session);
+        if (contextWindow) contextWindowIteration = result.iterations.length;
+      }
+    } catch {
+      // Session capture is best-effort; keep the stream data fallback below.
+    }
+  }
+  for (let i = result.iterations.length - 1; i >= 0; i--) {
+    if (contextWindow) break;
+    const candidate = result.iterations[i]?.contextWindow;
+    if (candidate && Number.isFinite(candidate.tokens) && candidate.tokens > 0) {
+      contextWindow = candidate;
+      contextWindowIteration = i + 1;
+      break;
+    }
+  }
   if (contextWindow) {
     const limit = contextWindow.limit;
-    const usage = limit
+    const validLimit = typeof limit === "number" && Number.isFinite(limit) && limit > 0;
+    const usage = validLimit
       ? `${contextWindow.tokens.toLocaleString()} / ${limit.toLocaleString()} tokens (${((contextWindow.tokens / limit) * 100).toFixed(1)}%)`
       : `${contextWindow.tokens.toLocaleString()} tokens`;
-    console.log(`Codex 上下文用量（最后一次模型请求）：${usage}`);
+    console.log(`Codex 上下文用量（第 ${contextWindowIteration}/${result.iterations.length} 次迭代的最后一次模型请求）：${usage}`);
   } else {
-    console.log("Codex 上下文用量：本次运行未返回上下文窗口数据。");
+    console.log("Codex 上下文用量：上游未提供上下文窗口数据。");
   }
 
   const commitsAhead = Number(sh("git rev-list --count main..HEAD").trim());
