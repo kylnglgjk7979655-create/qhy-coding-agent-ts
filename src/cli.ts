@@ -32,11 +32,27 @@ const help = `用法：node dist/cli.js [选项]
   --help              显示帮助
 
 从当前目录 .env 或环境变量读取配置中 apiKeyEnv 指定的凭据。
-回答流式输出到 stdout；会话记录保存在用户目录 ~/.qhy-coding-agents/；运行 JSON 日志及错误输出到 stderr。
+回答流式输出到 stdout；会话记录保存在用户目录 ~/.qhy-coding-agents/；交互模式隐藏运行 JSON 日志并显示可读错误。
 `;
 
+function isInteractiveTerminal(): boolean {
+  return Boolean(process.stdout.isTTY && process.stderr.isTTY);
+}
+
 function log(event: Record<string, unknown>): void {
+  if (isInteractiveTerminal()) return;
   process.stderr.write(`${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`);
+}
+
+function formatUserError(error: unknown): string {
+  const failure = publicError(error);
+  const code = isInteractiveTerminal() ? `（${failure.code}）` : '';
+  return `错误${code}：${failure.message}`;
+}
+
+function reportCheckpointWarning(event: string, message: string, details: Record<string, unknown>): void {
+  if (isInteractiveTerminal()) process.stdout.write(`\n警告：${message}\n`);
+  else log({ event, ...details, message });
 }
 
 async function main(): Promise<void> {
@@ -186,7 +202,7 @@ async function main(): Promise<void> {
           recoveredRoundIds = recovered.recoveredRoundIds;
         } catch (error) {
           if (cancellation.signal.aborted) throw error;
-          process.stdout.write(`\n错误：${publicError(error).message}\n`);
+          process.stdout.write(`\n${formatUserError(error)}\n`);
         } finally {
           activeRound = undefined;
         }
@@ -312,11 +328,11 @@ async function main(): Promise<void> {
             const selectedId = await input.select('全部工作区会话', allChoices);
             if (selectedId) {
               try { ({ config, conversationId, history, recoveredRoundIds } = await switchSession(selectedId)); }
-              catch (error) { process.stdout.write(`\n错误：${publicError(error).message}\n`); }
+              catch (error) { process.stdout.write(`\n${formatUserError(error)}\n`); }
             }
           } else if (id?.kind === 'session') {
             try { ({ config, conversationId, history, recoveredRoundIds } = await switchSession(id.id)); }
-            catch (error) { process.stdout.write(`\n错误：${publicError(error).message}\n`); }
+            catch (error) { process.stdout.write(`\n${formatUserError(error)}\n`); }
           }
         }
         if (process.stdin.isTTY) input.prompt();
@@ -327,7 +343,7 @@ async function main(): Promise<void> {
         try {
           ({ config, conversationId, history, recoveredRoundIds } = await switchSession(id));
         } catch (error) {
-          process.stdout.write(`\n错误：${publicError(error).message}\n`);
+          process.stdout.write(`\n${formatUserError(error)}\n`);
         }
         if (process.stdin.isTTY) input.prompt();
         continue;
@@ -346,7 +362,7 @@ async function main(): Promise<void> {
       } catch (error) {
         if (cancellation.signal.aborted) throw error;
         const failure = publicError(error);
-        process.stdout.write(`\n错误：${failure.message}\n`);
+        process.stdout.write(`\n${formatUserError(failure)}\n`);
       } finally {
         activeRound = undefined;
       }
@@ -355,11 +371,14 @@ async function main(): Promise<void> {
     cancellation.signal.throwIfAborted();
   } catch (error) {
     const failure = publicError(error);
-    log({
-      event: 'run.finished', runId: lastRunId, status: 'failed',
-      durationMs: Math.round(performance.now() - lastRunStartedAt),
-      error: { code: failure.code, message: failure.message },
-    });
+    if (isInteractiveTerminal()) process.stderr.write(`${formatUserError(failure)}\n`);
+    else {
+      log({
+        event: 'run.finished', runId: lastRunId, status: 'failed',
+        durationMs: Math.round(performance.now() - lastRunStartedAt),
+        error: { code: failure.code, message: failure.message },
+      });
+    }
     process.exitCode = failure.exitCode;
   } finally {
     abortAllBackgroundAgentTasks();
@@ -399,7 +418,7 @@ async function runTurn(
     if (!smokeTool) {
       const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, migrationWarnings: _migrationWarnings, ...persistedConfig } = config;
       roundId = await startSessionRound(userHome, conversationId, prompt, persistedConfig, () => {
-        log({ event: 'checkpoint.snapshot_failed', conversationId, message: '消息检查点文件快照失败，继续处理。' });
+        reportCheckpointWarning('checkpoint.snapshot_failed', '消息检查点文件快照失败，本轮继续处理。', { conversationId });
       });
       summaryCoverageBase = (await loadSession(userHome, conversationId)).summaries.at(-1)?.coversThrough ?? 0;
     }
@@ -434,7 +453,7 @@ async function runTurn(
         await recordFileBackup(userHome, conversationId, roundId, snapshot);
       },
       onCheckpointError: () => {
-        log({ event: 'checkpoint.backup_failed', conversationId, message: 'write_file 原状态备份失败，继续写入。' });
+        reportCheckpointWarning('checkpoint.backup_failed', 'write_file 原状态备份失败，继续写入。', { conversationId });
       },
       onToolEvent: ({ toolName, description, status }) => {
         if (toolName === 'Bash' && status === 'failed') bashFailed = true;
