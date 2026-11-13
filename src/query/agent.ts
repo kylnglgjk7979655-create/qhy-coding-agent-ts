@@ -35,7 +35,7 @@ export interface RunResult {
   skillLoads: string[];
   /** 本轮成功使用的完整有效历史，可直接用于保存及下一轮输入。 */
   effectiveHistory: ModelMessage[];
-  summaries: Array<{ text: string; coversThrough: number }>;
+  summaries: Array<{ text: string; coversThrough: number; restoredMessages: number }>;
   steps: number;
   toolCalls: number;
   finishReason: string;
@@ -66,12 +66,16 @@ export async function runAgent(
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
     summaryCoverageBase?: number;
+    /** 上一份摘要恢复的正文条数；这些消息不在 transcript 中，计算覆盖边界时要扣除。 */
+    summaryRestoredBase?: number;
     /** general-purpose 子 Agent 使用独立循环，但不公布 agent 工具。 */
     generalPurposeSubagent?: boolean;
     modelOverride?: string;
     backgroundTasks?: BackgroundAgentTasks;
     /** 已注册 Skill 的共享清单；主 Agent 与子 Agent 使用同一份。 */
     skills?: SkillCatalogue;
+    /** 会话记录中此前实际加载的 Skill 规范名称，按加载顺序；用于压缩后恢复正文。 */
+    recentSkillLoads?: readonly string[];
   },
 ): Promise<RunResult> {
   if (options.smokeTool && config.maxSteps < 2) {
@@ -202,6 +206,7 @@ export async function runAgent(
     const injectedSkillCalls = new Set<string>();
     const skillInjections: SkillInjection[] = [];
     let summaryCoverageBase = options.summaryCoverageBase ?? 0;
+    let restoredCoverageBase = options.summaryRestoredBase ?? 0;
     let hasSummary = summaryCoverageBase > 0;
     const agent = new ToolLoopAgent({
       model,
@@ -229,13 +234,19 @@ export async function runAgent(
         const stepMessages = injections.length === 0
           ? messages
           : [...messages, ...injections.map(({ message }) => message)];
+        // 压缩恢复顺序包含本运行内新的加载，使同轮加载的正文也参与恢复。
+        const restore = options.skills === undefined
+          ? undefined
+          : { catalogue: options.skills, recentLoads: appendRecentSkillLoads(options.recentSkillLoads ?? [], skillInjections.map(({ name }) => name)) };
         preparedHistory = await prepareConversation(config, instructions, stepMessages, tools, signal, (summary) => {
-          // 已有摘要在有效历史中占一个消息槽位，不代表一条新的 transcript 原文。
-          const coversThrough = summaryCoverageBase + summary.coveredMessages - (hasSummary ? 1 : 0);
-          summaries.push({ text: summary.text, coversThrough });
+          // 被覆盖的有效历史消息包含上一份摘要槽位及其恢复的正文，二者都不在 transcript 中。
+          const coveredMessages = summary.coveredMessages - (hasSummary ? 1 + restoredCoverageBase : 0);
+          const coversThrough = summaryCoverageBase + coveredMessages;
+          summaries.push({ text: summary.text, coversThrough, restoredMessages: summary.restoredMessages });
           summaryCoverageBase = coversThrough;
+          restoredCoverageBase = summary.restoredMessages;
           hasSummary = true;
-        });
+        }, restore);
         preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;
         signal.throwIfAborted();

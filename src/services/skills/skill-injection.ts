@@ -23,6 +23,42 @@ export function isSkillInjectionMessage(message: ModelMessage): boolean {
     && message.content.startsWith(injectionPrefix);
 }
 
+/** 取注入消息的 Skill 规范名称；非注入消息或缺少标头时返回 undefined。 */
+function skillInjectionName(message: ModelMessage): string | undefined {
+  if (!isSkillInjectionMessage(message)) return undefined;
+  const content = (message as { content: string }).content;
+  const header = content.slice(injectionPrefix.length);
+  const lineEnd = header.indexOf('\n');
+  const name = (lineEnd < 0 ? header : header.slice(0, lineEnd)).trim();
+  return name === '' ? undefined : name;
+}
+
+/** 压缩恢复所需的 Skill 来源：注册清单与按加载顺序排列的规范名称（最近的在末尾）。 */
+export interface SkillRestoreSource {
+  readonly catalogue: SkillCatalogue;
+  readonly recentLoads: readonly string[];
+}
+
+/**
+ * 压缩后恢复被摘要移除的 Skill 正文：按最近加载顺序（最近优先）生成注入消息。
+ * 正文仍在保留历史中的 Skill 不重复添加；清单中找不到对应记录时跳过。
+ */
+export function restoreSkillInjections(source: SkillRestoreSource, retained: readonly ModelMessage[]): ModelMessage[] {
+  const present = new Set(retained
+    .map(skillInjectionName)
+    .filter((name): name is string => name !== undefined));
+  const restored: ModelMessage[] = [];
+  for (let index = source.recentLoads.length - 1; index >= 0; index -= 1) {
+    const name = source.recentLoads[index]!;
+    if (present.has(name)) continue;
+    const record = source.catalogue.skills.find((skill) => skill.name === name);
+    if (record === undefined) continue;
+    present.add(name);
+    restored.push(skillInjectionMessage(record));
+  }
+  return restored;
+}
+
 /**
  * 从本轮新增消息中收集尚未注入的成功 Skill 调用，按调用顺序生成注入消息。
  * 调用方传入已注入的调用 ID，避免后续步骤或压缩后重复注入。

@@ -38,7 +38,7 @@ export interface SessionRecord {
     recovered?: boolean;
     error?: { code: string; message: string };
   }>;
-  summaries: Array<{ text: string; coversThrough: number }>;
+  summaries: Array<{ text: string; coversThrough: number; /** 该摘要恢复的 Skill 正文条数，不计入 coversThrough。 */ restoredMessages?: number }>;
   checkpoints: Array<{ id: string; messageId: string; createdAt: string; files?: Array<{ path: string; backupId: string }> }>;
   backups: Array<{ id?: string; path: string; content?: string; existed: boolean }>;
 }
@@ -486,11 +486,14 @@ function isRoundRecord(value: unknown): value is SessionRecord['rounds'][number]
 }
 
 function isSummaryRecord(value: unknown): value is SessionRecord['summaries'][number] {
+  const summary = value as SessionRecord['summaries'][number];
   return typeof value === 'object' && value !== null
-    && typeof (value as SessionRecord['summaries'][number]).text === 'string'
-    && (value as SessionRecord['summaries'][number]).text.trim().length > 0
-    && Number.isSafeInteger((value as SessionRecord['summaries'][number]).coversThrough)
-    && (value as SessionRecord['summaries'][number]).coversThrough >= 0;
+    && typeof summary.text === 'string'
+    && summary.text.trim().length > 0
+    && Number.isSafeInteger(summary.coversThrough)
+    && summary.coversThrough >= 0
+    && (summary.restoredMessages === undefined
+      || (Number.isSafeInteger(summary.restoredMessages) && summary.restoredMessages >= 0));
 }
 
 function isCheckpointRecord(value: unknown): value is SessionRecord['checkpoints'][number] {

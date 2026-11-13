@@ -64,6 +64,7 @@ it('跨进程复用已保存摘要，保留摘要覆盖的完整 transcript 和�
   expect(saved.summaries).toEqual([{
     text: '摘要目标：跨进程续聊；约束：保留完整原文；结果：前序消息已处理；未完成：继续工作。',
     coversThrough: 4,
+    restoredMessages: 0,
   }]);
   const summarized = JSON.parse(model.summaryRequests[0]!.messages[1]!.content) as Array<{ role: string; content: string }>;
   expect(summarized.filter(({ role }) => role === 'user').map(({ content }) => content)).toEqual(prompts.slice(0, 2));

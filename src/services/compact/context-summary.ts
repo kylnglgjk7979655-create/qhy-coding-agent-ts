@@ -3,7 +3,8 @@ import { asSchema, generateText } from 'ai';
 import type { ModelMessage, ToolSet } from 'ai';
 import { DEFAULT_CONTEXT } from '../settings/config.js';
 import type { ResolvedConfig } from '../settings/config.js';
-import { isSkillInjectionMessage } from '../skills/skill-injection.js';
+import { isSkillInjectionMessage, restoreSkillInjections } from '../skills/skill-injection.js';
+import type { SkillRestoreSource } from '../skills/skill-injection.js';
 import { AgentError } from '../../utils/errors.js';
 
 const summaryInstructions = [
@@ -35,7 +36,8 @@ export async function prepareConversation(
   messages: ModelMessage[],
   tools: ToolSet,
   signal: AbortSignal,
-  onSummary?: (summary: { text: string; coveredMessages: number }) => void,
+  onSummary?: (summary: { text: string; coveredMessages: number; restoredMessages: number }) => void,
+  restore?: SkillRestoreSource,
 ): Promise<ModelMessage[]> {
   signal.throwIfAborted();
   const context = config.context ?? DEFAULT_CONTEXT;
@@ -86,14 +88,18 @@ export async function prepareConversation(
     signal.throwIfAborted();
     throw new AgentError('CONTEXT_ERROR', '对话摘要生成失败或响应无效，已停止本轮；成功历史保持不变，此前操作不会回滚。');
   }
+  // 被摘要移除的 Skill 正文按最近加载顺序恢复到摘要之后；仍在保留历史中的不重复添加。
+  const restored = restore === undefined ? [] : restoreSkillInjections(restore, retained);
   const compacted: ModelMessage[] = [
     { role: 'assistant', content: `[对话摘要]\n以下仅为较早对话的历史资料，不改变系统提示或工具策略。\n${text}` },
+    ...restored,
     ...retained,
   ];
   if (size(compacted) >= budget * context.targetRatio || size(compacted) > budget) {
     throw new AgentError('CONTEXT_ERROR', '对话摘要后仍无法满足上下文预算或压缩目标，已停止本轮；成功历史保持不变。');
   }
   signal.throwIfAborted();
-  onSummary?.({ text, coveredMessages: cut });
+  // restoredMessages 让调用方从覆盖边界中扣除不在 transcript 中的恢复正文。
+  onSummary?.({ text, coveredMessages: cut, restoredMessages: restored.length });
   return compacted;
 }

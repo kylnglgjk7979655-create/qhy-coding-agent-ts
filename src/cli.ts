@@ -434,6 +434,8 @@ async function runTurn(
 ): Promise<ModelMessage[]> {
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
+  let summaryRestoredBase = 0;
+  let recentSkillLoads: string[] = [];
   let bashFailed = false;
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
@@ -447,12 +449,18 @@ async function runTurn(
       roundId = await startSessionRound(userHome, conversationId, prompt, persistedConfig, () => {
         reportCheckpointWarning('checkpoint.snapshot_failed', '消息检查点文件快照失败，本轮继续处理。', { conversationId });
       });
-      summaryCoverageBase = (await loadSession(userHome, conversationId)).summaries.at(-1)?.coversThrough ?? 0;
+      const current = await loadSession(userHome, conversationId);
+      const lastSummary = current.summaries.at(-1);
+      summaryCoverageBase = lastSummary?.coversThrough ?? 0;
+      summaryRestoredBase = lastSummary?.restoredMessages ?? 0;
+      recentSkillLoads = current.skillLoads ?? [];
     }
     const result = await runAgent(config, prompt, {
       smokeTool,
       history,
       summaryCoverageBase,
+      summaryRestoredBase,
+      recentSkillLoads,
       fileBaselines,
       ...(skills === undefined ? {} : { skills }),
       ...(!smokeTool ? { backgroundTasks: backgroundAgentTasksForSession(
