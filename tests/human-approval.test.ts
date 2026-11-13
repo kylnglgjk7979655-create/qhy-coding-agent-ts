@@ -1,10 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
+import { tempDir } from './helpers/temp-dir.js';
 import type { FixtureToolCall } from './helpers/local-openai-fixture.js';
 
 const cli = resolve('dist/cli.js');
@@ -24,7 +24,7 @@ function write(id: string, path = 'note.txt'): FixtureToolCall {
   return { id, type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path, content: `内容-${id}` }) } };
 }
 async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0], extra = {}) {
-  cwd = await mkdtemp(join(tmpdir(), 'qhy-human-approval-'));
+  cwd = await tempDir('qhy-human-approval-');
   fixture = await startLocalOpenAIModel(respond, () => { throw new Error('人工模式不得请求模型审批'); });
   await mkdir(join(cwd, '.agent'), { recursive: true });
   await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
@@ -131,7 +131,7 @@ it.skipIf(process.platform === 'win32')('人工审批工作区外 Bash cwd 展�
 });
 
 it.skipIf(process.platform === 'win32')('人工批准后写入工作区外目标并展示规范实际路径', async () => {
-  const outside = await mkdtemp(join(tmpdir(), 'qhy-human-write-outside-'));
+  const outside = await tempDir('qhy-human-write-outside-');
   try {
     const target = join(outside, 'approved.txt');
     await setup((_request, index) => index === 1
@@ -284,8 +284,12 @@ it.skipIf(process.platform === 'win32').each(['Ctrl+C', 'SIGTERM'] as const)('�
   await running.waitFor('> ');
   running.child.stdin.write('取消审批\n');
   await running.waitFor('approve 1');
-  if (stop === 'Ctrl+C') running.child.stdin.end('\x03');
-  else {
+  if (stop === 'Ctrl+C') {
+    running.child.stdin.write('\x03');
+    // macOS 的 BSD script 不会把 PTY 的 EOF 转给子进程，取消后需要显式关闭输入。
+    if (process.platform === 'darwin') running.child.stdin.end('\x04');
+    else running.child.stdin.end();
+  } else {
     process.kill(Number(await readFile(join(cwd, 'cli.pid'), 'utf8')), 'SIGTERM');
     running.child.stdin.end();
   }

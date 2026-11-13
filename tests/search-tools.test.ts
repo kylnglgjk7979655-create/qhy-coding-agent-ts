@@ -1,14 +1,14 @@
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { basename, join, relative } from 'node:path';
 import { expect, it } from 'vitest';
 import { runAgent } from '../src/query/agent.js';
 import type { ResolvedConfig } from '../src/services/settings/config.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
+import { tempDir } from './helpers/temp-dir.js';
 
 it('Agent 可用 glob 和 grep 搜索工作区，包含隐藏目录并遵循忽略规则', async () => {
-  const workspace = await mkdtemp(join(tmpdir(), 'qhy-search-tools-'));
-  const outside = await mkdtemp(join(tmpdir(), 'qhy-search-outside-'));
+  const workspace = await tempDir('qhy-search-tools-');
+  const outside = await tempDir('qhy-search-outside-');
   let closeFixture: (() => Promise<void>) | undefined;
   try {
     await mkdir(join(workspace, '.hidden'));
@@ -64,8 +64,8 @@ it('Agent 可用 glob 和 grep 搜索工作区，包含隐藏目录并遵循忽�
 });
 
 it('搜索工具限定子目录、拒绝越界路径并标记截断结果', async () => {
-  const workspace = await mkdtemp(join(tmpdir(), 'qhy-search-limits-'));
-  const outside = await mkdtemp(join(tmpdir(), 'qhy-search-outside-'));
+  const workspace = await tempDir('qhy-search-limits-');
+  const outside = await tempDir('qhy-search-outside-');
   let closeFixture: (() => Promise<void>) | undefined;
   try {
     await mkdir(join(workspace, 'only-here'));
@@ -116,7 +116,7 @@ it('搜索工具限定子目录、拒绝越界路径并标记截断结果', asyn
 });
 
 it('Glob 与 Grep 按各自权限范围剪枝并汇总审批', async () => {
-  const workspace = await mkdtemp(join(tmpdir(), 'qhy-search-permissions-'));
+  const workspace = await tempDir('qhy-search-permissions-');
   let closeFixture: (() => Promise<void>) | undefined;
   try {
     await mkdir(join(workspace, 'private'));
@@ -178,7 +178,7 @@ it('Glob 与 Grep 按各自权限范围剪枝并汇总审批', async () => {
 });
 
 it('搜索审批后新增的 ask 范围不会被未覆盖的先前批准放行', async () => {
-  const workspace = await mkdtemp(join(tmpdir(), 'qhy-search-scope-change-'));
+  const workspace = await tempDir('qhy-search-scope-change-');
   let closeFixture: (() => Promise<void>) | undefined;
   try {
     await writeFile(join(workspace, 'reviewed.txt'), 'needle approved body');
@@ -210,8 +210,8 @@ it('搜索审批后新增的 ask 范围不会被未覆盖的先前批准放行',
 });
 
 it.each(['glob', 'grep'] as const)('%s 外部搜索根在审批期间改向后拒绝搜索新目标', async (toolName) => {
-  const workspace = await mkdtemp(join(tmpdir(), 'qhy-search-root-change-work-'));
-  const outside = await mkdtemp(join(tmpdir(), 'qhy-search-root-change-outside-'));
+  const workspace = await tempDir('qhy-search-root-change-work-');
+  const outside = await tempDir('qhy-search-root-change-outside-');
   let closeFixture: (() => Promise<void>) | undefined;
   try {
     const first = join(outside, 'first');
@@ -253,8 +253,8 @@ it.each(['glob', 'grep'] as const)('%s 外部搜索根在审批期间改向后�
 });
 
 it('工作区外 Glob 与 Grep 经逐次审批后返回搜索结果', async () => {
-  const workspace = await mkdtemp(join(tmpdir(), 'qhy-external-search-work-'));
-  const outside = await mkdtemp(join(tmpdir(), 'qhy-external-search-outside-'));
+  const workspace = await tempDir('qhy-external-search-work-');
+  const outside = await tempDir('qhy-external-search-outside-');
   let closeFixture: (() => Promise<void>) | undefined;
   try {
     await writeFile(join(outside, 'outside.txt'), 'external needle');

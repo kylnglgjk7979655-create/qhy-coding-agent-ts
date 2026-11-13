@@ -1,10 +1,10 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runAgent } from '../src/query/agent.js';
 import type { ResolvedConfig } from '../src/services/settings/config.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
+import { tempDir } from './helpers/temp-dir.js';
 
 describe('公共工具执行边界', () => {
   let workspace: string;
@@ -19,8 +19,8 @@ describe('公共工具执行边界', () => {
   });
 
   it('Read 权限按目标路径判定，审批展示符号链接实际目标且目标变化后不读取', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-read-permissions-'));
-    outside = await mkdtemp(join(tmpdir(), 'qhy-read-outside-'));
+    workspace = await tempDir('qhy-read-permissions-');
+    outside = await tempDir('qhy-read-outside-');
     await writeFile(join(workspace, 'secret.txt'), '机密');
     await writeFile(join(workspace, 'nested.txt'), '嵌套规则');
     await writeFile(join(outside, 'first.txt'), '批准前目标');
@@ -64,8 +64,8 @@ describe('公共工具执行边界', () => {
   });
 
   it('等待 Read 审批时符号链接改向会拒绝读取新目标', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-read-target-change-'));
-    outside = await mkdtemp(join(tmpdir(), 'qhy-read-targets-'));
+    workspace = await tempDir('qhy-read-target-change-');
+    outside = await tempDir('qhy-read-targets-');
     await writeFile(join(outside, 'first.txt'), '原始目标');
     await writeFile(join(outside, 'second.txt'), '新目标');
     await symlink(join(outside, 'first.txt'), join(workspace, 'link.txt'));
@@ -92,8 +92,8 @@ describe('公共工具执行边界', () => {
   });
 
   it('审批后可写入工作区外文件，并将审批绑定到解析后的实际目标', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-write-permissions-'));
-    outside = await mkdtemp(join(tmpdir(), 'qhy-write-outside-'));
+    workspace = await tempDir('qhy-write-permissions-');
+    outside = await tempDir('qhy-write-outside-');
     const target = join(outside, 'approved.txt');
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [{ id: 'write-outside', type: 'function', function: {
@@ -124,8 +124,8 @@ describe('公共工具执行边界', () => {
   });
 
   it('Write 路径 deny 规则阻止工作区外写入且不请求审批', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-write-deny-'));
-    outside = await mkdtemp(join(tmpdir(), 'qhy-write-denied-'));
+    workspace = await tempDir('qhy-write-deny-');
+    outside = await tempDir('qhy-write-denied-');
     const target = join(outside, 'denied.txt');
     await symlink(outside, join(workspace, 'external-dir'));
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
@@ -152,8 +152,8 @@ describe('公共工具执行边界', () => {
   });
 
   it('Write 路径拒绝优先且等待审批期间目标变化时不写入新目标', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-write-target-change-'));
-    outside = await mkdtemp(join(tmpdir(), 'qhy-write-targets-'));
+    workspace = await tempDir('qhy-write-target-change-');
+    outside = await tempDir('qhy-write-targets-');
     const firstTarget = join(outside, 'first.txt');
     const secondTarget = join(outside, 'second.txt');
     await writeFile(firstTarget, '保留第一目标');
@@ -188,7 +188,7 @@ describe('公共工具执行边界', () => {
   });
 
   it('Read 路径规则支持绝对路径、单字符问号和跨层双星号', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-read-globs-'));
+    workspace = await tempDir('qhy-read-globs-');
     await mkdir(join(workspace, 'nested'));
     await mkdir(join(workspace, 'deep', 'one', 'two'), { recursive: true });
     await writeFile(join(workspace, 'nested', 'data1.txt'), '问号匹配');
@@ -227,7 +227,7 @@ describe('公共工具执行边界', () => {
   });
 
   it('执行事件通知失败时只输出诊断，模型仍收到正确工具结果', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    workspace = await tempDir('qhy-agent-tools-');
     await writeFile(join(workspace, 'note.txt'), '保留的文件内容');
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [
@@ -274,7 +274,7 @@ describe('公共工具执行边界', () => {
   });
 
   it('过期读取基线阻止覆盖，重新读取及成功写入后允许后续受控写入', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    workspace = await tempDir('qhy-agent-tools-');
     await writeFile(join(workspace, 'note.txt'), '初始内容');
     const fixture = await startLocalOpenAIModel(async (_request, index) => {
       if (index === 1) return { calls: [{ id: 'baseline-read', type: 'function', function: {
@@ -313,7 +313,7 @@ describe('公共工具执行边界', () => {
   });
 
   it('SDK 参数 schema 拒绝通过统一结果和拒绝事件反馈', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    workspace = await tempDir('qhy-agent-tools-');
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [{ id: 'call_bad_args', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'note.txt', extra: true }) } }] }
       : { content: '参数已修正。' });
@@ -334,7 +334,7 @@ describe('公共工具执行边界', () => {
   });
 
   it('异步执行事件通知拒绝不阻塞工具结果或后续调用', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    workspace = await tempDir('qhy-agent-tools-');
     await writeFile(join(workspace, 'note.txt'), '仍可读取');
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [
@@ -367,7 +367,7 @@ describe('公共工具执行边界', () => {
   });
 
   it('同批可并发工具在公共 Agent 执行入口中重叠运行', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    workspace = await tempDir('qhy-agent-tools-');
     await writeFile(join(workspace, 'note.txt'), '并发读取');
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [
@@ -398,7 +398,7 @@ describe('公共工具执行边界', () => {
   });
 
   it('并发调用最多启动十个，空位释放后继续队首调用', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    workspace = await tempDir('qhy-agent-tools-');
     const calls = Array.from({ length: 11 }, (_, index) => ({
       id: `limit-${index}`,
       type: 'function' as const,
@@ -440,7 +440,7 @@ describe('公共工具执行边界', () => {
   });
 
   it('并发人工审批等待期间不消耗整轮执行预算', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    workspace = await tempDir('qhy-agent-tools-');
     await writeFile(join(workspace, 'note.txt'), '审批后读取');
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [
@@ -467,7 +467,7 @@ describe('公共工具执行边界', () => {
   });
 
   it('独占调用等待此前调用结束并阻止后续调用越过屏障', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    workspace = await tempDir('qhy-agent-tools-');
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [
         { id: 'barrier-before-1', type: 'function', function: { name: 'runtimeInfo', arguments: '{}' } },
@@ -524,7 +524,7 @@ describe('公共工具执行边界', () => {
   });
 
   it('首个排队工具开始后取消，不启动同批后续工具或下一次模型请求', async () => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-agent-tools-'));
+    workspace = await tempDir('qhy-agent-tools-');
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [
         { id: 'cancel-first-runtime', type: 'function', function: { name: 'runtimeInfo', arguments: '{}' } },
@@ -550,7 +550,7 @@ describe('公共工具执行边界', () => {
   });
 
   it.each(['sync', 'async'] as const)('人工审批的拒绝与批准不受 %s 观察回调故障影响', async (notification) => {
-    workspace = await mkdtemp(join(tmpdir(), 'qhy-human-notify-'));
+    workspace = await tempDir('qhy-human-notify-');
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1 ? { calls: [
       { id: 'deny', type: 'function', function: { name: 'write_file', arguments: '{"path":"denied.txt","content":"拒绝内容"}' } },
       { id: 'allow', type: 'function', function: { name: 'write_file', arguments: '{"path":"allowed.txt","content":"批准内容"}' } },
