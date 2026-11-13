@@ -36,12 +36,12 @@
     "implement/SKILL.md": "91348548d8ec80def1bc4ac16dac48debb3079295c091a8dc6d9358e8dcf6f90",
     "implement/agents/openai.yaml": "8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc",
     "qa-only/CREDITS.md": "fe90cb121b576d499605bc78a78a82cff6a1afdd814cff699f2afec2b6572ad5",
-    "qa-only/SKILL.md": "572aea2d943390d89da4342588ee5ef85b8a8f1a71be1fd9ed6f6b726b95efbb",
+    "qa-only/SKILL.md": "ec503ac7237b561b285e389608d08f395eeb90d95794caf3f98043db7e12ee3a",
     "qa-only/agents/openai.yaml": "31f1106874de3035fd6d1e2237c52b8092c30bf1aae20d95ad1d4e557360c4a9",
     "qa-only/report-template.md": "e46d5d2b80ee6a6dd13ca95faf5d2e0385a1d30a61a149365c7f19bfea5c8845",
-    "qa-only/surfaces.md": "53436bb17a5bb4dbc24e4c6164c478f2458a01e66304c5c80328310297dfc5d0",
-    "qa/SKILL.md": "9164891f6800bc60f5890fc234eec252e13980fd1755eaddc2e00b6930491d67",
-    "qa/agents/openai.yaml": "14c451700a9dce62d804c8b0e151baeef8a14366687af37b4a7ca9ab6bb5823e"
+    "qa-only/surfaces.md": "738af413ff5101b31c0cc016577eeaec58fade59a87cdc072b779c29ac5ee61f",
+    "qa/SKILL.md": "1f1158041609f3c2b6afba8bd8e006cc9a35e450bdfebf137f3516560ca602df",
+    "qa/agents/openai.yaml": "3bca121ec20ef2a07c53c47ca1324ebc8739305853809610609a0a9ba3790f7a"
   },
   "localSnapshots": {
     "implement-spec": {

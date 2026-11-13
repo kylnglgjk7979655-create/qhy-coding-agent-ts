@@ -1,6 +1,6 @@
 ---
 name: qa-only
-description: 功能验收。生成并落盘 QA plan，按 surface 实际运行产品并记录证据；用于 CR 后验收、修复后复验，或只读检查，不修改产品代码和测试。
+description: 功能验收。生成并落盘 QA plan，按 surface 实际运行产品并记录证据；用于 CR 后验收、修复后复验，或只读检查，不修改产品代码和测试。需要修复到通过时用 qa。
 ---
 
 通过用户实际使用的入口，验证产品是否满足 spec。交付的是运行证据和未解决的问题。
@@ -11,7 +11,7 @@ description: 功能验收。生成并落盘 QA plan，按 surface 实际运行�
 
 记录比较基准、当前 HEAD、未提交产品改动和运行环境。检查运行入口、测试数据及所需服务，保留已有工作。
 
-创建本轮产物目录 `.scratch/qa/<run-id>/`，`run-id` 取 `YYYYMMDD-HHmmss-<被测 HEAD 前 7 位>`。本轮的计划、报告与证据只写入该目录，不覆盖先前运行。
+使用调用方指定的产物目录；未指定时创建 `.scratch/qa/<run-id>/`，`run-id` 取 `YYYYMMDD-HHmmss-<被测 HEAD 前 7 位>`。同一 run 的复验沿用同一目录，不因 HEAD 变化另建。本轮的计划、报告与证据只写入该目录，不覆盖先前运行。
 
 完成条件：能够定位本轮被测代码，并区分已提交代码与未提交改动。Diff 用于识别影响范围和相邻回归。
 
@@ -31,7 +31,7 @@ description: 功能验收。生成并落盘 QA plan，按 surface 实际运行�
 
 ## 3. 生成 QA plan
 
-有可用计划时读入 `.scratch/qa/<run-id>/qa-plan.md`，保留原有 ID 并补齐覆盖缺口；没有时，先跑一次真实入口（`--help`、启动命令、所需账号与初态）作为探索证据，再根据 spec 和受影响行为生成。探索截图只在该计划含视觉项时产出，按其 surface 采集。每项包含：
+有可用计划时读入产物目录中的 `qa-plan.md`，保留原有 ID 并补齐覆盖缺口；没有时，先跑一次真实入口（`--help`、启动命令、所需账号与初态）作为探索证据，再根据 spec 和受影响行为生成。探索截图只在该计划含视觉项时产出，按其 surface 采集。每项包含：
 
 | ID | Spec 引用 / acceptance criterion | surface / 入口 | 前置数据 | 步骤 | 预期结果 | 证据形式 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -40,7 +40,7 @@ description: 功能验收。生成并落盘 QA plan，按 surface 实际运行�
 
 选择足以证明该项预期的环境。优先自有、隔离的测试数据；只有与本项无关的服务可用替身。记录模拟服务不能证明的行为。要求真实服务的项目，必须取得该服务的运行证据。
 
-计划写入 `.scratch/qa/<run-id>/qa-plan.md`，含 spec 来源与版本、探索记录、上表。`surface` 取 `web`、`android`、`ios`、`harmony`、`desktop`、`native`。
+计划写入产物目录的 `qa-plan.md`，含 spec 来源与版本、探索记录、上表。`surface` 取 `web`、`android`、`ios`、`harmony`、`desktop`、`native`。
 
 完成条件：本轮每项必验行为都填满 7 列——spec 引用、surface 与入口、前置数据、步骤、预期、证据形式——或写明阻塞原因。计划列好后直接执行；scope 与 spec 冲突时先澄清。
 
@@ -74,7 +74,7 @@ description: 功能验收。生成并落盘 QA plan，按 surface 实际运行�
 
 ## 5. 报告
 
-使用 [报告模板](report-template.md)，写入 `.scratch/qa/<run-id>/` 或调用方指定目录：`report.md`、`report.json`、`evidence/`。`report.json` 采用 `spec`、`summary`、`checks[{id, specReference, steps, expected, actual, status, evidence}]`、`findings`、`humanQa` 字段，另记 `verdict`、`head`、`fixedPoint`。证据路径相对 run 目录且为非空文件。保存脱敏证据，避免覆盖先前运行。
+使用 [报告模板](report-template.md)，写入产物目录：`report.md`、`report.json`、`evidence/`；云端 workflow 另行写 `result.json`，两者不是同一文件。`report.json` 采用 `spec`、`summary`、`checks[{id, specReference, steps, expected, actual, status, evidence}]`、`findings`、`humanQa` 字段，另记 `verdict`、`head`、`fixedPoint`。证据必须是非空文件，路径相对产物目录、不含 `..`，解析后仍留在目录内。保存脱敏证据，避免覆盖先前运行。
 
 逐项状态：
 
@@ -83,7 +83,7 @@ description: 功能验收。生成并落盘 QA plan，按 surface 实际运行�
 - **blocked**：缺少必要环境、明确预期或执行条件。
 - **not-run**：尚未执行。
 
-总结果仅在全部必验项为 pass 时为 **pass**；存在必验 fail 时为 **fail**；其余必验项未完成时为 **blocked**。与本轮无关的问题及后续人工验收要求单列。
+总结果仅在全部必验项为 pass 时为 **pass**；存在必验 fail 时为 **fail**；其余必验项未完成或计划为空时为 **blocked**。与本轮无关的问题及后续人工验收要求单列。
 
 报告绑定 spec、被测提交、工作树状态和关键环境。Spec、产品代码、配置或相关环境变化后，重新验证受影响项目，更新结论。将已有人工 QA 的真实状态保留下来。
 
