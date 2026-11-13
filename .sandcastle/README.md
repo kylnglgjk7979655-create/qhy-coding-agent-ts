@@ -2,7 +2,7 @@
 
 来源：[`mattpocock/sandcastle`](https://github.com/mattpocock/sandcastle/tree/ed8e7164e0a5d65a0a98c6917508b45cd2de89a8)，固定提交 `ed8e7164e0a5d65a0a98c6917508b45cd2de89a8`。`UPSTREAM.json` 记录上游原始文件的 SHA-256，许可证保存在 `LICENSE.sandcastle`。
 
-`agent-workflows/` 和 `.github/workflows/agent-*.yml` 使用该提交的官方流程：Explore、Implement、Review、Implement PR、Update Branch。未引入 `sandcastle init` 的其他模板。
+`agent-workflows/` 和 `.github/workflows/agent-*.yml` 使用该提交的官方流程：Implement、Review、Implement PR、Update Branch。未引入 `sandcastle init` 的其他模板；Explore 与 implement-spec 入口已按项目需要移除。
 
 ## 项目适配
 

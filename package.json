@@ -22,9 +22,7 @@
     "agent:implement": "tsx .sandcastle/agent-workflows/implement/implement.ts",
     "agent:review": "tsx .sandcastle/agent-workflows/review/review.ts",
     "agent:implement-pr": "tsx .sandcastle/agent-workflows/implement-pr/implement-pr.ts",
-    "agent:update-branch": "tsx .sandcastle/agent-workflows/update-branch/update-branch.ts",
-    "agent:explore": "tsx .sandcastle/agent-workflows/explore/explore.ts",
-    "agent:explore:apply": "tsx .sandcastle/agent-workflows/explore/apply.ts"
+    "agent:update-branch": "tsx .sandcastle/agent-workflows/update-branch/update-branch.ts"
   },
   "dependencies": {
     "@ai-sdk/mcp": "2.0.90",

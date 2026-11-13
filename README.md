@@ -393,7 +393,7 @@ pnpm exec node dist/cli.js --workspace ./demo 2> run.jsonl
 
 ## GitHub Actions 与 Claude Code
 
-仓库的 GitHub Actions 采用 Sandcastle 官方仓库的 Explore、Issue 实现、PR 审查、反馈修改和分支更新流程。模型通过 `sandcastle.claudeCode()` 调用 Claude Code，走百度千帆 Token Plan 的 Anthropic 兼容端点，认证只用 `ANTHROPIC_AUTH_TOKEN`，不使用订阅登录。给独立 Issue 添加 `agent:implement` 后，Agent 实现并提交，workflow 创建草稿 PR 并通过 `agent:review` 请求审查；审查完成后标记 Ready，由人决定合并。`agent:explore` 会批量调查，自动转交明确任务并关闭重复 Issue；`ready-for-agent` 仅表示准备状态。普通实现支持按依赖逐票完成父需求，共用分支和 Draft PR，全部完成后整体 CR；`agent:to-issues` 用于创建原生子 Issue 与依赖。QA 暂未接入 workflow，`qa-only` skill 保留供本地验证。定时架构审查未启用。
+仓库的 GitHub Actions 采用 Sandcastle 官方仓库的 Issue 实现、PR 审查、反馈修改和分支更新流程。模型通过 `sandcastle.claudeCode()` 调用 Claude Code，走百度千帆 Token Plan 的 Anthropic 兼容端点，认证只用 `ANTHROPIC_AUTH_TOKEN`，不使用订阅登录。给独立 Issue 添加 `agent:implement` 后，Agent 实现并提交，workflow 创建草稿 PR 并通过 `agent:review` 请求审查；审查完成后标记 Ready，由人决定合并。`ready-for-agent` 仅表示准备状态。普通实现支持按依赖逐票完成父需求，共用分支和 Draft PR，全部完成后整体 CR；`agent:to-issues` 用于创建原生子 Issue 与依赖。QA 暂未接入 workflow，`qa-only` skill 保留供本地验证。定时架构审查未启用。
 
 标签直接触发 workflow，按 Issue/PR 设置 `concurrency` group，不同任务可以并行；同一父需求的子票通过 `AGENT_PAT` 重新贴标签接续，不再使用持久队列。首次使用需把配置合入 GitHub 默认分支，并设置 `ANTHROPIC_AUTH_TOKEN` 和必需的 `AGENT_PAT`。完整配置与使用命令见 [GitHub Actions 与 Agent 认证](docs/agents/github-actions.md)。
 

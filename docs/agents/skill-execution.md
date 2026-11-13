@@ -6,12 +6,10 @@
 
 - **拆票**：父 Spec 放在 GitHub Issue 正文，补充要求写评论。`agent:to-issues` 调用 `/to-tickets`，输出带稳定 key 和 blockedBy 的 slices。独立发布 job 校验需求未变化，自动创建原生子 Issue 与阻塞关系；无需审批标签。拆票不会启动实现。
 - **实现**：`agent:implement` 调用 `/implement`，支持独立 Issue、子 Issue 和父需求。父需求按原生依赖逐票实施，共用一个分支和 Draft PR。每张子票成功推送后以 completed 关闭，下一票无需等待 PR 合并。
-- **并行实现**：父 Issue 已有开放子任务及原生依赖时，可用 `agent:implement-spec` 调用仓库内 `implement-spec`、`tdd` 和 `code-review`，在单次 Claude Code 会话中并行委派子代理实施；该入口不拆票，也不调用逐票流程。
 - **PR 文案**：实现会话在代码、检查及提交完成后调用 `/pr`。按 skill 的 Summary、Evidence、Merge Danger 模板写出中文 PR 元数据文件；证据来自实际执行，未运行的检查和人工 QA 如实注明。workflow 校验文件并创建或更新 PR。父需求共享 PR 始终包含 `Closes #父编号`，合并到 main 后由 GitHub 自动关闭父 Issue。
 - **整体审查**：全部子票 completed 后调用 `/code-review`，比较基准为 main。上下文显式包含父 PRD、全部子票的正文、状态与评论，按整份需求验收；独立 Issue 按自身验收。审查可修复并提交并发布 COMMENT，完成后标记 PR Ready。
 - **PR 反馈修改**：PR 评论后加 `agent:implement`；需要改代码时调用 `/implement`，workflow 发布提交与回复。
 - **分支更新**：`agent:update-branch` 合并最新基准；有冲突才调用 Agent。
-- **Explore**：批量调查开放的 explore Issue，独立 apply job 校验、发布结论及转交。
 
 ## QA 的当前边界
 
@@ -25,4 +23,4 @@ CR 的 runner、prompt 和 skill 使用 workflow 对应的固定版本；产品�
 
 ## 调度
 
-标签直接触发 workflow；每个 workflow 用 `concurrency` group 按 Issue 或 PR 串行，不同 Issue/PR 可以并行。没有持久队列或仓库级锁。同一父需求最多一个活动子票；`agent:implement-spec` 可在单次会话内并行委派已有子任务。`ready-for-agent` 只表示需求准备完成；`agent:queued` 表示依赖等待及执行授权。not_planned 不算依赖完成；失败需人工重新授权。接续依赖 `AGENT_PAT` 重新贴标签，见操作文档。
+标签直接触发 workflow；每个 workflow 用 `concurrency` group 按 Issue 或 PR 串行，不同 Issue/PR 可以并行。没有持久队列或仓库级锁。同一父需求最多一个活动子票。`ready-for-agent` 只表示需求准备完成；`agent:queued` 表示依赖等待及执行授权。not_planned 不算依赖完成；失败需人工重新授权。接续依赖 `AGENT_PAT` 重新贴标签，见操作文档。

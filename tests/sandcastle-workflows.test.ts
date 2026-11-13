@@ -4,38 +4,9 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
-import { parseBatch, planEffects, planSchema } from '../.sandcastle/agent-workflows/explore/batch.js';
-import { validate } from '../.sandcastle/agent-workflows/shared/common.js';
+import { expect, it } from 'vitest';
 
 const require = createRequire(import.meta.url);
-
-describe('官方批量调查的发布边界', () => {
-  const batch = parseBatch([
-    { number: 2, title: '重复问题', author: { login: 'reporter' } },
-    { number: 1, title: '原问题', author: { login: 'reporter' } },
-  ]);
-  const entry = (number: number, duplicate_of: number | null = null) => ({
-    number, duplicate_of, tag: 'easy-call', comment: '已核对代码。',
-  });
-
-  it('不完整或重复的调查结果不能生成发布计划', () => {
-    expect(() => validate(planSchema(batch), { issues: [entry(1)] })).toThrow('missing');
-    expect(() => validate(planSchema(batch), { issues: [entry(1), entry(1)] })).toThrow('more than once');
-    expect(() => validate(planSchema(batch), { issues: [entry(1), entry(2, 99)] })).toThrow('not in this batch');
-  });
-
-  it('拒绝循环重复关系；合法结果先转交保留项，再关闭重复项', () => {
-    expect(() => validate(planSchema(batch), { issues: [entry(1, 2), entry(2, 1)] })).toThrow('itself a duplicate');
-    const plan = validate(planSchema(batch), { issues: [entry(2, 1), entry(1)] });
-    expect(planEffects(plan)).toEqual([
-      { kind: 'comment', issue: 1, body: expect.stringContaining('agent:implement') },
-      { kind: 'swap-label', issue: 1, to: 'agent:implement' },
-      { kind: 'comment', issue: 2, body: expect.stringContaining('duplicate of #1') },
-      { kind: 'close-duplicate', issue: 2, duplicateOf: 1 },
-    ]);
-  });
-});
 
 it('真实 Sandcastle 通过 Anthropic 兼容端点完成提交、审查和同会话提取重试，不调用真实模型', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'official-sandcastle-smoke-'));

@@ -50,16 +50,14 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 | --- | --- | --- |
 | 父 Issue：`agent:to-issues` | per Issue | 调用 `/to-tickets`，校验需求后自动创建子 Issue 和原生依赖 |
 | Issue／父 Issue：`agent:implement` | per Issue | 调用 `/implement`；完成后同会话调用 `/pr`，workflow 推送并创建／更新 Draft PR |
-| 父 Issue：`agent:implement-spec` | per Issue | 使用已有原生子 Issue 和依赖，在单次会话内并行委派实现、整体审查并交付 PR；不拆票 |
 | PR：`agent:review` | per PR | 调用 `/code-review`，读取完整 spec 并发布 COMMENT；完成后标记 Ready |
 | PR 评论后加 `agent:implement` | per PR | 处理反馈，需要改代码时调用 `/implement` |
 | PR：`agent:update-branch` | per PR | 合并最新基准；有冲突时调用 Agent |
-| Issue：`agent:explore` | 全仓库一次 | 批量调查全部开放的 explore Issue，识别重复、发布结论和转交 |
 | Issue 以 completed 关闭 | per Issue | Promote Queued 检查直接依赖它的排队任务，不运行模型 |
 
 `agent:review`、`agent:implement`（PR）、`agent:update-branch` 共用同一个 per-PR 并发组，保证不会同时改写同一分支；不同 Issue、不同 PR 属于不同组，可以并行。
 
-`ready-for-agent` 只表示准备完成。QA 暂不接入 workflow：`agent:qa` / `agent:qa-only` 入口已移除。
+`ready-for-agent` 只表示准备完成。QA 暂不接入 workflow：`agent:qa` / `agent:qa-only` 入口已移除。`agent:explore` 与 `agent:implement-spec` 入口同样已移除，本地仍可用对应 skill。
 
 ## 从 Spec 到交付
 
