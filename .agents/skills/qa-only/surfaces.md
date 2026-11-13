@@ -17,6 +17,6 @@
 - 视觉断言只写可复述、稳定的条件；"看起来正常"不能作为预期。
 - 前置条件缺失（`MIDSCENE_MODEL_API_KEY`、`MIDSCENE_MODEL_NAME`、`MIDSCENE_MODEL_BASE_URL`、`MIDSCENE_MODEL_FAMILY` 任一未设——进程环境和当前目录的 `.env` 都要检查——设备未连接，依赖未安装）时，该项记 `blocked`，不记 `fail`。
 - Midscene 默认把产物写到当前目录的 `./midscene_run/`。在产物目录内执行 Midscene，让该目录落在被忽略的 `.scratch/qa/` 或仓库外；只把选定截图复制进 `evidence/`，不要把 `midscene_run/` 留在产品工作区。
-- 本地运行 `computer-automation` 会接管真实鼠标和键盘：这是风险项，按 [SKILL](SKILL.md) §4 先取得用户批准，再用 `list_displays` 确认显示器，执行完 `disconnect`；能靠终端输出判断的检查不要走桌面。
+- 本地运行 `computer-automation` 会接管真实鼠标和键盘，这是 QA 的正常执行方式，不是风险项：先用 `list_displays` 确认显示器，只操作被测窗口，不要点开无关应用，执行完 `disconnect`。能靠终端输出判断的检查不必走桌面。
 - 证据命名 `evidence/<检查 ID>-<步骤序号>.<png|log|json>`，必须非空；失败项保留操作前后截图。
 - 同一 surface 的多步操作复用一次 `connect` 会话，结束时 `disconnect`。
