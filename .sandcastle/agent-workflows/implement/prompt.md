@@ -2,7 +2,7 @@
 
 Implement issue #{{ISSUE_NUMBER}}: {{ISSUE_TITLE}}
 
-使用 $implement skill 实现本 Issue。
+使用 /implement skill 实现本 Issue。
 
 You are on branch `{{BRANCH}}`, created from `main` or continued from the parent issue’s shared branch.
 
@@ -44,7 +44,7 @@ Do not create or edit PRs.
 
 # PR 文案
 
-代码实现、完整检查和提交完成后，在当前会话调用仓库的 $pr skill；读取 `.agents/skills/pr/SKILL.md`，按其中模板撰写中文标题和正文。
+代码实现、完整检查和提交完成后，在当前会话调用仓库的 /pr skill；读取 `.claude/skills/pr/SKILL.md`，按其中模板撰写中文标题和正文。
 
 若有父 PRD，标题和总结围绕整个父需求，并通过 `gh api repos/$GH_REPO/issues/{{PR_ISSUE_NUMBER}}/sub_issues` 核对全部子票。清楚区分本轮已实现、之前已完成与仍待实现的内容；草稿 PR 不代表所有子任务已完成。
 

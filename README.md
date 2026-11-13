@@ -391,13 +391,11 @@ pnpm exec node dist/cli.js --workspace ./demo 2> run.jsonl
 
 `ai` 与 provider 均依赖 `@ai-sdk/provider@4.0.35`、`@ai-sdk/provider-utils@5.0.74`。上述版本已通过 pnpm 严格 peer 安装；直接依赖均无 `^`/`~`，传递依赖由 `pnpm-lock.yaml` 固定。AI SDK API 依据已安装包附带的 `src/agent/tool-loop-agent.ts` 和 `docs/03-agents/02-building-agents.mdx` 核对。
 
-## GitHub Actions 与 Codex
+## GitHub Actions 与 Claude Code
 
-按需功能验收：为同仓库开放 PR 添加 `agent:qa-only`，独立 prompt 显式调用 `$qa-only`，生成 QA plan、运行产品并发布报告和证据，不修复或提交。添加 `agent:qa` 则执行验收、修复、CR 和复验。使用及恢复见 [QA 指南](docs/agents/github-actions.md#qa-与-qa-only)。
+仓库的 GitHub Actions 采用 Sandcastle 官方仓库的 Issue 实现、PR 审查、反馈修改和分支更新流程。模型通过 `sandcastle.claudeCode()` 调用 Claude Code，走百度千帆 Token Plan 的 Anthropic 兼容端点，认证只用 `ANTHROPIC_AUTH_TOKEN`，不使用订阅登录。给独立 Issue 添加 `agent:implement` 后，Agent 实现并提交，workflow 创建草稿 PR 并通过 `agent:review` 请求审查；审查完成后标记 Ready，由人决定合并。`ready-for-agent` 仅表示准备状态。普通实现支持按依赖逐票完成父需求，共用分支和 Draft PR，全部完成后整体 CR；`agent:to-issues` 用于创建原生子 Issue 与依赖。QA 暂未接入 workflow，`qa-only` skill 保留供本地验证。定时架构审查未启用。
 
-仓库的 GitHub Actions 采用 Sandcastle 官方仓库的 Explore、Issue 实现、PR 审查、反馈修改和分支更新流程，模型继续使用 Codex 订阅。给独立 Issue 添加 `agent:implement` 后，Agent 实现并提交，workflow 创建草稿 PR 并通过 `agent:review` 请求审查；该自动 CR 完成后接续 `agent:qa`，QA 通过后标记 Ready，由人决定合并。手动 `agent:review` 不接续 QA，`implement-spec` 暂不接入 QA。`agent:explore` 会批量调查，自动转交明确任务并关闭重复 Issue；`ready-for-agent` 仅表示准备状态。普通实现支持按依赖逐票完成父需求，共用分支和 Draft PR，全部完成后整体 CR 和 QA；`agent:to-issues` 用于创建原生子 Issue 与依赖。定时架构审查未启用。
-
-首次使用需把配置合入 GitHub 默认分支，并设置 `CODEX_AUTH_JSON`（CI 专用订阅登录）和 `CODEX_AUTH_STORE_PAT`（保存刷新结果）。工作流只在私有仓库运行，不需要 OpenAI API Key。完整配置与使用命令见 [GitHub Actions 与 Codex 订阅](docs/agents/github-actions.md)。
+标签直接触发 workflow，按 Issue/PR 设置 `concurrency` group，不同任务可以并行；同一父需求的子票通过 `AGENT_PAT` 重新贴标签接续，不再使用持久队列。首次使用需把配置合入 GitHub 默认分支，并设置 `ANTHROPIC_AUTH_TOKEN` 和必需的 `AGENT_PAT`。完整配置与使用命令见 [GitHub Actions 与 Agent 认证](docs/agents/github-actions.md)。
 
 ## TS 演示仓库
 

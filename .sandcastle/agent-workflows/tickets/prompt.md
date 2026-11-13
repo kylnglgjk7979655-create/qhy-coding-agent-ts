@@ -1,6 +1,6 @@
 # TASK
 
-使用 $to-tickets skill 拆分下述 PRD。
+使用 /to-tickets skill 拆分下述 PRD。
 
 You are breaking a PRD into a flat list of native GitHub sub-issues. You do
 **not** create the issues yourself. You emit a structured plan; after source validation, the wrapping script creates and attaches the

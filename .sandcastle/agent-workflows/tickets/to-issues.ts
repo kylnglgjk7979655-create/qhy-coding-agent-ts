@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { Output, run } from '@ai-hero/sandcastle';
 import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
-import { codexAgent, fail, required, standardSchema, writeJson } from '../shared/common.js';
+import { claudeAgent, fail, required, standardSchema, writeJson } from '../shared/common.js';
 import { planFromDraft } from './plan.js';
 
 try {
@@ -11,7 +11,7 @@ try {
   };
   const result = await run({
     name: `to-issues-#${source.issue.number}`,
-    agent: codexAgent(), sandbox: noSandbox(), logging: { type: 'stdout' },
+    agent: claudeAgent(), sandbox: noSandbox(), logging: { type: 'stdout' },
     promptFile: path.join(import.meta.dirname, 'prompt.md'),
     promptArgs: { PRD_NUMBER: String(source.issue.number), PRD_TITLE: source.issue.title },
     completionSignal: '</output>',

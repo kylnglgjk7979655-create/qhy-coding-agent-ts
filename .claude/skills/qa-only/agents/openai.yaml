@@ -1,0 +1,3 @@
+interface:
+  display_name: "QA Only"
+  short_description: "按 spec 实际运行产品，输出功能验收结果和证据"

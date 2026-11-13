@@ -6,7 +6,7 @@
 
 - 查询待办或指定工单时，通过 `gh issue list`、`gh issue view <编号> --comments` 或等效 GitHub 工具读取。需要判断历史和状态时，同时检查标签、作者、时间和评论。
 - skill 要求发布需求、评论或更新状态时，在 GitHub 对应 Issue 执行；triage 状态使用 [triage-labels.md](triage-labels.md) 中的标签。
-- 父需求的规格放在 Issue 正文，补充要求放在评论。云端 `agent:to-issues` 校验需求后自动创建子 Issue 和原生依赖；实现仍需给父 Issue 添加 `agent:implement`；完整流程见 [GitHub Actions 与 Codex](github-actions.md)。
+- 父需求的规格放在 Issue 正文，补充要求放在评论。云端 `agent:to-issues` 校验需求后自动创建子 Issue 和原生依赖；实现仍需给父 Issue 添加 `agent:implement`；完整流程见 [GitHub Actions 与 Agent 认证](github-actions.md)。
 - `.scratch/` 用于临时工作文件、历史资料和明确指定的本地背景；其中的文件不代表 GitHub Issue 的当前状态。
 
 ## Wayfinding 工作文件

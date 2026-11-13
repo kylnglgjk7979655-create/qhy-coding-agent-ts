@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const workflowOutput = vi.hoisted(() => ({ iterations: [] as unknown[], outputDir: '', session: '' }));
+const workflowOutput = vi.hoisted(() => ({ iterations: [] as unknown[], outputDir: '' }));
 workflowOutput.outputDir = mkdtempSync(join(tmpdir(), 'implement-context-report-'));
 afterAll(() => rmSync(workflowOutput.outputDir, { recursive: true, force: true }));
 
@@ -15,10 +15,7 @@ vi.mock('@ai-hero/sandcastle', async (importOriginal) => {
 vi.mock('../.sandcastle/agent-workflows/shared/common.js', () => ({
   required: (name: string) => ({ ISSUE_NUMBER: '105', ISSUE_TITLE: '上下文窗口 返回失败', BRANCH: 'agent/issue-105' })[name],
   gh: () => 'issue context',
-  codexAgent: () => ({
-    sessionStorage: { readHostSession: async () => workflowOutput.session || undefined },
-    parseSessionContextWindow: (content: string) => JSON.parse(content),
-  }),
+  claudeAgent: () => ({}),
   outputDir: () => workflowOutput.outputDir,
   sh: () => '1',
   fail: (message: string) => { throw new Error(message); },
@@ -29,7 +26,6 @@ vi.mock('../.sandcastle/agent-workflows/shared/pr-metadata.js', () => ({ publish
 describe('Actions 上下文用量汇报', () => {
   beforeEach(() => {
     vi.resetModules();
-    workflowOutput.session = '';
   });
 
   async function report(iterations: unknown[]) {
@@ -37,7 +33,7 @@ describe('Actions 上下文用量汇报', () => {
     workflowOutput.iterations = iterations;
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     await import('../.sandcastle/agent-workflows/implement/implement.js');
-    const reportLine = log.mock.calls.map(([line]) => String(line)).find((line) => line.startsWith('Codex 上下文用量'));
+    const reportLine = log.mock.calls.map(([line]) => String(line)).find((line) => line.startsWith('Agent 上下文用量'));
     log.mockRestore();
     return reportLine;
   }
@@ -46,23 +42,16 @@ describe('Actions 上下文用量汇报', () => {
     await expect(report([
       { contextWindow: { tokens: 1200, limit: 4000 } },
       {},
-    ])).resolves.toBe('Codex 上下文用量（第 1/2 次迭代的最后一次模型请求）：1,200 / 4,000 tokens (30.0%)');
+    ])).resolves.toBe('Agent 上下文用量（第 1/2 次迭代的最后一次模型请求）：1,200 / 4,000 tokens (30.0%)');
   });
 
   it('上限缺失时只报告实际 token 数，全部缺失时明确显示不可用', async () => {
     await expect(report([
       { contextWindow: { tokens: 1200, limit: 4000 } },
       { contextWindow: { tokens: 2500 } },
-    ])).resolves.toBe('Codex 上下文用量（第 2/2 次迭代的最后一次模型请求）：2,500 tokens');
+    ])).resolves.toBe('Agent 上下文用量（第 2/2 次迭代的最后一次模型请求）：2,500 tokens');
 
-    await expect(report([{}, {}])).resolves.toBe('Codex 上下文用量：上游未提供上下文窗口数据。');
+    await expect(report([{}, {}])).resolves.toBe('Agent 上下文用量：上游未提供上下文窗口数据。');
   });
 
-  it('从最后一次迭代的 Codex rollout 读取模型请求上下文用量', async () => {
-    workflowOutput.session = JSON.stringify({ tokens: 3100, limit: 16000 });
-    await expect(report([{ sessionId: 'session-1' }])).resolves.toBe(
-      'Codex 上下文用量（第 1/1 次迭代的最后一次模型请求）：3,100 / 16,000 tokens (19.4%)',
-    );
-    workflowOutput.session = '';
   });
-});

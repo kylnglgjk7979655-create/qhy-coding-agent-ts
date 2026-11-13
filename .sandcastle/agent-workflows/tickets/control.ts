@@ -83,31 +83,19 @@ try {
       if (root.state !== 'open' || !hasLabel(root, 'agent:queued')
         || ['agent:blocked', 'agent:to-issues', 'agent:implement'].some((label) => hasLabel(root, label))) break;
       if (!github.children(parent).some((issue) => issue.state === 'open')) break;
-      if (process.env.AGENT_PAT) {
-        new GitHub(github.repo, process.env.AGENT_PAT).addLabels(parent, ['agent:implement']);
-      } else {
-        github.addLabels(parent, ['agent:implement']);
-        github.queueTask({
-          id: `continue-parent-${number()}-${parent}-${Math.floor(Date.now() / 1000)}`,
-          kind: 'implement', number: parent, workflow: 'agent-implement.yml',
-          inputs: { issue_number: String(parent), authorization_label: 'agent:implement' },
-        });
-      }
+      new GitHub(github.repo, required('AGENT_PAT')).addLabels(parent, ['agent:implement']);
       break;
     }
     case 'promote': {
-      const selected = new Queue(github, process.env.AGENT_PAT ? new GitHub(github.repo, process.env.AGENT_PAT) : undefined).promote(number());
+      const pat = required('AGENT_PAT');
+      const selected = new Queue(github, new GitHub(github.repo, pat)).promote(number());
       console.log(selected.length ? `已转交：${selected.map((issue) => `#${issue}`).join('、')}。` : '没有可执行的直接依赖任务。');
       break;
     }
     case 'review': {
       const pr = Number(required('PR_NUMBER'));
       if (!Number.isSafeInteger(pr) || pr < 1) throw new Error('无效 PR 编号。');
-      requestPrStage(github, pr, 'review', required('BRANCH'));
-      break;
-    }
-    case 'qa': {
-      requestPrStage(github, Number(required('PR_NUMBER')), 'qa', required('BRANCH'));
+      requestPrStage(github, pr, required('BRANCH'));
       break;
     }
     default: throw new Error('未知 tickets 控制命令。');

@@ -10,7 +10,7 @@
 
 ### Issue tracker
 
-需求跟踪使用 GitHub Issues。查询、分诊或发布需求前读取 `docs/agents/issue-tracker.md`；配置或排查云端 Codex 自动实现时读取 `docs/agents/github-actions.md`。
+需求跟踪使用 GitHub Issues。查询、分诊或发布需求前读取 `docs/agents/issue-tracker.md`；配置或排查云端 Agent 自动实现时读取 `docs/agents/github-actions.md`。
 
 ### Triage labels
 
@@ -22,4 +22,4 @@ This is a single-context repo. See `docs/agents/domain.md`.
 
 ### 仓库内 skills
 
-使用 `.agents/skills/` 的已固定版本，不在 CI 临时下载。执行仓库 skill 前读取 [项目执行适配](docs/agents/skill-execution.md)：其中规定技能调用、自动拆票、人工 QA 与 CI 发布职责。上游原文及引用文件保留原语言，项目适配使用中文。
+使用 `.agents/skills/` 的已固定版本，不在 CI 临时下载；同一内容复制到 `.claude/skills/` 供 Claude Code 发现，两处必须保持一致。执行仓库 skill 前读取 [项目执行适配](docs/agents/skill-execution.md)：其中规定技能调用、自动拆票、人工 QA 与 CI 发布职责。上游原文及引用文件保留原语言，项目适配使用中文。

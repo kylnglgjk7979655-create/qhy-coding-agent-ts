@@ -2,13 +2,9 @@
   "repository": "https://github.com/mattpocock/sandcastle",
   "commit": "ed8e7164e0a5d65a0a98c6917508b45cd2de89a8",
   "sha256": {
-    ".github/workflows/agent-explore.yml": "1e6256e650187d3dbab0a30a044d7ef83c7c93391371ffd2bfbf5597d604f3a4",
     ".github/workflows/agent-implement-pr.yml": "dc1f516421b7ac736bfdd16533fd7c973a666aca0f283c10ab29b2893065afad",
     ".github/workflows/agent-review.yml": "965d7aa630058887ed2bcd2d338d85f6e99df389ce363ec9ff7f79791a758c93",
     ".github/workflows/agent-update-branch.yml": "7ac440d19f806a8e461246159158827a576df1060fae0d7722897d8c8ac7e077",
-    ".sandcastle/agent-workflows/explore/batch.test.ts": "9f6767019e5ef712d1f5fecb2103df73b6d94a15b90e1acb6a4d5d9818f06ffa",
-    ".sandcastle/agent-workflows/explore/explore.ts": "2cf0ae0f83950c4264e9e8006be097ccbd6caaa1458e97f743385347f8c78219",
-    ".sandcastle/agent-workflows/explore/extraction.md": "35e4c3d98bebb518c27d8c2bda330c21d8b012dcc40f609bcfda0f467f8a3273",
     ".sandcastle/agent-workflows/implement-pr/extraction.md": "93e21bff2cc700a64a171ede346511806d5246cbd7dcec2ced4609c74449c738",
     ".sandcastle/agent-workflows/implement-pr/prompt.md": "9933810ecf04cfc7563922d4d70410f1b3345f47d86143853644b2a34691bc0e",
     ".sandcastle/agent-workflows/implement/implement.ts": "e4efe14e543b0186c5af83ad489efdec2ad96e3014401b8746d1df4f37f44615",
@@ -23,9 +19,6 @@
     ".sandcastle/agent-workflows/update-branch/prompt.md": "4a972792c4530808e2d5b38d77c6fdb1ba5a358339e974a380e487ff9ed05c04",
     ".sandcastle/agent-workflows/update-branch/update-branch.ts": "e9995a482e6a96e4beaf5dd9f113bf2fb7661eb1fb3e9d2d49f03c29c7fa9870",
     ".github/workflows/agent-implement.yml": "1e7134069438738ecfc0900b5f4c5060cd533d2b50b4ebf02548f8276a1200eb",
-    ".sandcastle/agent-workflows/explore/apply.ts": "9e0f3962e86b723b06190647bc5204205107ab6afefa0df61c17e4662cde9b0b",
-    ".sandcastle/agent-workflows/explore/batch.ts": "9a57c87d7755f61a0b3e59b799980eec0e4fe0cd4d36a24585a637b202541a05",
-    ".sandcastle/agent-workflows/explore/prompt.md": "74f926683f1dc95c80fc4b416d39a2d0b95e82aaf59baae9e8231a8971cead26",
     ".sandcastle/agent-workflows/implement-pr/implement-pr.ts": "11bf27ce2f943c5ef5a370092b9c30431118933c4fab6f7dd026f7e778728ac8",
     ".sandcastle/agent-workflows/review/prompt.md": "6c592e6c5ddf9c3bb1c011077b91e5ebbb20ea5b940679b8e66d28ad473ca113",
     ".sandcastle/agent-workflows/shared/run-with-extraction.ts": "dee58bcc140559e813f42d0943b9930a604ce44fd2ea13843f3059f4cb909a65"
