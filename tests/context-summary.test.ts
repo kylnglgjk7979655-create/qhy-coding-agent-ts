@@ -258,6 +258,7 @@ it.each(['超时', '取消'])('工具增长后的摘要等待受整轮%s约束�
 
 it('长历史整体摘要替换原文，保存检查点并跨进程直接续聊', async () => {
   const fixture = await setup();
+  await writeFile(join(cwd, 'AGENTS.md'), '开发规则不可进入模型_MARKER');
   const result = await run().done;
   expect(result.code).toBe(0);
   expect(fixture.summaryRequests).toHaveLength(1);

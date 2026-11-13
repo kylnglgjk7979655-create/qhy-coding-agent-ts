@@ -202,6 +202,33 @@ it('单个文件只恢复开头约 5,000 token，按码点裁剪保留有效编�
   expect(marker).toBe('');
 });
 
+it('多字节字符按码点裁剪，不切分代理对且保留有效编码', async () => {
+  const original = '😀'.repeat(4_000);
+  const { cwd, userDir } = await setup(
+    { 'emoji.txt': original },
+    (_request, index) => index === 1 ? { calls: [readCall('emoji.txt', 'read-emoji')] } : { content: '完成' },
+  );
+  const first = startCLI({ cwd, userDir, conversationId: 'recover', input: '读取多字节文件\n/exit\n', env: { TEST_MODEL_API_KEY: secret } });
+  expect((await first.done).code).toBe(0);
+
+  let output = '';
+  const cli = startCLI({ cwd, userDir, conversationId: 'recover', env: { TEST_MODEL_API_KEY: secret } }, (value) => { output = value; });
+  cli.send('/compact\n');
+  await waitFor(() => output.includes('已压缩当前会话历史'), () => `输出=${output}`);
+  cli.end('/exit\n');
+  expect((await cli.done).code).toBe(0);
+
+  const section = fileSection(recoveryContent(await readRecord(userDir))!, 'emoji.txt');
+  expect(section).toBeDefined();
+  const [opening] = section!.split('\n…（内容已截断）');
+  // 4,000 个 emoji 共 16,000 字节约 5,334 token；裁剪到 5,000 token 为 3,750 个码点。
+  const codePoints = Array.from(opening!);
+  expect(codePoints).toHaveLength(3_750);
+  expect(original.startsWith(opening!)).toBe(true);
+  // 未保留半个代理对，恢复内容仍是合法 Unicode。
+  expect(codePoints.some((character) => character.length === 1 && /[\uD800-\uDFFF]/u.test(character))).toBe(false);
+});
+
 it('工作区外文件即使曾被读取，恢复时按边界约束跳过', async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'qhy-recover-workspace-'));
   const userDir = await mkdtemp(join(tmpdir(), 'qhy-recover-user-'));

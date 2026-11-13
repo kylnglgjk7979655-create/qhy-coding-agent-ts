@@ -16,7 +16,7 @@ function estimateTokens(text: string): number {
 }
 
 /** 记录一次成功读取：按文件标识去重并置顶，只保留最近若干个。 */
-export function recordRecentFile(files: readonly string[], target: string): string[] {
+function recordRecentFile(files: readonly string[], target: string): string[] {
   return [target, ...files.filter((file) => file !== target)].slice(0, RECENT_FILE_HISTORY_LIMIT);
 }
 

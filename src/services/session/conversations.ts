@@ -118,11 +118,14 @@ export function reconstructSessionHistory(session: SessionRecord): { history: Mo
         || (round.status === 'cancelled' && round.error?.code === 'CANCELLED')))
     .sort((left, right) => left.transcriptStart! - right.transcriptStart!);
   const history = [...session.effectiveHistory];
+  // 覆盖边界是 transcript 的绝对位置：最近一次检查点已经覆盖其之前的全部内容，包括更早的中断轮次。
+  // 若只看本轮的 compactedThrough，跨进程续聊会在摘要之上重复回放已被摘要覆盖的消息。
+  const compactedThrough = session.rounds.reduce((max, round) => Math.max(max, round.compactedThrough ?? 0), 0);
   for (const [index, round] of pendingRounds.entries()) {
     const start = round.transcriptStart!;
     const nextStart = pendingRounds[index + 1]?.transcriptStart;
-    // 压缩检查点已经把该轮此前的 transcript 内容并入 effectiveHistory，只能续接其后未覆盖的消息。
-    const observed = session.transcript.slice(Math.max(start, round.compactedThrough ?? 0), nextStart);
+    // 压缩检查点已经把此前 transcript 内容并入 effectiveHistory，只能续接其后未覆盖的消息。
+    const observed = session.transcript.slice(Math.max(start, compactedThrough), nextStart);
     history.push(...recoverObservedRound(observed));
   }
   return { history, recoveredRoundIds: pendingRounds.map(({ id }) => id) };
@@ -307,20 +310,31 @@ export async function saveCompactionCheckpoint(home: string, conversationId: str
   const current = session.rounds[index];
   if (!current || current.status !== 'running') throw new AgentError('PROVIDER_ERROR', '当前轮次记录不可用，压缩检查点未保存。');
   const entry = { text: checkpoint.summary.text, coversThrough: session.transcript.length };
+  await saveSession(home, withCompaction(session, checkpoint, entry, session.rounds.map((round, roundIndex) => roundIndex === index
+    ? { ...round, compactedThrough: Math.max(round.compactedThrough ?? 0, entry.coversThrough) }
+    : round)));
+  return entry;
+}
+
+/** 构造压缩后的会话记录：摘要追加去重、有效历史、最近文件与轮次覆盖标记共用同一套规则。 */
+function withCompaction(
+  session: SessionRecord,
+  checkpoint: { effectiveHistory: ModelMessage[]; summary: { text: string }; recentFiles?: string[] },
+  entry: { text: string; coversThrough: number },
+  rounds: SessionRecord['rounds'],
+): SessionRecord {
   const previous = session.summaries.at(-1);
+  // 同一段历史重复保存相同摘要时不重复追加。
   const unchanged = previous !== undefined
     && previous.text === entry.text
     && previous.coversThrough === entry.coversThrough;
-  await saveSession(home, {
+  return {
     ...session,
     effectiveHistory: checkpoint.effectiveHistory,
     summaries: unchanged ? session.summaries : [...session.summaries, entry],
     ...(checkpoint.recentFiles ? { recentFiles: checkpoint.recentFiles } : {}),
-    rounds: session.rounds.map((round, roundIndex) => roundIndex === index
-      ? { ...round, compactedThrough: Math.max(round.compactedThrough ?? 0, entry.coversThrough) }
-      : round),
-  });
-  return entry;
+    rounds,
+  };
 }
 
 /**
@@ -334,21 +348,11 @@ export async function saveManualCompaction(home: string, conversationId: string,
   recentFiles?: string[];
 }): Promise<void> {
   const session = await loadSession(home, conversationId);
-  const coversThrough = session.transcript.length;
-  const entry = { text: checkpoint.summary.text, coversThrough };
-  const previous = session.summaries.at(-1);
-  const unchanged = previous !== undefined
-    && previous.text === entry.text
-    && previous.coversThrough === entry.coversThrough;
-  await saveSession(home, {
-    ...session,
-    effectiveHistory: checkpoint.effectiveHistory,
-    summaries: unchanged ? session.summaries : [...session.summaries, entry],
-    ...(checkpoint.recentFiles ? { recentFiles: checkpoint.recentFiles } : {}),
-    rounds: session.rounds.map((round) => (round.compactedThrough ?? 0) >= coversThrough
+  const entry = { text: checkpoint.summary.text, coversThrough: session.transcript.length };
+  await saveSession(home, withCompaction(session, checkpoint, entry, session.rounds.map((round) =>
+    (round.compactedThrough ?? 0) >= entry.coversThrough
       ? round
-      : { ...round, compactedThrough: coversThrough }),
-  });
+      : { ...round, compactedThrough: entry.coversThrough })));
 }
 
 export async function finishSessionRound(home: string, conversationId: string, roundId: string, outcome: {
