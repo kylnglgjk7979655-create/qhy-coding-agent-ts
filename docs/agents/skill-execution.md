@@ -15,7 +15,7 @@
 
 ## QA 的当前边界
 
-GitHub workflow 暂不接入 QA：`agent:qa`、`agent:qa-only` 的 workflow 和脚本已移除。`.agents/skills/qa-only` 仍保留，可在本地 Claude 会话中通过 `/qa-only` 执行只读验收。以后恢复入口时再补 workflow 和自动化测试。
+GitHub workflow 暂不接入 QA：`agent:qa`、`agent:qa-only` 的 workflow 和脚本已移除。`.agents/skills/qa-only` 与 `.agents/skills/qa` 仍保留，可在本地 Claude 会话中通过 `/qa-only` 执行只读验收，或用 `/qa` 在验收失败后批量修复并复验、全绿后做一次 CR。以后恢复入口时再补 workflow 和自动化测试。
 
 ## 规范与交付
 

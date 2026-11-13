@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | code-review | 规范、需求两个独立视角审查 | Matt 固定版本 |
 | qa-only | 根据 spec 生成 QA plan，实际运行并输出验收证据，只读报告 | 项目自定义，参考 Matt 与 gstack |
+| qa | QA 与修复循环：验收失败后批量修复并复验，全绿后一次 CR | 项目自定义 |
 | tdd | 通过公共接口测试行为，逐条 red→green | Matt 固定版本 |
 | diagnosing-bugs | 可复现反馈、最小化、诊断、回归 | Matt 固定版本 |
 | codebase-design | 共享设计词汇与深化方法 | Matt 固定版本 |
@@ -17,6 +18,6 @@
 
 执行时先读取 [项目适配](../../docs/agents/skill-execution.md)。更新上游时按固定 commit 复制完整目录，包括参考文档、脚本、agents 配置及 credits；更新来源和文件校验值，通过 PR 审核。项目特有规则集中在项目适配和任务入口，避免直接改动上游原文。
 
-`qa-only` 是项目自定义方法，来源记录在自身 `CREDITS.md` 和 `UPSTREAM.json` 的 `projectSkills`。QA 暂不接入 GitHub workflow：`agent:qa` / `agent:qa-only` 标签入口和对应阶段脚本已移除，仅保留本 skill 供本地 Claude 会话验收使用（CR 后验收、修复后复验或只读检查），不会触发修复或额外 CR。
+`qa-only` 与 `qa` 都是项目自定义方法，来源记录在各自 `CREDITS.md` 和 `UPSTREAM.json` 的 `projectSkills`。QA 暂不接入 GitHub workflow：`agent:qa` / `agent:qa-only` 标签入口和对应阶段脚本已移除，两个 skill 只供本地 Claude 会话使用——`qa-only` 做只读验收与产物输出，`qa` 复用同一验收格式、失败后批量修复并复验，全绿后做一次 CR。
 
 `implement` 按用户要求移除了完成后自动调用 `code-review` 的步骤。来源校验值及本地差异记录在 `UPSTREAM.json` 的 `localSnapshots.implement`。代码注释规范集中在仓库根目录的 [编码规范](../../CODING_STANDARDS.md)，由 `AGENTS.md` 指引读取。其他固定上游文件保持原文。云端拆票审批和依赖调度的执行约定见 [项目适配](../../docs/agents/skill-execution.md)。
