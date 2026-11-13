@@ -34,7 +34,7 @@ export async function prepareConversation(
   messages: ModelMessage[],
   tools: ToolSet,
   signal: AbortSignal,
-  onSummary?: (summary: { text: string; coveredMessages: number }) => void,
+  onSummary?: (summary: { text: string; coveredMessages: number; compacted: ModelMessage[] }) => Promise<void> | void,
 ): Promise<ModelMessage[]> {
   signal.throwIfAborted();
   const context = config.context ?? DEFAULT_CONTEXT;
@@ -91,6 +91,7 @@ export async function prepareConversation(
     throw new AgentError('CONTEXT_ERROR', '对话摘要后仍无法满足上下文预算或压缩目标，已停止本轮；成功历史保持不变。');
   }
   signal.throwIfAborted();
-  onSummary?.({ text, coveredMessages: cut });
+  // 回调在返回前完成：摘要持久化失败时本函数抛出，调用方不会把压缩视为成功。
+  await onSummary?.({ text, coveredMessages: cut, compacted });
   return compacted;
 }

@@ -33,6 +33,10 @@ export interface SessionRecord {
     messages?: ModelMessage[];
     partialText?: string;
     recovered?: boolean;
+    /** 本轮已保存的压缩检查点覆盖到的 transcript 排他结束位置。 */
+    compactedThrough?: number;
+    /** 本轮开始时会话已有的摘要数量，成功时据此替换而不是重复追加本轮摘要。 */
+    summaryStart?: number;
     error?: { code: string; message: string };
   }>;
   summaries: Array<{ text: string; coversThrough: number }>;
@@ -113,7 +117,8 @@ export function reconstructSessionHistory(session: SessionRecord): { history: Mo
   for (const [index, round] of pendingRounds.entries()) {
     const start = round.transcriptStart!;
     const nextStart = pendingRounds[index + 1]?.transcriptStart;
-    const observed = session.transcript.slice(start, nextStart);
+    // 压缩检查点已经把该轮此前的 transcript 内容并入 effectiveHistory，只能续接其后未覆盖的消息。
+    const observed = session.transcript.slice(Math.max(start, round.compactedThrough ?? 0), nextStart);
     history.push(...recoverObservedRound(observed));
   }
   return { history, recoveredRoundIds: pendingRounds.map(({ id }) => id) };
@@ -238,7 +243,7 @@ export async function startSessionRound(
     ...session,
     title: !session.title || session.title === '未命名会话' ? deriveTitleFromText(prompt) : session.title,
     transcript: [...session.transcript, { role: 'user', content: prompt }],
-    rounds: [...session.rounds, { id: roundId, status: 'running', startedAt: new Date().toISOString(), config, transcriptStart, messages: [], partialText: '' }],
+    rounds: [...session.rounds, { id: roundId, status: 'running', startedAt: new Date().toISOString(), config, transcriptStart, messages: [], partialText: '', summaryStart: session.summaries.length }],
     checkpoints: [...session.checkpoints, { id: randomUUID(), messageId: roundId, createdAt: new Date().toISOString(), files: checkpointFiles }],
     backups,
   });
@@ -283,6 +288,33 @@ export async function appendRoundText(home: string, conversationId: string, roun
   await updateRound(home, conversationId, roundId, (round) => ({ ...round, partialText: `${round.partialText ?? ''}${text}` }));
 }
 
+/**
+ * 摘要成功后立即保存压缩检查点：活动轮次的摘要、覆盖边界和压缩后的有效历史立即可用于续聊。
+ * 保存失败时抛出错误，调用方据此停止本轮，压缩前的有效历史保持可恢复。
+ */
+export async function saveCompactionCheckpoint(home: string, conversationId: string, roundId: string, checkpoint: {
+  effectiveHistory: ModelMessage[];
+  summary: SessionRecord['summaries'][number];
+}): Promise<void> {
+  const session = await loadSession(home, conversationId);
+  const index = session.rounds.findIndex((round) => round.id === roundId);
+  const current = session.rounds[index];
+  if (!current || current.status !== 'running') throw new AgentError('PROVIDER_ERROR', '当前轮次记录不可用，压缩检查点未保存。');
+  const previous = session.summaries.at(-1);
+  const unchanged = previous !== undefined
+    && previous.text === checkpoint.summary.text
+    && previous.coversThrough === checkpoint.summary.coversThrough;
+  const transcriptThrough = session.transcript.length;
+  await saveSession(home, {
+    ...session,
+    effectiveHistory: checkpoint.effectiveHistory,
+    summaries: unchanged ? session.summaries : [...session.summaries, checkpoint.summary],
+    rounds: session.rounds.map((round, roundIndex) => roundIndex === index
+      ? { ...round, compactedThrough: Math.max(round.compactedThrough ?? 0, transcriptThrough) }
+      : round),
+  });
+}
+
 export async function finishSessionRound(home: string, conversationId: string, roundId: string, outcome: {
   status: 'succeeded' | 'failed' | 'cancelled';
   response?: ModelMessage[];
@@ -317,6 +349,8 @@ async function updateRound(
   const transcriptStart = current.transcriptStart ?? session.transcript.length - 1;
   const observed = [...(round.messages ?? []), ...(round.partialText ? [{ role: 'assistant' as const, content: round.partialText }] : [])];
   const transcript = [...session.transcript.slice(0, transcriptStart + 1), ...observed];
+  // 本轮摘要只替换本轮之前已保存的部分；检查点已经持久化的摘要由本轮结果统一覆盖，避免重复追加。
+  const summaryStart = current.summaryStart ?? session.summaries.length;
   await saveSession(home, {
     ...session,
     transcript,
@@ -324,7 +358,7 @@ async function updateRound(
       ? round
       : recoveredRoundIds.includes(item.id) ? { ...item, recovered: true } : item),
     ...(effectiveHistory ? { effectiveHistory } : {}),
-    ...(effectiveHistory ? { summaries: [...session.summaries, ...summaries] } : {}),
+    ...(effectiveHistory ? { summaries: [...session.summaries.slice(0, summaryStart), ...summaries] } : {}),
   });
 }
 
@@ -467,6 +501,8 @@ function isRoundRecord(value: unknown): value is SessionRecord['rounds'][number]
     && (round.messages === undefined || (Array.isArray(round.messages) && round.messages.every(isModelMessage)))
     && (round.partialText === undefined || typeof round.partialText === 'string')
     && (round.recovered === undefined || typeof round.recovered === 'boolean')
+    && (round.compactedThrough === undefined || (Number.isSafeInteger(round.compactedThrough) && round.compactedThrough >= 0))
+    && (round.summaryStart === undefined || (Number.isSafeInteger(round.summaryStart) && round.summaryStart >= 0))
     && (round.error === undefined || (typeof round.error === 'object' && round.error !== null
       && typeof round.error.code === 'string' && typeof round.error.message === 'string'));
 }

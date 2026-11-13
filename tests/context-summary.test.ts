@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ModelMessage } from 'ai';
@@ -17,7 +17,18 @@ afterEach(async () => {
 });
 const summary = '目标：修复折扣；已确认决策：满百九折；约束：保留文件边界；关键结果：已读取源码；未完成事项：验证测试。';
 const context = { capacityTokens: 6000, answerReserveTokens: 1000 };
+// 只保留当前轮次原文，便于断言检查点边界与续聊输入。
+const compactContext = { ...context, triggerRatio: 0.8, targetRatio: 0.5, keepRecentTurns: 0 };
 const historyPath = () => join(cwd, '.agent/conversations/summary.json');
+const recordPath = () => join(cwd, '.qhy-coding-agents', 'sessions', 'summary', 'record.json');
+interface SavedRecord {
+  transcript: ModelMessage[];
+  effectiveHistory: ModelMessage[];
+  summaries: Array<{ text: string; coversThrough: number }>;
+}
+async function readRecord(): Promise<SavedRecord> {
+  return JSON.parse(await readFile(recordPath(), 'utf8')) as SavedRecord;
+}
 const recent: ModelMessage[] = [
   { role: 'user', content: '最近第一轮读取' },
   { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'recent-read', toolName: 'read_file', input: { path: 'note.txt' } }] },
@@ -211,6 +222,11 @@ it.each(['超时', '取消'])('工具增长后的摘要等待受整轮%s约束�
   expect(fixture.requests).toHaveLength(1);
   expect(fixture.summaryRequests).toHaveLength(1);
   expect(await readFile(historyPath(), 'utf8')).toBe(previous);
+  const record = await readRecord();
+  expect(record.effectiveHistory).toEqual([
+    { role: 'user', content: '旧目标' }, { role: 'assistant', content: '旧'.repeat(3000) },
+  ]);
+  expect(record.summaries).toEqual([]);
 });
 
 it('长历史摘要替换原文，保留最近两轮工具配对，成功保存并跨进程直接续聊', async () => {
@@ -308,43 +324,119 @@ it('摘要失败后同进程可重试，失败轮消息不进入下一次摘要�
   expect(await readFile(historyPath(), 'utf8')).not.toContain('失败轮需求_MARKER');
 });
 
-it('摘要成功后主模型失败仍保留原历史，恢复轮再次从原历史压缩', async () => {
-  let previous = '';
+it('摘要成功后立即保存检查点，主模型失败时跨进程续聊不重放已覆盖原文', async () => {
+  let duringRequest: SavedRecord | undefined;
   const fixture = await setup(async (_request, index) => {
-    expect(await readFile(historyPath(), 'utf8')).toBe(previous);
-    return index === 1 ? { status: 500, content: '失败' } : { content: '恢复完成' };
-  });
-  previous = await readFile(historyPath(), 'utf8');
+    if (index > 1) return { content: '恢复完成' };
+    duringRequest = await readRecord();
+    return { status: 500, content: '摘要后失败' };
+  }, undefined, { context: compactContext });
+  const result = await run().done;
+  expect(result.code).toBe(0);
+  expect(result.stdout + result.stderr).toContain('PROVIDER_ERROR');
+  expect(fixture.summaryRequests).toHaveLength(1);
+  // 主模型请求在途时，会话记录已经保存压缩后的有效历史与覆盖边界。
+  expect(duringRequest?.effectiveHistory[0]).toEqual({ role: 'assistant', content: expect.stringContaining(summary) });
+  expect(JSON.stringify(duringRequest?.effectiveHistory)).not.toContain('旧原文标记');
+  expect(duringRequest?.summaries).toEqual([{ text: summary, coversThrough: 8 }]);
+  expect(JSON.stringify(duringRequest?.transcript)).toContain('旧原文标记');
+  const saved = await readRecord();
+  expect(saved.effectiveHistory).toEqual(duringRequest!.effectiveHistory);
+  expect(saved.summaries).toEqual([{ text: summary, coversThrough: 8 }]);
+
+  const resumed = startCLI({ cwd, conversationId: 'summary', input: '重启续聊\n/exit\n', env: { TEST_MODEL_API_KEY: 'fake-summary-key' } });
+  expect((await resumed.done).code).toBe(0);
+  const request = fixture.requests.at(-1)!;
+  expect(JSON.stringify(request)).toContain(summary);
+  expect(JSON.stringify(request)).not.toContain('旧原文标记');
+  expect(request.messages.filter(({ role }) => role === 'user').map(({ content }) => content)).toEqual(['当前需求', '重启续聊']);
+  expect((await readRecord()).summaries).toEqual([{ text: summary, coversThrough: 8 }]);
+});
+
+it('摘要后主模型失败时同进程续用检查点，不重复摘要也不恢复原文', async () => {
+  const fixture = await setup(async (_request, index) => index === 1
+    ? { status: 500, content: '摘要后失败' }
+    : { content: '恢复完成' }, undefined, { context: compactContext });
   const result = await run('摘要后失败\n恢复需求\n/exit\n').done;
   expect(result.code).toBe(0);
   expect(result.stdout + result.stderr).toContain('PROVIDER_ERROR');
-  expect(fixture.summaryRequests).toHaveLength(2);
-  expect(JSON.stringify(fixture.summaryRequests[1])).toContain('旧原文标记');
-  expect(fixture.requests[1]!.messages.at(-1)?.content).toBe('恢复需求');
-  expect(JSON.stringify(fixture.requests[1])).not.toContain('摘要后失败');
-  expect(await readFile(historyPath(), 'utf8')).not.toContain('摘要后失败');
+  expect(result.stdout).toContain('恢复完成');
+  expect(fixture.summaryRequests).toHaveLength(1);
+  const request = fixture.requests[1]!;
+  expect(JSON.stringify(request)).toContain(summary);
+  expect(JSON.stringify(request)).not.toContain('旧原文标记');
+  expect(request.messages.filter(({ role }) => role === 'user').map(({ content }) => content)).toEqual(['摘要后失败', '恢复需求']);
+  const saved = await readRecord();
+  expect(saved.summaries).toEqual([{ text: summary, coversThrough: 8 }]);
+  expect(JSON.stringify(saved.effectiveHistory)).not.toContain('旧原文标记');
 });
 
-it.each(['摘要中', '摘要后'])('%s被用户中断后保留之前的有效历史', async (phase) => {
+it('压缩检查点保存失败时停止本轮，压缩前有效历史保持可恢复', async () => {
+  let sabotaged = false;
+  const fixture = await setup(undefined, async () => {
+    if (sabotaged) return { content: summary };
+    sabotaged = true;
+    const sessionDirectory = join(cwd, '.qhy-coding-agents', 'sessions', 'summary');
+    await rename(sessionDirectory, `${sessionDirectory}.moved`);
+    return { content: summary };
+  }, { context: compactContext });
+  const sessionDirectory = join(cwd, '.qhy-coding-agents', 'sessions', 'summary');
+  const previous = JSON.parse(await readFile(historyPath(), 'utf8')) as ModelMessage[];
+  const result = await run().done;
+  await rename(`${sessionDirectory}.moved`, sessionDirectory);
+  expect(result.code).toBe(0);
+  expect(result.stdout + result.stderr).toContain('压缩检查点保存失败');
+  expect(fixture.summaryRequests).toHaveLength(1);
+  expect(fixture.requests).toEqual([]);
+  const record = await readRecord();
+  expect(record.effectiveHistory).toEqual(previous);
+  expect(record.summaries).toEqual([]);
+  expect(JSON.stringify(record.transcript)).toContain('旧原文标记');
+});
+
+it('摘要中被用户中断后保留压缩前的有效历史', async () => {
   let entered!: () => void;
   const waiting = new Promise<void>((resolve) => { entered = resolve; });
-  const fixture = await setup(() => {
-    entered();
-    return undefined;
-  }, () => {
-    if (phase === '摘要中') { entered(); return undefined; }
-    return { content: summary };
-  });
-  const previous = await readFile(historyPath(), 'utf8');
+  const fixture = await setup(() => { entered(); return undefined; }, () => { entered(); return undefined; }, { context: compactContext });
   const running = run();
-  await Promise.race([waiting, running.done.then(() => { throw new Error('在待取消的请求前意外退出'); })]);
+  await Promise.race([waiting, running.done.then(() => { throw new Error('未到达摘要请求'); })]);
   running.child.kill('SIGINT');
   const result = await running.done;
   expect(result.code).toBe(0);
   expect(result.stdout + result.stderr).toContain('Interrupt by user');
   expect(fixture.summaryRequests).toHaveLength(1);
-  expect(fixture.requests).toHaveLength(phase === '摘要中' ? 0 : 1);
-  expect(await readFile(historyPath(), 'utf8')).toBe(previous);
+  expect(fixture.requests).toHaveLength(0);
+  const record = await readRecord();
+  expect(record.effectiveHistory).toEqual([...old, ...recent]);
+  expect(record.summaries).toEqual([]);
+  expect(JSON.stringify(record.transcript)).toContain('旧原文标记');
+});
+
+it('摘要后被用户中断时会话记录已保存检查点，跨进程续聊不重放原文', async () => {
+  let entered!: () => void;
+  const waiting = new Promise<void>((resolve) => { entered = resolve; });
+  const fixture = await setup(() => { entered(); return undefined; }, () => ({ content: summary }), { context: compactContext });
+  const running = run();
+  await Promise.race([waiting, running.done.then(() => { throw new Error('未到达主模型请求'); })]);
+  running.child.kill('SIGINT');
+  const result = await running.done;
+  expect(result.code).toBe(0);
+  expect(result.stdout + result.stderr).toContain('Interrupt by user');
+  expect(fixture.summaryRequests).toHaveLength(1);
+  const record = await readRecord();
+  expect(record.effectiveHistory[0]).toEqual({ role: 'assistant', content: expect.stringContaining(summary) });
+  expect(JSON.stringify(record.effectiveHistory)).not.toContain('旧原文标记');
+  expect(record.summaries).toEqual([{ text: summary, coversThrough: 8 }]);
+  expect(JSON.stringify(record.transcript)).toContain('旧原文标记');
+
+  const resumed = startCLI({ cwd, conversationId: 'summary', input: '重启续聊\n/exit\n', env: { TEST_MODEL_API_KEY: 'fake-summary-key' } });
+  expect((await resumed.done).code).toBe(0);
+  expect(fixture.summaryRequests).toHaveLength(1);
+  const request = fixture.requests.at(-1)!;
+  expect(JSON.stringify(request)).toContain(summary);
+  expect(JSON.stringify(request)).not.toContain('旧原文标记');
+  expect(request.messages.filter(({ role }) => role === 'user').map(({ content }) => content)).toEqual(['当前需求', '重启续聊']);
+  expect((await readRecord()).summaries).toEqual([{ text: summary, coversThrough: 8 }]);
 });
 
 it('摘要等待受整轮时限约束，超时后不启动主模型、不保存', async () => {

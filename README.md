@@ -146,7 +146,7 @@ pnpm dev --workspace ./demo
 
 摘要作为 `assistant` 历史资料进入后续请求，不改变内置系统提示或工具策略。产品不会自动加载工作区的开发用 `AGENTS.md`，也不发现其他项目规则文件。旧格式历史无需迁移，未触发压缩时保留原有内容，达到阈值后按同样规则处理。
 
-摘要校验成功后替换本轮内存有效历史；只有轮次成功后才将其写入会话记录的 `effectiveHistory`。完整 transcript 始终保存在 `~/.qhy-coding-agents/sessions/<conversation ID>/record.json`，每次观察到新内容时通过临时文件和原子替换更新，摘要不会删除或压缩 transcript。重启后直接加载摘要及保留轮次。摘要失败或摘要后本轮失败、取消时，有效历史保持上次成功状态，transcript 保留本轮已观察内容；已经发生的文件、宿主或远端副作用不会回滚。
+摘要校验成功后替换本轮内存有效历史，并立即通过临时文件加原子替换把摘要、覆盖边界和压缩后的有效历史写入会话记录的 `effectiveHistory`，不等待本轮最终成功；活动轮次同时记录检查点在 transcript 中的覆盖结束位置。完整 transcript 始终保存在 `~/.qhy-coding-agents/sessions/<conversation ID>/record.json`，每次观察到新内容时通过临时文件和原子替换更新，摘要不会删除或压缩 transcript。重启或本轮后续失败、取消后，直接使用最近一次压缩检查点及该检查点之后已观察的消息，不重放已被摘要覆盖的原文；已经发生的文件、宿主或远端副作用不会回滚。摘要请求失败、响应无效或检查点保存失败时，以明确错误停止本轮，压缩前的有效历史保持可恢复，不将未可靠保存的结果报告为压缩成功。
 
 独立审查请求按专用提示词与当前单次调用的名称、完整参数检查预算，不添加目标、历史或摘要；独立摘要请求按专用提示词与待压缩原文检查预算。两者超限时以 `CONTEXT_ERROR` 停止，不发送已知超限请求，也不分段摘要或自动删除历史。
 
@@ -351,7 +351,7 @@ pnpm exec node dist/cli.js --workspace ./demo 2> run.jsonl
 | 2 | `CONFIG_ERROR` | 补齐凭据、修正配置、工作区或参数 |
 | 3 | `AUTH_ERROR` | HTTP 401/403；检查密钥与服务权限 |
 | 4 | `TIMEOUT` | 总时限或 HTTP 408/504；检查网络或调整时限 |
-| 5 | `PROVIDER_ERROR` | 网络、配额、HTTP 错误，或回答为空/被截断 |
+| 5 | `PROVIDER_ERROR` | 网络、配额、HTTP 错误，回答为空/被截断，或压缩检查点保存失败 |
 | 6 | `TOOL_COMPATIBILITY_ERROR` | 工具冒烟未通过 |
 | 7 | `STEP_LIMIT` | 步数用尽，尚未完成回答 |
 | 8 | `APPROVAL_ERROR` | 审批超时、不可用或响应无效，本轮停止 |

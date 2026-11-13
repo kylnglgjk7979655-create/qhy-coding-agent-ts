@@ -58,6 +58,8 @@ export async function runAgent(
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
+    /** 摘要成功后立即持久化压缩检查点；保存失败按停止本轮处理，不报告压缩成功。 */
+    onCompaction?: (checkpoint: { effectiveHistory: ModelMessage[]; summary: { text: string; coversThrough: number } }) => Promise<void> | void;
     summaryCoverageBase?: number;
     /** general-purpose 子 Agent 使用独立循环，但不公布 agent 工具。 */
     generalPurposeSubagent?: boolean;
@@ -203,12 +205,20 @@ export async function runAgent(
       maxRetries: 0,
       prepareStep: async ({ stepNumber, messages, responseMessages }) => {
         signal.throwIfAborted();
-        preparedHistory = await prepareConversation(config, instructions, messages, tools, signal, (summary) => {
+        preparedHistory = await prepareConversation(config, instructions, messages, tools, signal, async (summary) => {
           // 已有摘要在有效历史中占一个消息槽位，不代表一条新的 transcript 原文。
           const coversThrough = summaryCoverageBase + summary.coveredMessages - (hasSummary ? 1 : 0);
-          summaries.push({ text: summary.text, coversThrough });
+          const entry = { text: summary.text, coversThrough };
+          summaries.push(entry);
           summaryCoverageBase = coversThrough;
           hasSummary = true;
+          if (!options.onCompaction) return;
+          try {
+            await options.onCompaction({ effectiveHistory: summary.compacted, summary: entry });
+          } catch {
+            signal.throwIfAborted();
+            throw new AgentError('PROVIDER_ERROR', '压缩检查点保存失败，已停止本轮；压缩前的有效历史保持不变。');
+          }
         });
         preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;

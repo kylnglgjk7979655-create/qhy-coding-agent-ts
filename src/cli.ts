@@ -8,7 +8,7 @@ import type { ModelMessage } from 'ai';
 import { runAgent } from './query/agent.js';
 import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession } from './tools/AgentTool/background-agent-tasks.js';
 import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
-import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveLegacyConversation, sessionTaskOutputDirectory, startSessionRound } from './services/session/conversations.js';
+import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, sessionTaskOutputDirectory, startSessionRound } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
 import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './services/session/file-checkpoints.js';
 import type { FileRewindPlan } from './services/session/file-checkpoints.js';
@@ -182,6 +182,16 @@ async function main(): Promise<void> {
       return resumed;
     };
     let rewindSelection: { plan: FileRewindPlan } | undefined;
+    // 失败或取消的轮次可能已保存压缩检查点；内存历史需与磁盘一致，避免覆盖边界与摘要基数错位。
+    const syncHistoryFromSession = async (): Promise<void> => {
+      try {
+        const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
+        history = recovered.history;
+        recoveredRoundIds = recovered.recoveredRoundIds;
+      } catch {
+        // 读取失败时保留当前内存历史，不影响已经展示的错误。
+      }
+    };
     if (process.stdin.isTTY) input.prompt();
     while (true) {
       const workItem = await input.nextWorkItem(conversationId);
@@ -203,6 +213,7 @@ async function main(): Promise<void> {
         } catch (error) {
           if (cancellation.signal.aborted) throw error;
           process.stdout.write(`\n${formatUserError(error)}\n`);
+          await syncHistoryFromSession();
         } finally {
           activeRound = undefined;
         }
@@ -363,6 +374,7 @@ async function main(): Promise<void> {
         if (cancellation.signal.aborted) throw error;
         const failure = publicError(error);
         process.stdout.write(`\n${formatUserError(failure)}\n`);
+        await syncHistoryFromSession();
       } finally {
         activeRound = undefined;
       }
@@ -447,6 +459,11 @@ async function runTurn(
         if (smokeTool || !roundId) return;
         const results = content.filter((part): part is Record<string, unknown> => typeof part === 'object' && part !== null && (part as { type?: string }).type === 'tool-result');
         if (results.length > 0) await appendRoundMessages(userHome, conversationId, roundId, [{ role: 'tool', content: results } as unknown as ModelMessage]);
+      },
+      onCompaction: async (checkpoint) => {
+        // 摘要成功即保存，不等待本轮最终结果；后续失败或取消仍可跨进程续聊压缩历史。
+        if (!roundId) return;
+        await saveCompactionCheckpoint(userHome, conversationId, roundId, checkpoint);
       },
       onBeforeWrite: async (snapshot: WorkspaceFileSnapshot) => {
         if (!roundId) return;
