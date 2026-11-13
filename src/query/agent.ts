@@ -33,6 +33,8 @@ export interface RunResult {
   roundMessages: ModelMessage[];
   /** 本轮实际注入的 Skill 规范名称，按加载顺序；同一 Skill 只保留最近一次位置。 */
   skillLoads: string[];
+  /** 本轮各规范名最近实际注入的完整正文；随成功轮次保存。 */
+  skillBodies: Record<string, string>;
   /** 本轮成功使用的完整有效历史，可直接用于保存及下一轮输入。 */
   effectiveHistory: ModelMessage[];
   summaries: Array<{ text: string; coversThrough: number; restoredMessages: number }>;
@@ -76,6 +78,8 @@ export async function runAgent(
     skills?: SkillCatalogue;
     /** 会话记录中此前实际加载的 Skill 规范名称，按加载顺序；用于压缩后恢复正文。 */
     recentSkillLoads?: readonly string[];
+    /** 先前成功加载的正文快照，避免同规范名记录在恢复时被重新解析为另一来源。 */
+    skillBodies?: Readonly<Record<string, string>>;
   },
 ): Promise<RunResult> {
   if (options.smokeTool && config.maxSteps < 2) {
@@ -205,6 +209,7 @@ export async function runAgent(
     // 本运行内已生成的 Skill 注入；注入消息随 SDK 的步进消息延续到后续请求。
     const injectedSkillCalls = new Set<string>();
     const skillInjections: SkillInjection[] = [];
+    let skillBodies = { ...options.skillBodies };
     let summaryCoverageBase = options.summaryCoverageBase ?? 0;
     let restoredCoverageBase = options.summaryRestoredBase ?? 0;
     let hasSummary = summaryCoverageBase > 0;
@@ -229,7 +234,10 @@ export async function runAgent(
         const injections = options.skills === undefined
           ? []
           : collectSkillInjections(options.skills, responseMessages, injectedSkillCalls);
-        if (injections.length > 0) skillInjections.push(...injections);
+        if (injections.length > 0) {
+          skillInjections.push(...injections);
+          skillBodies = { ...skillBodies, ...Object.fromEntries(injections.map(({ name, body }) => [name, body])) };
+        }
         // 注入消息排在工具结果之后，并作为本轮消息延续到后续步骤。
         const stepMessages = injections.length === 0
           ? messages
@@ -237,7 +245,7 @@ export async function runAgent(
         // 压缩恢复顺序包含本运行内新的加载，使同轮加载的正文也参与恢复。
         const restore = options.skills === undefined
           ? undefined
-          : { catalogue: options.skills, recentLoads: appendRecentSkillLoads(options.recentSkillLoads ?? [], skillInjections.map(({ name }) => name)) };
+          : { catalogue: options.skills, recentLoads: appendRecentSkillLoads(options.recentSkillLoads ?? [], skillInjections.map(({ name }) => name)), bodies: skillBodies };
         preparedHistory = await prepareConversation(config, instructions, stepMessages, tools, signal, (summary) => {
           // 被覆盖的有效历史消息包含上一份摘要槽位及其恢复的正文，二者都不在 transcript 中。
           const coveredMessages = summary.coveredMessages - (hasSummary ? 1 + restoredCoverageBase : 0);
@@ -342,6 +350,7 @@ export async function runAgent(
       responseMessages,
       roundMessages: insertSkillInjections(responseMessages, skillInjections),
       skillLoads: appendRecentSkillLoads([], skillInjections.map(({ name }) => name)),
+      skillBodies: Object.fromEntries(skillInjections.map(({ name, body }) => [name, body])),
       // 最后一次请求的历史已包含此前工具往返，只追加该请求之后的新响应。
       effectiveHistory: [...preparedHistory, ...responseMessages.slice(preparedResponseCount)],
       summaries,

@@ -134,6 +134,64 @@ describe('压缩后恢复 Skill 正文', () => {
     }
   });
 
+  it('同规范名 Skill 跨进程压缩后恢复最近实际加载的来源正文', async () => {
+    const cwd = await directory('skill-restore-duplicate-cwd');
+    const userDir = await directory('skill-restore-duplicate-user');
+    const model = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [call('load-project', 'skill', { name: 'alpha' }), call('load-global', 'skill', { name: 'Global Alpha' })] }
+      : { content: '完成。' }, undefined, () => ({ content: summaryText }));
+    try {
+      await configure(cwd, model.baseURL, {
+        capacityTokens: 20000, answerReserveTokens: 2000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 0,
+      });
+      await writeSkill(join(cwd, '.qhy-coding-agent', 'skills'), 'alpha', 'PROJECT_BODY_MARKER');
+      const globalRoot = join(userDir, '.qhy-coding-agents', 'skills', 'alpha');
+      await mkdir(globalRoot, { recursive: true });
+      await writeFile(join(globalRoot, 'SKILL.md'), [
+        '---', 'name: alpha', 'description: 全局说明', 'display_name: Global Alpha', '---', '', 'GLOBAL_BODY_MARKER', '',
+      ].join('\n'));
+      await writeLegacy(cwd, 'skill-restore-duplicate', [
+        { role: 'user', content: '旧目标' },
+        { role: 'assistant', content: '旧原文_MARKER' + '旧'.repeat(7000) },
+      ]);
+
+      const first = await startCLI({
+        cwd, userDir, conversationId: 'skill-restore-duplicate', env: { TEST_MODEL_API_KEY: secret },
+        input: '先加载项目再加载全局\n/exit\n',
+      }).done;
+      expect(first.code).toBe(0);
+      expect(model.summaryRequests).toHaveLength(0);
+      expect(model.requests[1]!.messages.filter(({ role, content }) =>
+        role === 'user' && content.startsWith('Skill: alpha\n')).map(({ content }) => content)).toEqual([
+        'Skill: alpha\nPROJECT_BODY_MARKER\n', 'Skill: alpha\nGLOBAL_BODY_MARKER\n',
+      ]);
+      expect((await sessionRecord(userDir)).skillLoads).toEqual(['alpha']);
+
+      // 新进程先读入同名注册项，再触发压缩，仍应恢复最近实际提供的全局正文。
+      const resumed = await startCLI({
+        cwd, userDir, conversationId: 'skill-restore-duplicate', env: { TEST_MODEL_API_KEY: secret },
+        input: `${'需求'.repeat(4000)}\n/exit\n`,
+      }).done;
+      expect(resumed.stdout + resumed.stderr).not.toContain('CONTEXT_ERROR');
+      expect(resumed.code).toBe(0);
+      expect(model.summaryRequests).toHaveLength(1);
+      const compacted = model.requests.at(-1)!;
+      expect(compacted.messages.filter(({ role, content }) =>
+        role === 'user' && content.startsWith('Skill: alpha\n'))).toEqual([
+        { role: 'user', content: 'Skill: alpha\nGLOBAL_BODY_MARKER\n' },
+      ]);
+      const record = await sessionRecord(userDir);
+      expect(record.skillLoads).toEqual(['alpha']);
+      expect(injectionNames(record.effectiveHistory)).toEqual(['alpha']);
+      expect(JSON.stringify(record.effectiveHistory)).toContain('GLOBAL_BODY_MARKER');
+      expect(JSON.stringify(record.effectiveHistory)).not.toContain('PROJECT_BODY_MARKER');
+      expect(count(JSON.stringify(record.transcript), 'GLOBAL_BODY_MARKER')).toBe(1);
+      expect(count(JSON.stringify(record.transcript), 'PROJECT_BODY_MARKER')).toBe(1);
+    } finally {
+      await model.close();
+    }
+  });
+
   it('正文仍在有效历史中的 Skill 不重复恢复', async () => {
     const cwd = await directory('skill-restore-keep-cwd');
     const userDir = await directory('skill-restore-keep-user');

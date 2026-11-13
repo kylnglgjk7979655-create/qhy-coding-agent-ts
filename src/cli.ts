@@ -436,6 +436,7 @@ async function runTurn(
   let summaryCoverageBase = 0;
   let summaryRestoredBase = 0;
   let recentSkillLoads: string[] = [];
+  let skillBodies: Record<string, string> = {};
   let bashFailed = false;
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
@@ -454,6 +455,7 @@ async function runTurn(
       summaryCoverageBase = lastSummary?.coversThrough ?? 0;
       summaryRestoredBase = lastSummary?.restoredMessages ?? 0;
       recentSkillLoads = current.skillLoads ?? [];
+      skillBodies = current.skillBodies ?? {};
     }
     const result = await runAgent(config, prompt, {
       smokeTool,
@@ -461,6 +463,7 @@ async function runTurn(
       summaryCoverageBase,
       summaryRestoredBase,
       recentSkillLoads,
+      skillBodies,
       fileBaselines,
       ...(skills === undefined ? {} : { skills }),
       ...(!smokeTool ? { backgroundTasks: backgroundAgentTasksForSession(
@@ -519,7 +522,7 @@ async function runTurn(
       if (!roundId) throw new AgentError('PROVIDER_ERROR', '当前轮次未能建立持久化记录。');
       await finishSessionRound(userHome, conversationId, roundId, {
         status: 'succeeded', response: result.roundMessages, effectiveHistory: nextHistory,
-        summaries: result.summaries, recoveredRoundIds, skillLoads: result.skillLoads,
+        summaries: result.summaries, recoveredRoundIds, skillLoads: result.skillLoads, skillBodies: result.skillBodies,
       });
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }

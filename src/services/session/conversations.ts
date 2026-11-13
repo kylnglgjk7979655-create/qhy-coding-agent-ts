@@ -26,6 +26,8 @@ export interface SessionRecord {
   effectiveHistory: ModelMessage[];
   /** 最近实际加载的 Skill 规范名称，按加载顺序；同一 Skill 只保留最近一次位置。 */
   skillLoads?: string[];
+  /** 最近成功注入的完整正文；与规范名加载顺序一起保存，旧记录可缺省。 */
+  skillBodies?: Record<string, string>;
   rounds: Array<{
     id: string;
     status: 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -295,6 +297,7 @@ export async function finishSessionRound(home: string, conversationId: string, r
   recoveredRoundIds?: string[];
   /** 本轮新注入的 Skill 规范名称；已有顺序保留并追加到末尾。 */
   skillLoads?: string[];
+  skillBodies?: Record<string, string>;
   error?: { code: string; message: string };
 }): Promise<void> {
   await updateRound(home, conversationId, roundId, (round) => ({
@@ -303,7 +306,7 @@ export async function finishSessionRound(home: string, conversationId: string, r
     finishedAt: new Date().toISOString(),
     ...(outcome.error ? { error: outcome.error } : {}),
     ...(outcome.status === 'succeeded' ? { messages: outcome.response ?? round.messages ?? [], partialText: '' } : {}),
-  }), outcome.effectiveHistory, outcome.recoveredRoundIds, outcome.summaries, outcome.skillLoads);
+  }), outcome.effectiveHistory, outcome.recoveredRoundIds, outcome.summaries, outcome.skillLoads, outcome.status === 'succeeded' ? outcome.skillBodies : undefined);
 }
 
 async function updateRound(
@@ -315,6 +318,7 @@ async function updateRound(
   recoveredRoundIds: string[] = [],
   summaries: SessionRecord['summaries'] = [],
   skillLoads: readonly string[] = [],
+  skillBodies?: Readonly<Record<string, string>>,
 ): Promise<void> {
   const session = await loadSession(home, conversationId);
   const index = session.rounds.findIndex((round) => round.id === roundId);
@@ -337,6 +341,8 @@ async function updateRound(
     ...(effectiveHistory ? { effectiveHistory } : {}),
     ...(effectiveHistory ? { summaries: [...session.summaries, ...summaries] } : {}),
     ...(recentSkillLoads === undefined ? {} : { skillLoads: recentSkillLoads }),
+    ...(skillBodies === undefined || Object.keys(skillBodies).length === 0
+      ? {} : { skillBodies: { ...session.skillBodies, ...skillBodies } }),
   });
 }
 
@@ -412,7 +418,7 @@ async function writeSessionRecord(home: string, record: SessionRecord, createOnl
 function isSessionRecord(value: unknown): value is SessionRecord {
   if (typeof value !== 'object' || value === null) return false;
   const session = value as Partial<SessionRecord>;
-  const fields = ['version', 'id', 'title', 'workspace', 'createdAt', 'updatedAt', 'config', 'transcript', 'effectiveHistory', 'skillLoads', 'rounds', 'summaries', 'checkpoints', 'backups'];
+  const fields = ['version', 'id', 'title', 'workspace', 'createdAt', 'updatedAt', 'config', 'transcript', 'effectiveHistory', 'skillLoads', 'skillBodies', 'rounds', 'summaries', 'checkpoints', 'backups'];
   return Object.keys(value).every((field) => fields.includes(field))
     && session.version === 1
     && typeof session.id === 'string'
@@ -425,6 +431,8 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     && Array.isArray(session.effectiveHistory) && session.effectiveHistory.every(isModelMessage)
     && (session.skillLoads === undefined || (Array.isArray(session.skillLoads)
       && session.skillLoads.every((name) => typeof name === 'string')))
+    && (session.skillBodies === undefined || (typeof session.skillBodies === 'object' && session.skillBodies !== null
+      && !Array.isArray(session.skillBodies) && Object.values(session.skillBodies).every((body) => typeof body === 'string')))
     && Array.isArray(session.rounds) && session.rounds.every(isRoundRecord)
     && Array.isArray(session.summaries) && session.summaries.every(isSummaryRecord)
     && session.summaries.every((summary, index) => summary.coversThrough <= session.transcript!.length
