@@ -7,7 +7,6 @@ import {
   gh,
   required,
   validate,
-  writeJson,
 } from "../shared/common.js";
 import {
   EXPLORE_LABEL,
@@ -30,7 +29,6 @@ import type { GitHubEffect, Plan } from "./batch.js";
 const BATCH_FILE = required("BATCH_FILE");
 const PLAN_FILE = required("PLAN_FILE");
 const GH_REPO = required("GH_REPO");
-const DRY_RUN = process.env.DRY_RUN === "true";
 const AGENT_PAT = process.env.AGENT_PAT ?? "";
 
 const summary = (markdown: string): void => {
@@ -111,6 +109,10 @@ const apply = (effect: GitHubEffect): void => {
       return;
     }
     case "swap-label": {
+      // A label added with GITHUB_TOKEN does not trigger other workflows.
+      if (effect.to === "agent:implement" && !AGENT_PAT) {
+        throw new Error("转交 agent:implement 需要 AGENT_PAT，否则标签不会触发下游 workflow。");
+      }
       ghWith(
         [
           "issue",
@@ -121,12 +123,8 @@ const apply = (effect: GitHubEffect): void => {
           "--add-label",
           effect.to,
         ],
-        // A label added with GITHUB_TOKEN does not trigger other workflows.
         { token: effect.to === "agent:implement" ? AGENT_PAT : undefined },
       );
-      if (effect.to === "agent:implement" && !AGENT_PAT) {
-        throw new Error("转交 agent:implement 需要 AGENT_PAT，否则标签不会触发下游 workflow。");
-      }
       return;
     }
     case "close-duplicate": {
@@ -188,7 +186,7 @@ const effects = planEffects(plan);
 
 summary(
   [
-    `## Batch explore${DRY_RUN ? " (dry run — nothing changed)" : ""}`,
+    `## Batch explore`,
     "",
     "| Issue | Tag | Outcome |",
     "| --- | --- | --- |",
@@ -204,40 +202,14 @@ summary(
   ].join("\n"),
 );
 
-if (DRY_RUN) {
-  summary(
-    [
-      "",
-      "### Planned effects",
-      "",
-      ...effects.flatMap((effect) =>
-        effect.kind === "comment"
-          ? [
-              `<details><summary>${describe(effect)}</summary>`,
-              "",
-              effect.body,
-              "",
-              "</details>",
-              "",
-            ]
-          : [`- ${describe(effect)}`, ""],
-      ),
-    ].join("\n"),
-  );
-  writeJson("effects.json", effects);
-  console.log(
-    `Dry run: ${effects.length} planned effect(s) written to summary.`,
-  );
-} else {
-  for (const effect of effects) {
-    try {
-      apply(effect);
-      console.log(`Applied ${describe(effect)}`);
-    } catch (error) {
-      fail(
-        `Failed to apply ${describe(effect)}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+for (const effect of effects) {
+  try {
+    apply(effect);
+    console.log(`Applied ${describe(effect)}`);
+  } catch (error) {
+    fail(
+      `Failed to apply ${describe(effect)}: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
-  console.log(`Applied ${effects.length} effect(s).`);
 }
+console.log(`Applied ${effects.length} effect(s).`);

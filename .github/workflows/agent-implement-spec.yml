@@ -22,7 +22,6 @@ jobs:
       ISSUE_NUMBER: ${{ github.event.issue.number }}
       GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
-      HAS_AGENT_PAT: ${{ secrets.AGENT_PAT != '' }}
       BRANCH: agent/spec-${{ github.event.issue.number }}
     steps:
       - uses: actions/checkout@v4
@@ -43,7 +42,7 @@ jobs:
           git config user.email 'sandcastle-agent[bot]@users.noreply.github.com'
           git checkout -b "$BRANCH"
       - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.323
       - name: Prepare Claude Code config
         run: |
           mkdir -p "$HOME/.claude"

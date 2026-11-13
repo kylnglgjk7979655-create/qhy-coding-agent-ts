@@ -10,7 +10,7 @@
 
 ### Issue tracker
 
-需求跟踪使用 GitHub Issues。查询、分诊或发布需求前读取 `docs/agents/issue-tracker.md`；配置或排查云端 Codex 自动实现时读取 `docs/agents/github-actions.md`。
+需求跟踪使用 GitHub Issues。查询、分诊或发布需求前读取 `docs/agents/issue-tracker.md`；配置或排查云端 Agent 自动实现时读取 `docs/agents/github-actions.md`。
 
 ### Triage labels
 

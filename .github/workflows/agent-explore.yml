@@ -71,7 +71,7 @@ jobs:
 
       - name: Install Claude Code
         if: steps.batch.outputs.count != '0'
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.323
 
       - name: Prepare Claude Code config
         if: steps.batch.outputs.count != '0'
@@ -140,5 +140,4 @@ jobs:
           BATCH_FILE: ${{ runner.temp }}/batch/issues.json
           PLAN_FILE: ${{ runner.temp }}/out/plan.json
           OUTPUT_DIR: ${{ runner.temp }}
-          DRY_RUN: 'false'
         run: pnpm exec tsx .sandcastle/agent-workflows/explore/apply.ts

@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: agent-implement-issue-${{ github.event.issue.number }}
+      group: agent-ticket-control-${{ github.repository }}-${{ github.event.issue.number }}
       cancel-in-progress: false
     permissions:
       contents: write
@@ -61,7 +61,7 @@ jobs:
 
       - name: Install Claude Code
         if: steps.route.outputs.proceed == 'true'
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.323
 
       - name: Prepare Claude Code config
         if: steps.route.outputs.proceed == 'true'
@@ -104,6 +104,10 @@ jobs:
       - name: Complete child and determine whether to review
         id: completion
         if: steps.route.outputs.proceed == 'true' && success()
+        # 用 AGENT_PAT 关闭子票，issues closed 事件才能触发 promote-queued。
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.open_pr.outputs.pr_number }}
         run: |
           set -euo pipefail
           if [ -z "$PARENT_NUMBER" ]; then
@@ -117,8 +121,6 @@ jobs:
           else
             echo "review=false" >> "$GITHUB_OUTPUT"
           fi
-        env:
-          PR_NUMBER: ${{ steps.open_pr.outputs.pr_number }}
 
       - name: Request automated review
         if: steps.route.outputs.proceed == 'true' && steps.completion.outputs.review == 'true' && success()

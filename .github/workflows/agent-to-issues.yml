@@ -37,7 +37,7 @@ jobs:
           name: ticket-source
           path: ${{ runner.temp }}/tickets/source.json
       - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.323
       - name: Prepare Claude Code config
         run: |
           mkdir -p "$HOME/.claude"

@@ -26,9 +26,6 @@ try {
   if (head !== pr.headRefOid) throw new Error('PR 分支与本地集成分支不一致。');
   execFileSync('gh', ['pr', 'ready', String(pr.number)], { stdio: 'inherit' });
   github.removeLabel(parent, 'agent:implement-spec');
-  if (process.env.HAS_AGENT_PAT !== 'true') {
-    github.api('POST', 'actions/workflows/check.yml/dispatches', { ref: branch });
-  }
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
 }
