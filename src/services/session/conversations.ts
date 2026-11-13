@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import type { ModelMessage } from 'ai';
 import type { ModelConfig } from '../settings/config.js';
 import { AgentError } from '../../utils/errors.js';
+import { appendRecentSkillLoads } from '../skills/skill-injection.js';
 import { snapshotWorkspaceFile } from '../../tools/workspace-files.js';
 
 const conversationIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -23,6 +24,8 @@ export interface SessionRecord {
   config: ModelConfig;
   transcript: ModelMessage[];
   effectiveHistory: ModelMessage[];
+  /** 最近实际加载的 Skill 规范名称，按加载顺序；同一 Skill 只保留最近一次位置。 */
+  skillLoads?: string[];
   rounds: Array<{
     id: string;
     status: 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -35,7 +38,7 @@ export interface SessionRecord {
     recovered?: boolean;
     error?: { code: string; message: string };
   }>;
-  summaries: Array<{ text: string; coversThrough: number }>;
+  summaries: Array<{ text: string; coversThrough: number; /** 该摘要恢复的 Skill 正文条数，不计入 coversThrough。 */ restoredMessages?: number }>;
   checkpoints: Array<{ id: string; messageId: string; createdAt: string; files?: Array<{ path: string; backupId: string }> }>;
   backups: Array<{ id?: string; path: string; content?: string; existed: boolean }>;
 }
@@ -75,6 +78,7 @@ export async function createSession(home: string, options: {
     config: { ...options.config, workspace: resolve(options.workspace) },
     transcript: options.transcript ?? [],
     effectiveHistory: options.effectiveHistory ?? [],
+    skillLoads: [],
     rounds: [],
     summaries: [],
     checkpoints: [],
@@ -289,6 +293,8 @@ export async function finishSessionRound(home: string, conversationId: string, r
   effectiveHistory?: ModelMessage[];
   summaries?: SessionRecord['summaries'];
   recoveredRoundIds?: string[];
+  /** 本轮新注入的 Skill 规范名称；已有顺序保留并追加到末尾。 */
+  skillLoads?: string[];
   error?: { code: string; message: string };
 }): Promise<void> {
   await updateRound(home, conversationId, roundId, (round) => ({
@@ -297,7 +303,7 @@ export async function finishSessionRound(home: string, conversationId: string, r
     finishedAt: new Date().toISOString(),
     ...(outcome.error ? { error: outcome.error } : {}),
     ...(outcome.status === 'succeeded' ? { messages: outcome.response ?? round.messages ?? [], partialText: '' } : {}),
-  }), outcome.effectiveHistory, outcome.recoveredRoundIds, outcome.summaries);
+  }), outcome.effectiveHistory, outcome.recoveredRoundIds, outcome.summaries, outcome.skillLoads);
 }
 
 async function updateRound(
@@ -308,6 +314,7 @@ async function updateRound(
   effectiveHistory?: ModelMessage[],
   recoveredRoundIds: string[] = [],
   summaries: SessionRecord['summaries'] = [],
+  skillLoads: readonly string[] = [],
 ): Promise<void> {
   const session = await loadSession(home, conversationId);
   const index = session.rounds.findIndex((round) => round.id === roundId);
@@ -317,6 +324,10 @@ async function updateRound(
   const transcriptStart = current.transcriptStart ?? session.transcript.length - 1;
   const observed = [...(round.messages ?? []), ...(round.partialText ? [{ role: 'assistant' as const, content: round.partialText }] : [])];
   const transcript = [...session.transcript.slice(0, transcriptStart + 1), ...observed];
+  // 旧记录没有该字段时保持缺省；只有新加载发生后才写入最近顺序。
+  const recentSkillLoads = skillLoads.length === 0
+    ? session.skillLoads
+    : appendRecentSkillLoads(session.skillLoads ?? [], skillLoads);
   await saveSession(home, {
     ...session,
     transcript,
@@ -325,6 +336,7 @@ async function updateRound(
       : recoveredRoundIds.includes(item.id) ? { ...item, recovered: true } : item),
     ...(effectiveHistory ? { effectiveHistory } : {}),
     ...(effectiveHistory ? { summaries: [...session.summaries, ...summaries] } : {}),
+    ...(recentSkillLoads === undefined ? {} : { skillLoads: recentSkillLoads }),
   });
 }
 
@@ -400,7 +412,7 @@ async function writeSessionRecord(home: string, record: SessionRecord, createOnl
 function isSessionRecord(value: unknown): value is SessionRecord {
   if (typeof value !== 'object' || value === null) return false;
   const session = value as Partial<SessionRecord>;
-  const fields = ['version', 'id', 'title', 'workspace', 'createdAt', 'updatedAt', 'config', 'transcript', 'effectiveHistory', 'rounds', 'summaries', 'checkpoints', 'backups'];
+  const fields = ['version', 'id', 'title', 'workspace', 'createdAt', 'updatedAt', 'config', 'transcript', 'effectiveHistory', 'skillLoads', 'rounds', 'summaries', 'checkpoints', 'backups'];
   return Object.keys(value).every((field) => fields.includes(field))
     && session.version === 1
     && typeof session.id === 'string'
@@ -411,6 +423,8 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     && isModelConfig(session.config)
     && Array.isArray(session.transcript) && session.transcript.every(isModelMessage)
     && Array.isArray(session.effectiveHistory) && session.effectiveHistory.every(isModelMessage)
+    && (session.skillLoads === undefined || (Array.isArray(session.skillLoads)
+      && session.skillLoads.every((name) => typeof name === 'string')))
     && Array.isArray(session.rounds) && session.rounds.every(isRoundRecord)
     && Array.isArray(session.summaries) && session.summaries.every(isSummaryRecord)
     && session.summaries.every((summary, index) => summary.coversThrough <= session.transcript!.length
@@ -472,11 +486,14 @@ function isRoundRecord(value: unknown): value is SessionRecord['rounds'][number]
 }
 
 function isSummaryRecord(value: unknown): value is SessionRecord['summaries'][number] {
+  const summary = value as SessionRecord['summaries'][number];
   return typeof value === 'object' && value !== null
-    && typeof (value as SessionRecord['summaries'][number]).text === 'string'
-    && (value as SessionRecord['summaries'][number]).text.trim().length > 0
-    && Number.isSafeInteger((value as SessionRecord['summaries'][number]).coversThrough)
-    && (value as SessionRecord['summaries'][number]).coversThrough >= 0;
+    && typeof summary.text === 'string'
+    && summary.text.trim().length > 0
+    && Number.isSafeInteger(summary.coversThrough)
+    && summary.coversThrough >= 0
+    && (summary.restoredMessages === undefined
+      || (Number.isSafeInteger(summary.restoredMessages) && summary.restoredMessages >= 0));
 }
 
 function isCheckpointRecord(value: unknown): value is SessionRecord['checkpoints'][number] {

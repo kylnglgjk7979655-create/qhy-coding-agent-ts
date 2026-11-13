@@ -14,6 +14,9 @@ import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepar
 import type { FileRewindPlan } from './services/session/file-checkpoints.js';
 import { AgentError, publicError } from './utils/errors.js';
 import { CliInput } from './cli/cli-input.js';
+import { CommandRegistry } from './cli/commands.js';
+import { loadSkillCatalogue } from './services/skills/skill-registry.js';
+import type { SkillCatalogue } from './services/skills/skill-registry.js';
 import type { ApprovalControl } from './tools/tool-approval.js';
 import { acquireSessionLock } from './services/session/session-lock.js';
 
@@ -144,9 +147,12 @@ async function main(): Promise<void> {
     } else history = [];
     if (smokeTool) {
       activeRound = new AbortController();
-      await runTurn('smoke', config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), true);
+      await runTurn('smoke', config, undefined, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), true);
       return;
     }
+
+    // 启动时注册一次 Skill；会话切换工作区后重新加载，本轮内来源文件变化不影响已注册内容。
+    let skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
 
     input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
     const fileBaselinesBySession = new Map<string, Map<string, WorkspaceFileSnapshot>>();
@@ -177,11 +183,41 @@ async function main(): Promise<void> {
       }
       config = resumed.config;
       conversationId = id;
+      skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
       bindBackgroundNotifications(id);
       process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
       return resumed;
     };
     let rewindSelection: { plan: FileRewindPlan } | undefined;
+    // 命令模型统一保存命令记录；后续 Skill 以 prompt 类型复用同一注册与查找路径。
+    const commands = new CommandRegistry();
+    await commands.register({
+      name: '/clear',
+      displayName: '新建会话',
+      aliases: ['/new'],
+      type: 'local',
+      execute: async () => {
+        const id = newConversationId();
+        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+        await createSession(userHome, { id, workspace: config.workspace, config: persistedConfig });
+        const nextRelease = await acquireSessionLock(userHome, id);
+        await releaseSession?.();
+        releaseSession = nextRelease;
+        conversationId = id;
+        history = [];
+        fileBaselines = fileBaselinesForSession(conversationId);
+        recoveredRoundIds = [];
+        bindBackgroundNotifications(id);
+        process.stdout.write(`已新建会话：${id}\n`);
+      },
+    });
+    await commands.register({
+      name: '/exit',
+      displayName: '退出',
+      aliases: [],
+      type: 'local',
+      execute: () => ({ exit: true }),
+    });
     if (process.stdin.isTTY) input.prompt();
     while (true) {
       const workItem = await input.nextWorkItem(conversationId);
@@ -196,7 +232,7 @@ async function main(): Promise<void> {
         ].join('\n');
         try {
           activeRound = new AbortController();
-          history = await runTurn(notificationPrompt, config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines);
+          history = await runTurn(notificationPrompt, config, skills, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines);
           const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
           history = recovered.history;
           recoveredRoundIds = recovered.recoveredRoundIds;
@@ -252,20 +288,10 @@ async function main(): Promise<void> {
         if (process.stdin.isTTY) input.prompt();
         continue;
       }
-      if (prompt === '/exit') break;
-      if (prompt === '/new' || prompt === '/clear') {
-        const id = newConversationId();
-        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
-        await createSession(userHome, { id, workspace: config.workspace, config: persistedConfig });
-        const nextRelease = await acquireSessionLock(userHome, id);
-        await releaseSession?.();
-        releaseSession = nextRelease;
-        conversationId = id;
-        history = [];
-        fileBaselines = fileBaselinesForSession(conversationId);
-        recoveredRoundIds = [];
-        bindBackgroundNotifications(id);
-        process.stdout.write(`已新建会话：${id}\n`);
+      const command = commands.find(prompt);
+      if (command?.type === 'local') {
+        const outcome = await command.execute();
+        if (outcome && outcome.exit) break;
         if (process.stdin.isTTY) input.prompt();
         continue;
       }
@@ -355,7 +381,7 @@ async function main(): Promise<void> {
       try {
         activeRound = new AbortController();
         const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
-        history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines);
+        history = await runTurn(prompt, config, skills, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines);
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
@@ -395,6 +421,7 @@ let lastRunStartedAt = performance.now();
 async function runTurn(
   prompt: string,
   config: Awaited<ReturnType<typeof loadConfig>>,
+  skills: SkillCatalogue | undefined,
   history: ModelMessage[],
   userHome: string,
   conversationId: string,
@@ -407,6 +434,8 @@ async function runTurn(
 ): Promise<ModelMessage[]> {
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
+  let summaryRestoredBase = 0;
+  let recentSkillLoads: string[] = [];
   let bashFailed = false;
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
@@ -420,13 +449,20 @@ async function runTurn(
       roundId = await startSessionRound(userHome, conversationId, prompt, persistedConfig, () => {
         reportCheckpointWarning('checkpoint.snapshot_failed', '消息检查点文件快照失败，本轮继续处理。', { conversationId });
       });
-      summaryCoverageBase = (await loadSession(userHome, conversationId)).summaries.at(-1)?.coversThrough ?? 0;
+      const current = await loadSession(userHome, conversationId);
+      const lastSummary = current.summaries.at(-1);
+      summaryCoverageBase = lastSummary?.coversThrough ?? 0;
+      summaryRestoredBase = lastSummary?.restoredMessages ?? 0;
+      recentSkillLoads = current.skillLoads ?? [];
     }
     const result = await runAgent(config, prompt, {
       smokeTool,
       history,
       summaryCoverageBase,
+      summaryRestoredBase,
+      recentSkillLoads,
       fileBaselines,
+      ...(skills === undefined ? {} : { skills }),
       ...(!smokeTool ? { backgroundTasks: backgroundAgentTasksForSession(
         conversationId,
         sessionTaskOutputDirectory(userHome, conversationId),
@@ -482,8 +518,8 @@ async function runTurn(
     if (!smokeTool) {
       if (!roundId) throw new AgentError('PROVIDER_ERROR', '当前轮次未能建立持久化记录。');
       await finishSessionRound(userHome, conversationId, roundId, {
-        status: 'succeeded', response: result.responseMessages, effectiveHistory: nextHistory,
-        summaries: result.summaries, recoveredRoundIds,
+        status: 'succeeded', response: result.roundMessages, effectiveHistory: nextHistory,
+        summaries: result.summaries, recoveredRoundIds, skillLoads: result.skillLoads,
       });
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }
