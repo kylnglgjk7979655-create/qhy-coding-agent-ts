@@ -27,16 +27,22 @@ description: QA 修复循环。按 spec 生成 QA plan 并验收，失败后批�
 
 主代理只接收：总结果、失败项 ID、commit SHA、证据路径、审查 findings 摘要。不转述截图内容，不复制 diff。
 
-## 4. 委派判据
+## 4. 风险项
+
+`qa` 不代批准。`qa-only` 报告风险项（需要合入共享分支才能验证、push / PR / 标签 / 发布、改共享环境或密钥、不可回滚操作、接管用户桌面）时，立即停止循环，向用户说明风险操作、为什么必须、影响范围和替代方案，等明确批准再继续。
+
+批准只覆盖列明的操作与目标，目标或环境变化后失效。未获批准就把该项记 blocked 并结束，不自行找绕路。修复阶段若发现必须做风险操作（例如只有合入 `main` 才能验证），同样先停下请求批准。
+
+## 5. 委派判据
 
 上下文重（spec、diff、截图、日志）、可独立完成、不影响主代理判断，三条同时成立才交给子代理。缺一条就在主代理内处理，不为委派而拆票。
 
-## 5. 状态文件
+## 6. 状态文件
 
-`qa-loop.json` 最小字段：`runId`、`fixedPoint`、`crFixedPoint`、`spec`、`head`、`round`、`crRounds`、`verdict`、`defects[{id, checkId, status, attempts, evidence}]`、`rounds[{round, head, verdict, failedChecks, commits}]`。每完成一次修复及其复验，追加一条 `rounds` 并把 `round` 加一；`defects.attempts` 记该缺陷已修轮次，`status` 取 `open`、`fixed`、`wontfix`。`crFixedPoint` 在第一次 CR 前写入，之后不变。
+`qa-loop.json` 最小字段：`runId`、`fixedPoint`、`crFixedPoint`、`spec`、`head`、`round`、`crRounds`、`verdict`、`defects[{id, checkId, status, attempts, evidence}]`、`rounds[{round, head, verdict, failedChecks, commits}]`、`risks[{id, action, status}]`。每完成一次修复及其复验，追加一条 `rounds` 并把 `round` 加一；`defects.attempts` 记该缺陷已修轮次，`status` 取 `open`、`fixed`、`wontfix`；`risks.status` 取 `pending`、`approved`、`rejected`。`crFixedPoint` 在第一次 CR 前写入，之后不变。
 
-## 6. 结束与边界
+## 7. 结束与边界
 
-结束时返回 `report.md` 路径、总结果、已提交 commit 和未解决项。允许 commit，不 push、不建 PR。
+结束时返回 `report.md` 路径、总结果、已提交 commit、未解决项和待批准的风险项。允许 commit，不 push、不建 PR；需要推送或合入共享分支才能验证时按 §4 停下等批准。
 
 `blocked` 保留现场与证据，交调用方准备后重跑。确认不修或超出本轮范围的缺陷记 `wontfix`，在报告中单列，不进入后续修复轮次；若它使必验检查失败，该项仍如实记 fail。改动范围不含 `.sandcastle/`、workflow 与 CI；云端 QA 仍由 `agent:qa` 阶段 prompt 调度。复验与修复都不改 `qa-plan.md` 的检查 ID。

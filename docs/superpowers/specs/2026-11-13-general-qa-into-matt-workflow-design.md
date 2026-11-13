@@ -99,6 +99,10 @@ qa（持有：run-id、open defects、轮次、HEAD）
 - 视觉断言只用于可复述、稳定的条件；明确为假 → fail，模型说不清或环境问题 → blocked，主观项只记录。
 - 总结果：存在必验 fail → fail；必验项全部 pass → pass；其余 → blocked。
 
+### 风险项
+
+会改变共享状态、影响他人或不可回滚的操作，必须在执行前停下并取得用户明确批准，未批准记 blocked：需要合入或推送到共享分支才能验证（如 workflow 只有合入 `main` 才生效）、push / PR / 标签 / 发布、修改共享环境或密钥、force push 或删除数据、接管用户桌面。先找不变更共享状态的替代方式；确实无法替代才请求批准，批准只覆盖列明的操作与目标。
+
 ### 产物
 
 `.scratch/qa/<run-id>/`：`qa-plan.md`、`report.json`、`report.md`、`evidence/`、`qa-loop.json`（循环状态）。

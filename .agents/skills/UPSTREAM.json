@@ -36,11 +36,11 @@
     "implement/SKILL.md": "91348548d8ec80def1bc4ac16dac48debb3079295c091a8dc6d9358e8dcf6f90",
     "implement/agents/openai.yaml": "8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc",
     "qa-only/CREDITS.md": "fe90cb121b576d499605bc78a78a82cff6a1afdd814cff699f2afec2b6572ad5",
-    "qa-only/SKILL.md": "ec503ac7237b561b285e389608d08f395eeb90d95794caf3f98043db7e12ee3a",
+    "qa-only/SKILL.md": "f2cffc272604f3b8f41bdf81bc21a16059609cd57ba73fc005c6c6c804b0eb1f",
     "qa-only/agents/openai.yaml": "31f1106874de3035fd6d1e2237c52b8092c30bf1aae20d95ad1d4e557360c4a9",
-    "qa-only/report-template.md": "e46d5d2b80ee6a6dd13ca95faf5d2e0385a1d30a61a149365c7f19bfea5c8845",
-    "qa-only/surfaces.md": "738af413ff5101b31c0cc016577eeaec58fade59a87cdc072b779c29ac5ee61f",
-    "qa/SKILL.md": "1f1158041609f3c2b6afba8bd8e006cc9a35e450bdfebf137f3516560ca602df",
+    "qa-only/report-template.md": "5ed752fdd7fe7a612fd69b3ae87b893c2caaab5b40fd83484cfc077dae480143",
+    "qa-only/surfaces.md": "2789c6e38ce4b244bbc445391cc049ad085b9b1f234a69329dd65a81f08b5319",
+    "qa/SKILL.md": "bd78d48a82cc078d255e9fe268cfffb535dcc164540376244ea12a51bd56b5ac",
     "qa/agents/openai.yaml": "3bca121ec20ef2a07c53c47ca1324ebc8739305853809610609a0a9ba3790f7a"
   },
   "localSnapshots": {
