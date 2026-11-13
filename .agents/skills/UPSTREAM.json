@@ -38,7 +38,8 @@
     "qa-only/CREDITS.md": "fe90cb121b576d499605bc78a78a82cff6a1afdd814cff699f2afec2b6572ad5",
     "qa-only/SKILL.md": "572aea2d943390d89da4342588ee5ef85b8a8f1a71be1fd9ed6f6b726b95efbb",
     "qa-only/agents/openai.yaml": "31f1106874de3035fd6d1e2237c52b8092c30bf1aae20d95ad1d4e557360c4a9",
-    "qa-only/report-template.md": "e46d5d2b80ee6a6dd13ca95faf5d2e0385a1d30a61a149365c7f19bfea5c8845"
+    "qa-only/report-template.md": "e46d5d2b80ee6a6dd13ca95faf5d2e0385a1d30a61a149365c7f19bfea5c8845",
+    "qa-only/surfaces.md": "53436bb17a5bb4dbc24e4c6164c478f2458a01e66304c5c80328310297dfc5d0"
   },
   "localSnapshots": {
     "implement-spec": {
