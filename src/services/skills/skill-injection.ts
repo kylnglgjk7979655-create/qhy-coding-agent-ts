@@ -6,6 +6,8 @@ const injectionPrefix = 'Skill: ';
 
 export interface SkillInjection {
   readonly toolCallId: string;
+  /** 命中的 Skill 规范名称，用于记录最近加载顺序。 */
+  readonly name: string;
   readonly message: ModelMessage;
 }
 
@@ -39,10 +41,21 @@ export function collectSkillInjections(
       const record = resolveSkill(catalogue, part.output);
       if (record === undefined) continue;
       injected.add(part.toolCallId);
-      collected.push({ toolCallId: part.toolCallId, message: skillInjectionMessage(record) });
+      collected.push({ toolCallId: part.toolCallId, name: record.name, message: skillInjectionMessage(record) });
     }
   }
   return collected;
+}
+
+/** 按最近加载顺序合并 Skill 规范名称；同一 Skill 重复加载只保留最近一次位置。 */
+export function appendRecentSkillLoads(existing: readonly string[], added: readonly string[]): string[] {
+  const merged = [...existing];
+  for (const name of added) {
+    const previous = merged.lastIndexOf(name);
+    if (previous >= 0) merged.splice(previous, 1);
+    merged.push(name);
+  }
+  return merged;
 }
 
 /** 把注入消息插到对应工具结果之后；找不到锚点时追加到末尾，避免丢失正文。 */

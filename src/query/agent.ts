@@ -16,7 +16,7 @@ import { registerBuiltInTools } from '../tools/register-built-in-tools.js';
 import { registerRemoteMCP } from '../services/mcp/remote-mcp.js';
 import { DEFAULT_CONTEXT } from '../services/settings/config.js';
 import { prepareConversation } from '../services/compact/context-summary.js';
-import { collectSkillInjections, insertSkillInjections } from '../services/skills/skill-injection.js';
+import { appendRecentSkillLoads, collectSkillInjections, insertSkillInjections } from '../services/skills/skill-injection.js';
 import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import type { SkillInjection } from '../services/skills/skill-injection.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
@@ -31,6 +31,8 @@ export interface RunResult {
   responseMessages: ModelMessage[];
   /** 本轮完整消息序列，Skill 正文注入排在对应工具结果之后，供会话记录保存本轮原文。 */
   roundMessages: ModelMessage[];
+  /** 本轮实际注入的 Skill 规范名称，按加载顺序；同一 Skill 只保留最近一次位置。 */
+  skillLoads: string[];
   /** 本轮成功使用的完整有效历史，可直接用于保存及下一轮输入。 */
   effectiveHistory: ModelMessage[];
   summaries: Array<{ text: string; coversThrough: number }>;
@@ -328,6 +330,7 @@ export async function runAgent(
       text,
       responseMessages,
       roundMessages: insertSkillInjections(responseMessages, skillInjections),
+      skillLoads: appendRecentSkillLoads([], skillInjections.map(({ name }) => name)),
       // 最后一次请求的历史已包含此前工具往返，只追加该请求之后的新响应。
       effectiveHistory: [...preparedHistory, ...responseMessages.slice(preparedResponseCount)],
       summaries,

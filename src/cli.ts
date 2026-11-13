@@ -511,7 +511,7 @@ async function runTurn(
       if (!roundId) throw new AgentError('PROVIDER_ERROR', '当前轮次未能建立持久化记录。');
       await finishSessionRound(userHome, conversationId, roundId, {
         status: 'succeeded', response: result.roundMessages, effectiveHistory: nextHistory,
-        summaries: result.summaries, recoveredRoundIds,
+        summaries: result.summaries, recoveredRoundIds, skillLoads: result.skillLoads,
       });
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }
