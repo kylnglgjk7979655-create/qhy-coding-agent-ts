@@ -2,6 +2,7 @@ import type { ResolvedConfig } from '../services/settings/config.js';
 import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from './workspace-files.js';
 import type { ToolRegistry } from './tool-registry.js';
 import { registerRuntimeInfoTool } from './RuntimeInfoTool/RuntimeInfoTool.js';
+import { registerSkillTool } from './SkillTool/SkillTool.js';
 import { registerFileReadTool } from './FileReadTool/FileReadTool.js';
 import { registerGlobTool } from './GlobTool/GlobTool.js';
 import { registerGrepTool } from './GrepTool/GrepTool.js';
@@ -31,6 +32,7 @@ export interface BuiltInToolContext {
 
 export function registerBuiltInTools(registry: ToolRegistry, context: BuiltInToolContext): void {
   registerRuntimeInfoTool(registry, context);
+  if (context.skills !== undefined) registerSkillTool(registry, context.skills);
   registerFileReadTool(registry, context);
   registerGlobTool(registry, context);
   registerGrepTool(registry, context);

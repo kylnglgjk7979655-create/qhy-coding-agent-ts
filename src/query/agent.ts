@@ -184,7 +184,10 @@ export async function runAgent(
           '你是 general-purpose 子 Agent，负责独立完成委派的研究或多步骤修改任务。',
           '你不能再委派子 Agent。',
         ] : []),
-        ...(options.skills === undefined || options.skills.skills.length === 0 ? [] : [options.skills.instructions]),
+        ...(options.skills === undefined || options.skills.skills.length === 0 ? [] : [
+          '可用 skill 工具按规范名称、显示名称或别名加载 Skill；工具结果只表示调用成功，正文由后续消息提供。',
+          options.skills.instructions,
+        ]),
     ].join('\n');
     const tools = registry.tools();
     let preparedResponseCount = 0;
