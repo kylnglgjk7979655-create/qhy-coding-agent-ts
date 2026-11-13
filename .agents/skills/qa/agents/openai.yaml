@@ -1,0 +1,5 @@
+interface:
+  display_name: "QA"
+  short_description: "验收并修复到通过：QA plan、批量修复、复验，全绿后审查"
+policy:
+  allow_implicit_invocation: false
