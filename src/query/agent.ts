@@ -62,6 +62,8 @@ export async function runAgent(
     onCompaction?: (checkpoint: { effectiveHistory: ModelMessage[]; summary: { text: string } }) => Promise<{ coversThrough: number } | void> | { coversThrough: number } | void;
     /** 会话原始记录路径，写入摘要续接包装供后续找回细节；子 Agent 没有会话记录时省略。 */
     transcriptPath?: string;
+    /** 执行中登记的手动压缩请求；在工具结果写入后、下一次主模型请求前取出并强制压缩。 */
+    consumeCompactionRequest?: () => boolean;
     summaryCoverageBase?: number;
     /** general-purpose 子 Agent 使用独立循环，但不公布 agent 工具。 */
     generalPurposeSubagent?: boolean;
@@ -207,6 +209,8 @@ export async function runAgent(
       maxRetries: 0,
       prepareStep: async ({ stepNumber, messages, responseMessages }) => {
         signal.throwIfAborted();
+        // 手动压缩在工具结果写入历史之后、本次主模型请求之前执行；不重置步骤额度或执行时限。
+        const forceCompaction = options.consumeCompactionRequest?.() ?? false;
         preparedHistory = await prepareConversation(config, instructions, messages, tools, signal, async (summary) => {
           // 优先使用持久化层按实际 transcript 计算的覆盖边界，避免依赖摘要或附件占用的消息数量。
           let saved: { coversThrough: number } | void = undefined;
@@ -224,7 +228,7 @@ export async function runAgent(
           summaries.push(entry);
           summaryCoverageBase = coversThrough;
           hasSummary = true;
-        }, options.transcriptPath);
+        }, options.transcriptPath, { force: forceCompaction });
         preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;
         signal.throwIfAborted();

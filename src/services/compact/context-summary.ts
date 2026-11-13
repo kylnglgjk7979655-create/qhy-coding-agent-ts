@@ -64,6 +64,7 @@ function buildSummaryWrapper(text: string, transcriptPath: string | undefined): 
 /**
  * 每次主模型请求前按固定预算检查：达到阈值时用当前会话模型总结全部有效历史并整体替换。
  * 不保留最近轮次或当前轮原文；摘要成功后回调持久化检查点，失败时抛出并保持压缩前历史。
+ * force 用于手动 /compact：即使未达到自动阈值也压缩一次，其余预算与失败语义保持一致。
  */
 export async function prepareConversation(
   config: ResolvedConfig,
@@ -73,16 +74,38 @@ export async function prepareConversation(
   signal: AbortSignal,
   onSummary?: (summary: { text: string; coveredMessages: number; compacted: ModelMessage[] }) => Promise<void> | void,
   transcriptPath?: string,
+  options: { force?: boolean } = {},
 ): Promise<ModelMessage[]> {
   signal.throwIfAborted();
-  const { inputBudget, threshold, summaryOutputTokens } = compactionBudget(config);
+  const { threshold } = compactionBudget(config);
   const definitions = await Promise.all(Object.entries(tools).map(async ([name, definition]) => ({
     type: 'function',
     function: { name, description: definition.description, parameters: await asSchema(definition.inputSchema).jsonSchema },
   })));
   const size = (history: ModelMessage[]) => estimateInput(system, history, definitions);
-  if (size(messages) < threshold) return messages;
+  if (!options.force && size(messages) < threshold) return messages;
 
+  const { text, compacted } = await generateSummary(config, messages, signal, transcriptPath);
+  if (size(compacted) > threshold) {
+    throw new AgentError('CONTEXT_ERROR', '摘要后仍超过自动压缩阈值，已停止本轮；成功历史保持不变。');
+  }
+  signal.throwIfAborted();
+  // 回调在返回前完成：摘要持久化失败时本函数抛出，调用方不会把压缩视为成功。
+  await onSummary?.({ text, coveredMessages: messages.length, compacted });
+  return compacted;
+}
+
+/**
+ * 用当前会话模型总结全部有效历史并构造续接包装；不做自动阈值判断，供自动与手动压缩共用。
+ * 请求异常、超时、取消、空正文或工具调用按失败处理，保留压缩前历史。
+ */
+export async function generateSummary(
+  config: ResolvedConfig,
+  messages: ModelMessage[],
+  signal: AbortSignal,
+  transcriptPath?: string,
+): Promise<{ text: string; compacted: ModelMessage[] }> {
+  const { inputBudget, summaryOutputTokens } = compactionBudget(config);
   // 全历史摘要：当前有效历史整体进入摘要请求，不保留任何原文轮次。
   const prompt = JSON.stringify(messages);
   const summaryInput: ModelMessage[] = [{ role: 'user', content: prompt }];
@@ -115,12 +138,5 @@ export async function prepareConversation(
     signal.throwIfAborted();
     throw new AgentError('CONTEXT_ERROR', '对话摘要生成失败或响应无效，已停止本轮；成功历史保持不变，此前操作不会回滚。');
   }
-  const compacted: ModelMessage[] = [buildSummaryWrapper(text, transcriptPath)];
-  if (size(compacted) > threshold) {
-    throw new AgentError('CONTEXT_ERROR', '摘要后仍超过自动压缩阈值，已停止本轮；成功历史保持不变。');
-  }
-  signal.throwIfAborted();
-  // 回调在返回前完成：摘要持久化失败时本函数抛出，调用方不会把压缩视为成功。
-  await onSummary?.({ text, coveredMessages: messages.length, compacted });
-  return compacted;
+  return { text, compacted: [buildSummaryWrapper(text, transcriptPath)] };
 }

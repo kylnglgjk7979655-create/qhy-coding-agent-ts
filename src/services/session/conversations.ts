@@ -317,6 +317,32 @@ export async function saveCompactionCheckpoint(home: string, conversationId: str
   return entry;
 }
 
+/**
+ * 空闲时手动压缩：保存摘要、覆盖边界和压缩后的有效历史。
+ * 覆盖边界取当前 transcript 长度，并把已有轮次标记为已覆盖，避免续聊时重现已进入摘要的原文。
+ * 保存失败时抛出错误，压缩前的有效历史保持不变。
+ */
+export async function saveManualCompaction(home: string, conversationId: string, checkpoint: {
+  effectiveHistory: ModelMessage[];
+  summary: { text: string };
+}): Promise<void> {
+  const session = await loadSession(home, conversationId);
+  const coversThrough = session.transcript.length;
+  const entry = { text: checkpoint.summary.text, coversThrough };
+  const previous = session.summaries.at(-1);
+  const unchanged = previous !== undefined
+    && previous.text === entry.text
+    && previous.coversThrough === entry.coversThrough;
+  await saveSession(home, {
+    ...session,
+    effectiveHistory: checkpoint.effectiveHistory,
+    summaries: unchanged ? session.summaries : [...session.summaries, entry],
+    rounds: session.rounds.map((round) => (round.compactedThrough ?? 0) >= coversThrough
+      ? round
+      : { ...round, compactedThrough: coversThrough }),
+  });
+}
+
 export async function finishSessionRound(home: string, conversationId: string, roundId: string, outcome: {
   status: 'succeeded' | 'failed' | 'cancelled';
   response?: ModelMessage[];
