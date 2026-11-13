@@ -1,4 +1,5 @@
 import type { ModelMessage } from 'ai';
+import { findCommand } from '../../cli/commands.js';
 import { estimateInput } from '../../utils/input-estimate.js';
 import type { SkillCatalogue, SkillRecord } from './skill-registry.js';
 
@@ -34,11 +35,15 @@ export function skillInjectionMessage(record: SkillRecord): ModelMessage {
   return { role: 'user', content: `${injectionPrefix}${record.name}\n${record.getPromptForCommand()}` };
 }
 
-/** 注入消息是程序生成的指导内容，不参与轮次切分。 */
+/**
+ * 注入消息是程序生成的指导内容，不参与轮次切分。
+ * 标头后必须另有正文换行，避免把以 “Skill: ” 开头的普通用户消息误判为注入。
+ */
 export function isSkillInjectionMessage(message: ModelMessage): boolean {
   return message.role === 'user'
     && typeof message.content === 'string'
-    && message.content.startsWith(injectionPrefix);
+    && message.content.startsWith(injectionPrefix)
+    && message.content.includes('\n');
 }
 
 /** 取注入消息的 Skill 规范名称；非注入消息或缺少标头时返回 undefined。 */
@@ -76,7 +81,7 @@ export function restoreSkillInjections(
   for (let index = source.recentLoads.length - 1; index >= 0; index -= 1) {
     const name = source.recentLoads[index]!;
     if (present.has(name)) continue;
-    const record = source.catalogue.skills.find((skill) => skill.name === name);
+    const record = findByCanonicalName(source.catalogue, name);
     if (record === undefined) continue;
     present.add(name);
     const allowance = Math.min(budget.perSkillTokens, remaining);
@@ -136,18 +141,33 @@ export function collectSkillInjections(
   injected: Set<string>,
 ): SkillInjection[] {
   const collected: SkillInjection[] = [];
+  // 同名 Skill 可来自不同来源；用调用时的原始标识还原工具真正命中的记录。
+  const callInputs = skillCallInputs(messages);
   for (const message of messages) {
     if (message.role !== 'tool' || !Array.isArray(message.content)) continue;
     for (const part of message.content) {
       if (part.type !== 'tool-result') continue;
       if (part.toolName !== 'skill' || injected.has(part.toolCallId)) continue;
-      const record = resolveSkill(catalogue, part.output);
+      const record = resolveSkill(catalogue, part.output, callInputs.get(part.toolCallId));
       if (record === undefined) continue;
       injected.add(part.toolCallId);
       collected.push({ toolCallId: part.toolCallId, name: record.name, message: skillInjectionMessage(record) });
     }
   }
   return collected;
+}
+
+/** 从本轮响应中的 Skill 工具调用取回输入，按调用 ID 保存。 */
+function skillCallInputs(messages: readonly ModelMessage[]): Map<string, unknown> {
+  const inputs = new Map<string, unknown>();
+  for (const message of messages) {
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (part.type !== 'tool-call' || part.toolName !== 'skill') continue;
+      inputs.set(part.toolCallId, part.input);
+    }
+  }
+  return inputs;
 }
 
 /** 按最近加载顺序合并 Skill 规范名称；同一 Skill 重复加载只保留最近一次位置。 */
@@ -180,7 +200,7 @@ export function insertSkillInjections(messages: readonly ModelMessage[], injecti
   return result;
 }
 
-function resolveSkill(catalogue: SkillCatalogue, output: unknown): SkillRecord | undefined {
+function resolveSkill(catalogue: SkillCatalogue, output: unknown, input: unknown): SkillRecord | undefined {
   if (typeof output !== 'object' || output === null) return undefined;
   const envelope = output as { type?: unknown; value?: unknown };
   // ModelMessage 的工具结果是带类型信封的值；工具原始返回保存在 value 中。
@@ -191,6 +211,19 @@ function resolveSkill(catalogue: SkillCatalogue, output: unknown): SkillRecord |
   if (result.is_error !== false || typeof result.output !== 'object' || result.output === null) return undefined;
   const name = (result.output as { name?: unknown }).name;
   if (typeof name !== 'string') return undefined;
-  // 工具结果返回的是规范名称；同名记录按注册顺序取第一个，与工具查找一致。
-  return catalogue.skills.find((record) => record.name === name);
+  // 优先按调用时的标识重新查找，保证同名 Skill 注入的是工具实际命中的那一条记录。
+  if (typeof input === 'object' && input !== null) {
+    const requested = (input as { name?: unknown }).name;
+    if (typeof requested === 'string') {
+      const matched = findCommand(catalogue.skills, requested);
+      if (matched !== undefined && matched.name === name) return matched;
+    }
+  }
+  // 调用记录缺少输入时回退到规范名称；同名记录按注册顺序取第一个，与工具查找一致。
+  return findByCanonicalName(catalogue, name);
+}
+
+/** 按规范名称查找 Skill；同名记录按注册顺序取第一个。 */
+function findByCanonicalName(catalogue: SkillCatalogue, name: string): SkillRecord | undefined {
+  return catalogue.skills.find((skill) => skill.name === name);
 }

@@ -28,11 +28,16 @@ describe('命令记录', () => {
 
   it('同名的后注册命令不会覆盖先注册的命令', async () => {
     const registry = new CommandRegistry();
-    await registry.register({ name: 'duplicate', type: 'local', execute: () => undefined });
-    await registry.register({ name: 'duplicate', type: 'local', execute: () => undefined });
+    const first = vi.fn(() => undefined);
+    const second = vi.fn(() => undefined);
+    await registry.register({ name: 'duplicate', type: 'local', execute: first });
+    await registry.register({ name: 'duplicate', type: 'local', execute: second });
 
-    expect(registry.find('duplicate')).toMatchObject({ name: 'duplicate' });
-    expect(registry.list().filter(({ name }) => name === 'duplicate')).toHaveLength(2);
+    const command = registry.find('duplicate');
+    if (command?.type !== 'local') throw new Error('未找到本地命令');
+    await command.execute();
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).not.toHaveBeenCalled();
   });
 
   it('显示名称缺省回退为规范名称，别名缺省为空', async () => {
@@ -63,7 +68,7 @@ describe('命令记录', () => {
     await registry.register(record);
 
     expect(registry.find('alias')).toBe(record);
-    expect(findCommand(registry.list(), 'skill')).toBe(record);
+    expect(findCommand([record], 'skill')).toBe(record);
   });
 
   it('本地命令执行本地方式，不产生 prompt 正文', async () => {

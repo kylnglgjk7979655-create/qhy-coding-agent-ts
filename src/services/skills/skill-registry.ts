@@ -62,15 +62,27 @@ async function loadSkill(directory: string): Promise<SkillRecord | undefined> {
   const name = metadata.name?.trim();
   const description = metadata.description?.trim();
   if (!name || !description) return undefined;
+  const body = skillBody(content);
   return {
     type: 'prompt',
     name,
     displayName: metadata.displayName?.trim() || name,
     aliases: metadata.aliases ?? [],
     description,
-    // 正文在注册时读入；之后来源文件变化不再影响该 Skill 记录。
-    getPromptForCommand: () => content,
+    // 正文在注册时读入且不含 frontmatter；之后来源文件变化不再影响该 Skill 记录。
+    getPromptForCommand: () => body,
   };
+}
+
+/** 正文从 frontmatter 结束行之后开始；没有 frontmatter 时整篇都是正文。 */
+function skillBody(content: string): string {
+  const lines = content.replace(/^﻿/, '').split(/\r?\n/);
+  if (lines[0]?.trim() !== '---') return content;
+  const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---');
+  if (end < 0) return content;
+  const body = lines.slice(end + 1).join('\n');
+  // frontmatter 与正文之间常见一个空行，注入时只保留正文本身。
+  return body.startsWith('\n') ? body.slice(1) : body;
 }
 
 function compareNames(left: string, right: string): number {

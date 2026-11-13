@@ -144,6 +144,37 @@ describe('Skill 注册与清单', () => {
     }
   });
 
+  it('注册后修改 Skill 文件，调用时仍返回注册时读入的正文', async () => {
+    const cwd = await directory('skill-catalogue-body-cwd');
+    const userDir = await directory('skill-catalogue-body-user');
+    const model = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'load', type: 'function', function: {
+        name: 'skill', arguments: JSON.stringify({ name: 'snapshot' }),
+      } }] }
+      : { content: '已完成。' });
+    try {
+      await configure(cwd, model.baseURL);
+      const skillFile = join(userDir, '.qhy-coding-agents', 'skills', 'snapshot', 'SKILL.md');
+      await writeSkill(join(userDir, '.qhy-coding-agents', 'skills'), 'snapshot',
+        'name: snapshot\ndescription: 初始说明', '初始正文_MARKER');
+
+      const cli = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } });
+      cli.send('第一轮\n');
+      await waitForRequests(model.requests, 1);
+      await writeFile(skillFile, '---\nname: snapshot\ndescription: 修改说明\n---\n\n修改正文_MARKER\n');
+      cli.send('加载 snapshot\n');
+      await waitForRequests(model.requests, 3);
+      cli.end('/exit\n');
+      expect((await cli.done).code).toBe(0);
+
+      expect(JSON.stringify(model.requests[2])).toContain('Skill: snapshot');
+      expect(JSON.stringify(model.requests[2])).toContain('初始正文_MARKER');
+      expect(JSON.stringify(model.requests[2])).not.toContain('修改正文_MARKER');
+    } finally {
+      await model.close();
+    }
+  });
+
   it('主 Agent、Explore 与 general-purpose 子 Agent 都收到同一份清单', async () => {
     const cwd = await directory('skill-catalogue-agents-cwd');
     const userDir = await directory('skill-catalogue-agents-user');

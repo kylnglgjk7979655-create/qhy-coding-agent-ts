@@ -83,7 +83,7 @@ describe('Skill 工具', () => {
       const injections = followUp.filter(({ role, content }) =>
         role === 'user' && typeof content === 'string' && content.startsWith('Skill: alpha'));
       expect(injections).toHaveLength(4);
-      expect(injections[0]!.content).toBe('Skill: alpha\n---\nname: alpha\ndisplay_name: 阿尔法\naliases: [a, 别名]\ndescription: 阿尔法说明\n---\n\nALPHA_BODY_MARKER\n');
+      expect(injections[0]!.content).toBe('Skill: alpha\nALPHA_BODY_MARKER\n');
       const firstInjection = followUp.findIndex(({ role, content }) =>
         role === 'user' && typeof content === 'string' && content.startsWith('Skill: alpha'));
       expect(followUp[firstInjection - 1]!.role).toBe('tool');
@@ -143,6 +143,36 @@ describe('Skill 工具', () => {
     }
   });
 
+  it('同名 Skill 来自不同来源时，注入工具实际命中的正文', async () => {
+    const cwd = await directory('skill-tool-duplicate-cwd');
+    const userDir = await directory('skill-tool-duplicate-user');
+    const model = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [
+        call('by-canonical', 'skill', { name: 'alpha' }),
+        call('by-global-display', 'skill', { name: 'Global Alpha' }),
+      ] }
+      : { content: '已加载同名 Skill。' });
+    try {
+      await configure(cwd, model.baseURL);
+      await writeSkill(join(cwd, '.qhy-coding-agent', 'skills'), 'alpha',
+        'name: alpha\ndescription: 项目阿尔法', 'PROJECT_BODY_MARKER');
+      await writeSkill(join(userDir, '.qhy-coding-agents', 'skills'), 'alpha',
+        'name: alpha\ndisplay_name: Global Alpha\ndescription: 全局阿尔法', 'GLOBAL_BODY_MARKER');
+
+      const cli = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '加载同名 Skill\n/exit\n' });
+      expect((await cli.done).code).toBe(0);
+      expect(model.requests).toHaveLength(2);
+      const injections = model.requests[1]!.messages.filter(({ role, content }) =>
+        role === 'user' && typeof content === 'string' && content.startsWith('Skill: alpha'));
+      expect(injections.map(({ content }) => content)).toEqual([
+        'Skill: alpha\nPROJECT_BODY_MARKER\n',
+        'Skill: alpha\nGLOBAL_BODY_MARKER\n',
+      ]);
+    } finally {
+      await model.close();
+    }
+  });
+
   it('主 Agent、Explore 与 general-purpose 子 Agent 都能调用 Skill 且不产生审批', async () => {
     const cwd = await directory('skill-tool-agents-cwd');
     const userDir = await directory('skill-tool-agents-user');
@@ -173,8 +203,8 @@ describe('Skill 工具', () => {
       expect(toolResults(model.requests[2])).toEqual([{ is_error: false, output: { name: 'shared-skill' } }]);
       expect(toolResults(model.requests[5])).toEqual([{ is_error: false, output: { name: 'shared-skill' } }]);
       // Explore 与 general-purpose 子 Agent 同样把正文注入后续请求。
-      expect(model.requests[2]!.messages.at(-1)).toEqual({ role: 'user', content: 'Skill: shared-skill\n---\nname: shared-skill\ndescription: 共享说明\n---\n\nSHARED_BODY_MARKER\n' });
-      expect(model.requests[5]!.messages.at(-1)).toEqual({ role: 'user', content: 'Skill: shared-skill\n---\nname: shared-skill\ndescription: 共享说明\n---\n\nSHARED_BODY_MARKER\n' });
+      expect(model.requests[2]!.messages.at(-1)).toEqual({ role: 'user', content: 'Skill: shared-skill\nSHARED_BODY_MARKER\n' });
+      expect(model.requests[5]!.messages.at(-1)).toEqual({ role: 'user', content: 'Skill: shared-skill\nSHARED_BODY_MARKER\n' });
       expect(model.approvalRequests).toHaveLength(0);
     } finally {
       await model.close();
