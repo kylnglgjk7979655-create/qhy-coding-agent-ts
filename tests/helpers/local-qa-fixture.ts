@@ -21,6 +21,8 @@ export async function startLocalQA(scenario: QAScenario = 'normal', reviewDelayM
   const model = await startLocalOpenAIModel((request) => {
     const current = request.messages.findLastIndex(({ role }) => role === 'user');
     const command = request.messages[current]?.content.trim();
+    // 全历史压缩后主模型只收到程序生成的摘要包装；用固定文本表示任务继续，不依赖原文命令。
+    if (command?.includes('[对话摘要]')) return { content: '夹具完成：压缩后继续' };
     if (request.messages.slice(current + 1).some(({ role }) => role === 'tool')) {
       return { content: `夹具完成：${command}` };
     }
@@ -81,7 +83,7 @@ export async function startLocalQA(scenario: QAScenario = 'normal', reviewDelayM
       model: 'local-qa', baseURL: model.baseURL, apiKeyEnv: 'TEST_MODEL_API_KEY',
       timeoutMs: 10000,
       approval: { mode: 'auto', timeoutMs: 2000 },
-      context: { capacityTokens: 10000, answerReserveTokens: 1000, triggerRatio: 0.6, targetRatio: 0.5, keepRecentTurns: 0 },
+      context: { capacityTokens: 19_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
       mcp: { servers: [
         { name: 'alpha', url: alpha.url, headers: { Authorization: { env: 'QA_MCP_HEADER' } } },
         { name: 'beta', url: beta.url },

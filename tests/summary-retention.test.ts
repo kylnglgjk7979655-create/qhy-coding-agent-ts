@@ -36,8 +36,8 @@ it('跨进程复用已保存摘要，保留摘要覆盖的完整 transcript 和�
   await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL,
     timeoutMs: 3000, maxSteps: 10, approval: { mode: 'auto' },
-    // 工具定义进入上下文预算后，留出空间让本例仍在第 4 轮触发一次摘要。
-    context: { capacityTokens: 7000, answerReserveTokens: 1000, triggerRatio: 0.8, targetRatio: 0.75, keepRecentTurns: 1 },
+    // 工具定义进入上下文预算后，留出空间让本例仍在第 4 轮触发一次全历史摘要。
+    context: { capacityTokens: 18_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
   }));
 
   let output = '';
@@ -63,11 +63,11 @@ it('跨进程复用已保存摘要，保留摘要覆盖的完整 transcript 和�
   for (const prompt of prompts) expect(JSON.stringify(saved.transcript)).toContain(prompt);
   expect(saved.summaries).toEqual([{
     text: '摘要目标：跨进程续聊；约束：保留完整原文；结果：前序消息已处理；未完成：继续工作。',
-    coversThrough: 4,
+    coversThrough: 7,
   }]);
+  // 摘要覆盖触发时的全部有效历史：前三轮问答与当前需求原文都进入摘要请求。
   const summarized = JSON.parse(model.summaryRequests[0]!.messages[1]!.content) as Array<{ role: string; content: string }>;
-  expect(summarized.filter(({ role }) => role === 'user').map(({ content }) => content)).toEqual(prompts.slice(0, 2));
-  expect(JSON.stringify(summarized)).not.toContain(prompts[2]!);
+  expect(summarized.filter(({ role }) => role === 'user').map(({ content }) => content)).toEqual(prompts.slice(0, 4));
   expect(JSON.stringify(saved.effectiveHistory)).toContain('摘要目标：跨进程续聊');
   expect(JSON.stringify(saved.effectiveHistory)).not.toContain('历史轮次 1 原文标记_1');
 
@@ -77,11 +77,64 @@ it('跨进程复用已保存摘要，保留摘要覆盖的完整 transcript 和�
   const resumedRequest = model.requests.at(-1)!;
   expect(JSON.stringify(resumedRequest)).toContain('摘要目标：跨进程续聊');
   expect(JSON.stringify(resumedRequest)).not.toContain('历史轮次 1 原文标记_1');
-  expect(resumedRequest.messages.filter(({ role }) => role === 'user').map(({ content }) => content)).toEqual([
-    ...prompts.slice(2), '重启后续聊',
-  ]);
+  expect(resumedRequest.messages
+    .filter(({ role, content }) => role === 'user' && !content.includes('[对话摘要]'))
+    .map(({ content }) => content)).toEqual([prompts[4]!, '重启后续聊']);
   const afterResume = JSON.parse(await readFile(recordPath, 'utf8')) as typeof saved;
   expect(afterResume.summaries).toEqual(saved.summaries);
+});
+
+it('压缩检查点覆盖更早的中断轮次，重启后不重复回放已覆盖消息', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'qhy-summary-replay-workspace-'));
+  const userDir = await mkdtemp(join(tmpdir(), 'qhy-summary-replay-user-'));
+  roots.push(cwd, userDir);
+  const model = await startLocalOpenAIModel(
+    (_request, index) => ({ content: `答复 ${index}` }),
+    undefined,
+    () => ({ content: '检查点摘要_MARKER' }),
+  );
+  fixtures.push(model);
+  await mkdir(join(cwd, '.agent'), { recursive: true });
+  await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
+    model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL,
+    timeoutMs: 3000, maxSteps: 10, approval: { mode: 'auto' },
+    // 容量足够大，隔离自动阈值，避免新摘要掩盖重复回放。
+    context: { capacityTokens: 100_000, answerReserveTokens: 700, maxOutputTokens: 1_000 },
+  }));
+  const cli = startCLI({ cwd, userDir, conversationId: 'replay', input: '初始需求\n/exit\n', env: { TEST_MODEL_API_KEY: secret } });
+  expect((await cli.done).code).toBe(0);
+
+  // 构造会话记录：更早的中断轮次已进入后续轮次的压缩检查点，但该轮自身没有 compactedThrough。
+  const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', 'replay', 'record.json');
+  const record = JSON.parse(await readFile(recordPath, 'utf8')) as Record<string, unknown>;
+  const transcript = [
+    { role: 'user', content: '已覆盖旧轮用户_MARKER' },
+    { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'covered-call', toolName: 'read_file', input: { path: 'a.txt' } }] },
+    { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'covered-call', toolName: 'read_file', output: { is_error: false, output: { content: 'X' } } }] },
+  ];
+  await writeFile(recordPath, JSON.stringify({
+    ...record,
+    title: '复述检查',
+    transcript,
+    effectiveHistory: [{ role: 'user', content: '[对话摘要]\n检查点摘要_MARKER' }],
+    summaries: [{ text: '检查点摘要_MARKER', coversThrough: 3 }],
+    recentFiles: [],
+    checkpoints: [],
+    backups: [],
+    rounds: [
+      { id: 'covered-round', status: 'running', startedAt: new Date().toISOString(), transcriptStart: 0, messages: transcript },
+      { id: 'checkpoint-round', status: 'failed', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), transcriptStart: 3, compactedThrough: 3, error: { code: 'PROVIDER_ERROR', message: '摘要后失败' } },
+    ],
+  }));
+
+  const resumed = startCLI({ cwd, userDir, conversationId: 'replay', input: '重启续聊\n/exit\n', env: { TEST_MODEL_API_KEY: secret } });
+  expect((await resumed.done).code).toBe(0);
+  const request = model.requests.at(-1)!;
+  expect(JSON.stringify(request)).toContain('检查点摘要_MARKER');
+  // 检查点已覆盖更早的中断轮次；重启后不得在摘要之上重复回放其原文。
+  expect(JSON.stringify(request)).not.toContain('已覆盖旧轮用户_MARKER');
+  const after = JSON.parse(await readFile(recordPath, 'utf8')) as { rounds: Array<{ id: string; recovered?: boolean }> };
+  expect(after.rounds.find(({ id }) => id === 'covered-round')?.recovered).toBe(true);
 });
 
 it('迁移旧版工作区历史时将摘要原文纳入新会话 transcript', async () => {
@@ -98,7 +151,7 @@ it('迁移旧版工作区历史时将摘要原文纳入新会话 transcript', as
   await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL,
     timeoutMs: 3000, maxSteps: 10, approval: { mode: 'auto' },
-    context: { capacityTokens: 10000, answerReserveTokens: 1000, triggerRatio: 0.5, targetRatio: 0.4, keepRecentTurns: 0 },
+    context: { capacityTokens: 18_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
   }));
   const legacyHistory = [
     { role: 'user', content: '旧版需求_MARKER' },
@@ -116,7 +169,7 @@ it('迁移旧版工作区历史时将摘要原文纳入新会话 transcript', as
   };
   expect(record.transcript.slice(0, 2)).toEqual(legacyHistory);
   expect(JSON.stringify(record.transcript)).toContain('旧版对话原文_MARKER');
-  expect(record.summaries[0]?.coversThrough).toBe(2);
+  expect(record.summaries[0]?.coversThrough).toBe(3);
 });
 
 it('摘要压缩校验失败时保留完整 transcript 且不保存无效摘要', async () => {
@@ -133,7 +186,7 @@ it('摘要压缩校验失败时保留完整 transcript 且不保存无效摘要'
   await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL,
     timeoutMs: 3000, maxSteps: 10, approval: { mode: 'auto' },
-    context: { capacityTokens: 10000, answerReserveTokens: 1000, triggerRatio: 0.5, targetRatio: 0.4, keepRecentTurns: 0 },
+    context: { capacityTokens: 18_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
   }));
   const legacyHistory = [
     { role: 'user', content: '预算失败前的旧需求_MARKER' },

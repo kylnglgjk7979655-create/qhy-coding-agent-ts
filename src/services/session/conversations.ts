@@ -33,11 +33,17 @@ export interface SessionRecord {
     messages?: ModelMessage[];
     partialText?: string;
     recovered?: boolean;
+    /** 本轮已保存的压缩检查点覆盖到的 transcript 排他结束位置。 */
+    compactedThrough?: number;
+    /** 本轮开始时会话已有的摘要数量，成功时据此替换而不是重复追加本轮摘要。 */
+    summaryStart?: number;
     error?: { code: string; message: string };
   }>;
   summaries: Array<{ text: string; coversThrough: number }>;
   checkpoints: Array<{ id: string; messageId: string; createdAt: string; files?: Array<{ path: string; backupId: string }> }>;
   backups: Array<{ id?: string; path: string; content?: string; existed: boolean }>;
+  /** 最近成功读取的文件标识（规范绝对路径），按最近优先去重保存，供压缩恢复使用。 */
+  recentFiles: string[];
 }
 
 export function sessionStorageRoot(home = homedir()): string {
@@ -79,6 +85,7 @@ export async function createSession(home: string, options: {
     summaries: [],
     checkpoints: [],
     backups: [],
+    recentFiles: [],
   };
   await writeSessionRecord(home, record, true);
   return record;
@@ -96,7 +103,8 @@ export async function loadSession(home: string, conversationId: string): Promise
   try {
     const value: unknown = JSON.parse(raw);
     if (!isSessionRecord(value) || value.id !== conversationId) throw new Error('Invalid session');
-    return { ...value, title: value.title?.trim() ? value.title : deriveSessionTitle(value.transcript) };
+    // 旧格式记录没有 recentFiles 字段，读取时补空数组，保存时升级。
+    return { ...value, recentFiles: value.recentFiles ?? [], title: value.title?.trim() ? value.title : deriveSessionTitle(value.transcript) };
   } catch {
     throw new AgentError('PROVIDER_ERROR', '会话记录格式无效或已损坏，未覆盖原记录。');
   }
@@ -110,10 +118,14 @@ export function reconstructSessionHistory(session: SessionRecord): { history: Mo
         || (round.status === 'cancelled' && round.error?.code === 'CANCELLED')))
     .sort((left, right) => left.transcriptStart! - right.transcriptStart!);
   const history = [...session.effectiveHistory];
+  // 覆盖边界是 transcript 的绝对位置：最近一次检查点已经覆盖其之前的全部内容，包括更早的中断轮次。
+  // 若只看本轮的 compactedThrough，跨进程续聊会在摘要之上重复回放已被摘要覆盖的消息。
+  const compactedThrough = session.rounds.reduce((max, round) => Math.max(max, round.compactedThrough ?? 0), 0);
   for (const [index, round] of pendingRounds.entries()) {
     const start = round.transcriptStart!;
     const nextStart = pendingRounds[index + 1]?.transcriptStart;
-    const observed = session.transcript.slice(start, nextStart);
+    // 压缩检查点已经把此前 transcript 内容并入 effectiveHistory，只能续接其后未覆盖的消息。
+    const observed = session.transcript.slice(Math.max(start, compactedThrough), nextStart);
     history.push(...recoverObservedRound(observed));
   }
   return { history, recoveredRoundIds: pendingRounds.map(({ id }) => id) };
@@ -238,7 +250,7 @@ export async function startSessionRound(
     ...session,
     title: !session.title || session.title === '未命名会话' ? deriveTitleFromText(prompt) : session.title,
     transcript: [...session.transcript, { role: 'user', content: prompt }],
-    rounds: [...session.rounds, { id: roundId, status: 'running', startedAt: new Date().toISOString(), config, transcriptStart, messages: [], partialText: '' }],
+    rounds: [...session.rounds, { id: roundId, status: 'running', startedAt: new Date().toISOString(), config, transcriptStart, messages: [], partialText: '', summaryStart: session.summaries.length }],
     checkpoints: [...session.checkpoints, { id: randomUUID(), messageId: roundId, createdAt: new Date().toISOString(), files: checkpointFiles }],
     backups,
   });
@@ -283,12 +295,73 @@ export async function appendRoundText(home: string, conversationId: string, roun
   await updateRound(home, conversationId, roundId, (round) => ({ ...round, partialText: `${round.partialText ?? ''}${text}` }));
 }
 
+/**
+ * 摘要成功后立即保存压缩检查点：活动轮次的摘要、覆盖边界和压缩后的有效历史立即可用于续聊。
+ * 覆盖边界取保存时 transcript 的实际长度，不依赖摘要或附件占用的消息数量。
+ * 保存失败时抛出错误，调用方据此停止本轮，压缩前的有效历史保持可恢复。
+ */
+export async function saveCompactionCheckpoint(home: string, conversationId: string, roundId: string, checkpoint: {
+  effectiveHistory: ModelMessage[];
+  summary: { text: string };
+  recentFiles?: string[];
+}): Promise<SessionRecord['summaries'][number]> {
+  const session = await loadSession(home, conversationId);
+  const index = session.rounds.findIndex((round) => round.id === roundId);
+  const current = session.rounds[index];
+  if (!current || current.status !== 'running') throw new AgentError('PROVIDER_ERROR', '当前轮次记录不可用，压缩检查点未保存。');
+  const entry = { text: checkpoint.summary.text, coversThrough: session.transcript.length };
+  await saveSession(home, withCompaction(session, checkpoint, entry, session.rounds.map((round, roundIndex) => roundIndex === index
+    ? { ...round, compactedThrough: Math.max(round.compactedThrough ?? 0, entry.coversThrough) }
+    : round)));
+  return entry;
+}
+
+/** 构造压缩后的会话记录：摘要追加去重、有效历史、最近文件与轮次覆盖标记共用同一套规则。 */
+function withCompaction(
+  session: SessionRecord,
+  checkpoint: { effectiveHistory: ModelMessage[]; summary: { text: string }; recentFiles?: string[] },
+  entry: { text: string; coversThrough: number },
+  rounds: SessionRecord['rounds'],
+): SessionRecord {
+  const previous = session.summaries.at(-1);
+  // 同一段历史重复保存相同摘要时不重复追加。
+  const unchanged = previous !== undefined
+    && previous.text === entry.text
+    && previous.coversThrough === entry.coversThrough;
+  return {
+    ...session,
+    effectiveHistory: checkpoint.effectiveHistory,
+    summaries: unchanged ? session.summaries : [...session.summaries, entry],
+    ...(checkpoint.recentFiles ? { recentFiles: checkpoint.recentFiles } : {}),
+    rounds,
+  };
+}
+
+/**
+ * 空闲时手动压缩：保存摘要、覆盖边界和压缩后的有效历史。
+ * 覆盖边界取当前 transcript 长度，并把已有轮次标记为已覆盖，避免续聊时重现已进入摘要的原文。
+ * 保存失败时抛出错误，压缩前的有效历史保持不变。
+ */
+export async function saveManualCompaction(home: string, conversationId: string, checkpoint: {
+  effectiveHistory: ModelMessage[];
+  summary: { text: string };
+  recentFiles?: string[];
+}): Promise<void> {
+  const session = await loadSession(home, conversationId);
+  const entry = { text: checkpoint.summary.text, coversThrough: session.transcript.length };
+  await saveSession(home, withCompaction(session, checkpoint, entry, session.rounds.map((round) =>
+    (round.compactedThrough ?? 0) >= entry.coversThrough
+      ? round
+      : { ...round, compactedThrough: entry.coversThrough })));
+}
+
 export async function finishSessionRound(home: string, conversationId: string, roundId: string, outcome: {
   status: 'succeeded' | 'failed' | 'cancelled';
   response?: ModelMessage[];
   effectiveHistory?: ModelMessage[];
   summaries?: SessionRecord['summaries'];
   recoveredRoundIds?: string[];
+  recentFiles?: string[];
   error?: { code: string; message: string };
 }): Promise<void> {
   await updateRound(home, conversationId, roundId, (round) => ({
@@ -297,7 +370,7 @@ export async function finishSessionRound(home: string, conversationId: string, r
     finishedAt: new Date().toISOString(),
     ...(outcome.error ? { error: outcome.error } : {}),
     ...(outcome.status === 'succeeded' ? { messages: outcome.response ?? round.messages ?? [], partialText: '' } : {}),
-  }), outcome.effectiveHistory, outcome.recoveredRoundIds, outcome.summaries);
+  }), outcome.effectiveHistory, outcome.recoveredRoundIds, outcome.summaries, outcome.recentFiles);
 }
 
 async function updateRound(
@@ -308,6 +381,7 @@ async function updateRound(
   effectiveHistory?: ModelMessage[],
   recoveredRoundIds: string[] = [],
   summaries: SessionRecord['summaries'] = [],
+  recentFiles?: string[],
 ): Promise<void> {
   const session = await loadSession(home, conversationId);
   const index = session.rounds.findIndex((round) => round.id === roundId);
@@ -316,7 +390,13 @@ async function updateRound(
   const round = update(current);
   const transcriptStart = current.transcriptStart ?? session.transcript.length - 1;
   const observed = [...(round.messages ?? []), ...(round.partialText ? [{ role: 'assistant' as const, content: round.partialText }] : [])];
-  const transcript = [...session.transcript.slice(0, transcriptStart + 1), ...observed];
+  const rebuilt = [...session.transcript.slice(0, transcriptStart + 1), ...observed];
+  // 压缩检查点按 transcript 实际长度记录覆盖边界；最终结果合并同批工具调用后可能更短，保留已保存记录避免边界失效。
+  const transcript = current.compactedThrough !== undefined && rebuilt.length < current.compactedThrough
+    ? session.transcript
+    : rebuilt;
+  // 本轮摘要只替换本轮之前已保存的部分；检查点已经持久化的摘要由本轮结果统一覆盖，避免重复追加。
+  const summaryStart = current.summaryStart ?? session.summaries.length;
   await saveSession(home, {
     ...session,
     transcript,
@@ -324,7 +404,8 @@ async function updateRound(
       ? round
       : recoveredRoundIds.includes(item.id) ? { ...item, recovered: true } : item),
     ...(effectiveHistory ? { effectiveHistory } : {}),
-    ...(effectiveHistory ? { summaries: [...session.summaries, ...summaries] } : {}),
+    ...(effectiveHistory ? { summaries: [...session.summaries.slice(0, summaryStart), ...summaries] } : {}),
+    ...(recentFiles ? { recentFiles } : {}),
   });
 }
 
@@ -362,7 +443,7 @@ export async function saveLegacyConversation(directory: string, conversationId: 
   }
 }
 
-function sessionRecordPath(home: string, conversationId: string): string {
+export function sessionRecordPath(home: string, conversationId: string): string {
   if (!conversationIdPattern.test(conversationId)) {
     throw new AgentError('CONFIG_ERROR', 'conversationId 仅允许 1–128 位字母、数字、下划线或连字符。');
   }
@@ -400,7 +481,7 @@ async function writeSessionRecord(home: string, record: SessionRecord, createOnl
 function isSessionRecord(value: unknown): value is SessionRecord {
   if (typeof value !== 'object' || value === null) return false;
   const session = value as Partial<SessionRecord>;
-  const fields = ['version', 'id', 'title', 'workspace', 'createdAt', 'updatedAt', 'config', 'transcript', 'effectiveHistory', 'rounds', 'summaries', 'checkpoints', 'backups'];
+  const fields = ['version', 'id', 'title', 'workspace', 'createdAt', 'updatedAt', 'config', 'transcript', 'effectiveHistory', 'rounds', 'summaries', 'checkpoints', 'backups', 'recentFiles'];
   return Object.keys(value).every((field) => fields.includes(field))
     && session.version === 1
     && typeof session.id === 'string'
@@ -416,7 +497,9 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     && session.summaries.every((summary, index) => summary.coversThrough <= session.transcript!.length
       && (index === 0 || summary.coversThrough >= session.summaries![index - 1]!.coversThrough))
     && Array.isArray(session.checkpoints) && session.checkpoints.every(isCheckpointRecord)
-    && Array.isArray(session.backups) && session.backups.every(isBackupRecord);
+    && Array.isArray(session.backups) && session.backups.every(isBackupRecord)
+    && (session.recentFiles === undefined
+      || (Array.isArray(session.recentFiles) && session.recentFiles.every((file) => typeof file === 'string')));
 }
 
 function deriveSessionTitle(transcript: ModelMessage[]): string {
@@ -467,6 +550,8 @@ function isRoundRecord(value: unknown): value is SessionRecord['rounds'][number]
     && (round.messages === undefined || (Array.isArray(round.messages) && round.messages.every(isModelMessage)))
     && (round.partialText === undefined || typeof round.partialText === 'string')
     && (round.recovered === undefined || typeof round.recovered === 'boolean')
+    && (round.compactedThrough === undefined || (Number.isSafeInteger(round.compactedThrough) && round.compactedThrough >= 0))
+    && (round.summaryStart === undefined || (Number.isSafeInteger(round.summaryStart) && round.summaryStart >= 0))
     && (round.error === undefined || (typeof round.error === 'object' && round.error !== null
       && typeof round.error.code === 'string' && typeof round.error.message === 'string'));
 }

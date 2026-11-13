@@ -17,7 +17,7 @@ import { registerRemoteMCP } from '../services/mcp/remote-mcp.js';
 import { DEFAULT_CONTEXT } from '../services/settings/config.js';
 import { prepareConversation } from '../services/compact/context-summary.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
-import type { BackgroundAgentTasks } from '../tools/AgentTool/background-agent-tasks.js';
+import type { BackgroundAgentTasks, BackgroundTaskStatusEntry } from '../tools/AgentTool/background-agent-tasks.js';
 
 export type { ApprovalControl } from '../tools/tool-approval.js';
 export type { ToolApprovalRequest } from '../tools/tool-registry.js';
@@ -58,6 +58,18 @@ export async function runAgent(
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
+    /** 摘要成功后立即持久化压缩检查点；保存失败按停止本轮处理，不报告压缩成功。 */
+    onCompaction?: (checkpoint: { effectiveHistory: ModelMessage[]; summary: { text: string } }) => Promise<{ coversThrough: number } | void> | { coversThrough: number } | void;
+    /** 会话原始记录路径，写入摘要续接包装供后续找回细节；子 Agent 没有会话记录时省略。 */
+    transcriptPath?: string;
+    /** 成功读取文件后刷新最近文件顺序；子 Agent 没有会话记录时省略。 */
+    onFileRead?: (target: string) => void;
+    /** 压缩时提供当前最近读取文件候选；子 Agent 没有会话记录时省略。 */
+    getRecentFiles?: () => readonly string[];
+    /** 压缩时提供待关注的后台任务状态；只读，不领取结果或改变通知状态。 */
+    getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[];
+    /** 执行中登记的手动压缩请求；在工具结果写入后、下一次主模型请求前取出并强制压缩。 */
+    consumeCompactionRequest?: () => boolean;
     summaryCoverageBase?: number;
     /** general-purpose 子 Agent 使用独立循环，但不公布 agent 工具。 */
     generalPurposeSubagent?: boolean;
@@ -139,6 +151,7 @@ export async function runAgent(
     },
     fileBaselines,
     bashOperations,
+    ...(options.onFileRead ? { onFileRead: options.onFileRead } : {}),
   });
   let closeMCP: (() => Promise<void>) | undefined;
   try {
@@ -203,13 +216,26 @@ export async function runAgent(
       maxRetries: 0,
       prepareStep: async ({ stepNumber, messages, responseMessages }) => {
         signal.throwIfAborted();
-        preparedHistory = await prepareConversation(config, instructions, messages, tools, signal, (summary) => {
-          // 已有摘要在有效历史中占一个消息槽位，不代表一条新的 transcript 原文。
-          const coversThrough = summaryCoverageBase + summary.coveredMessages - (hasSummary ? 1 : 0);
-          summaries.push({ text: summary.text, coversThrough });
+        // 手动压缩在工具结果写入历史之后、本次主模型请求之前执行；不重置步骤额度或执行时限。
+        const forceCompaction = options.consumeCompactionRequest?.() ?? false;
+        preparedHistory = await prepareConversation(config, instructions, messages, tools, signal, async (summary) => {
+          // 优先使用持久化层按实际 transcript 计算的覆盖边界，避免依赖摘要或附件占用的消息数量。
+          let saved: { coversThrough: number } | void = undefined;
+          if (options.onCompaction) {
+            try {
+              saved = await options.onCompaction({ effectiveHistory: summary.compacted, summary: { text: summary.text } });
+            } catch {
+              signal.throwIfAborted();
+              throw new AgentError('PROVIDER_ERROR', '压缩检查点保存失败，已停止本轮；压缩前的有效历史保持不变。');
+            }
+          }
+          const coversThrough = saved?.coversThrough
+            ?? summaryCoverageBase + summary.coveredMessages - (hasSummary ? 1 : 0);
+          const entry = { text: summary.text, coversThrough };
+          summaries.push(entry);
           summaryCoverageBase = coversThrough;
           hasSummary = true;
-        });
+        }, options.transcriptPath, { force: forceCompaction, ...(options.getRecentFiles ? { recentFiles: options.getRecentFiles() } : {}), ...(options.getTaskStatuses ? { getTaskStatuses: options.getTaskStatuses } : {}) });
         preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;
         signal.throwIfAborted();

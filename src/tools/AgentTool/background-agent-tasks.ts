@@ -24,6 +24,15 @@ export interface BackgroundAgentTaskSnapshot {
   usage?: BackgroundAgentTaskResult['usage'];
 }
 
+/** 压缩附件使用的只读任务状态；不包含结果正文或错误详情。 */
+export interface BackgroundTaskStatusEntry {
+  taskId: string;
+  description: string;
+  status: BackgroundAgentTaskStatus;
+  /** 终态结果文件位置；运行中或没有输出目录时省略。 */
+  resultPath?: string;
+}
+
 export interface BackgroundAgentTaskNotification {
   taskId: string;
   launchCallId: string;
@@ -55,6 +64,28 @@ export class BackgroundAgentTasks {
 
   get runningCount(): number {
     return [...this.tasks.values()].filter(({ status }) => status === 'running').length;
+  }
+
+  /**
+   * 只读列出待关注任务：仍在运行，或已结束但尚未通过 status/wait/通知读取结果。
+   * 不领取结果、不排空通知、不改变任务状态，也不重启、取消或续跑任务。
+   */
+  pendingStatuses(): BackgroundTaskStatusEntry[] {
+    const entries: BackgroundTaskStatusEntry[] = [];
+    for (const task of this.tasks.values()) {
+      if (task.status !== 'running' && this.retrievedTerminalTasks.has(task.taskId)) continue;
+      // 运行中任务还没有结果文件；没有输出目录时终态结果只保存在进程内。
+      const resultPath = task.status !== 'running' && this.outputDirectory
+        ? join(this.outputDirectory, `${task.taskId}.json`)
+        : undefined;
+      entries.push({
+        taskId: task.taskId,
+        description: task.description,
+        status: task.status,
+        ...(resultPath === undefined ? {} : { resultPath }),
+      });
+    }
+    return entries;
   }
 
   launch(
