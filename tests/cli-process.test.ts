@@ -1,9 +1,9 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import { startCLI } from './helpers/cli-process.js';
+import { tempDir } from './helpers/temp-dir.js';
 
 const secret = 'cli-process-test-key';
 
@@ -16,7 +16,7 @@ describe('compiled CLI process driver', () => {
   });
 
   async function directory(name: string): Promise<string> {
-    const root = await mkdtemp(join(tmpdir(), `qhy-${name}-`));
+    const root = await tempDir(`qhy-${name}-`);
     roots.push(root);
     return root;
   }
