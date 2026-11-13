@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { startCLI } from './helpers/cli-process.js';
+import { tempDir } from './helpers/temp-dir.js';
 
 interface ChatRequest {
   messages: Array<{ role: string; content: string }>;
@@ -40,7 +40,7 @@ describe('interactive compiled CLI', () => {
   let onRequest: () => void = () => undefined;
 
   beforeEach(async () => {
-    cwd = await mkdtemp(join(tmpdir(), 'qhy-interactive-'));
+    cwd = await tempDir('qhy-interactive-');
     requests = [];
     reply = () => ({ body: response('回答完成。') });
     server = createServer((req, res) => {
@@ -191,10 +191,10 @@ describe('interactive compiled CLI', () => {
   });
 
   it.skipIf(process.platform === 'win32')('在隐藏调试事件的真实交互终端显示并执行人工审批', async () => {
-    await writeFile(join(cwd, 'agent.config.json'), JSON.stringify({
+    await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
       model: 'test-model', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
-      workspace: '.', timeoutMs: 3000, maxSteps: 20,
-      approval: { mode: 'human', humanTimeoutMs: 3000 },
+      timeoutMs: 3000, maxSteps: 20,
+      approval: { humanTimeoutMs: 3000 },
     }));
     reply = (_request, index) => index === 1
       ? { body: response(null, { name: 'write_file', arguments: { path: 'approved.txt', content: 'approved-content' } }) }
@@ -583,7 +583,14 @@ describe('interactive compiled CLI', () => {
         child.stdin.write('取消当前轮次\n');
         await requestStarted;
       }
-      child.stdin.end('\x03');
+      // macOS 的 BSD script 不会把 PTY 的 EOF 转给子进程；请求进行中被取消后要显式关闭输入。
+      if (process.platform === 'darwin' && requestInProgress) {
+        child.stdin.write('\x03');
+        while (!output.includes('Interrupt by user') && !child.stdin.destroyed) {
+          await new Promise((done) => setTimeout(done, 20));
+        }
+        child.stdin.end('\x04');
+      } else child.stdin.end('\x03');
       expect(await exited).toBe(0);
       if (requestInProgress) expect(output).toContain('Interrupt by user');
       expect(requests).toHaveLength(requestInProgress ? 2 : 1);

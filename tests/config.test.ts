@@ -1,12 +1,12 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { configSchema, loadConfig, loggableConfig, restoreSessionConfig } from '../src/services/settings/config.js';
+import { tempDir } from './helpers/temp-dir.js';
 
 describe('configuration', () => {
   let cwd: string;
-  beforeEach(async () => { cwd = await mkdtemp(join(tmpdir(), 'qhy-config-')); });
+  beforeEach(async () => { cwd = await tempDir('qhy-config-'); });
   afterEach(async () => { await rm(cwd, { recursive: true, force: true }); });
 
   it('uses defaults, resolves the workspace and references an environment variable', async () => {
