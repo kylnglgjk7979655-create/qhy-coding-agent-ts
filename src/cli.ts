@@ -14,6 +14,7 @@ import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepar
 import type { FileRewindPlan } from './services/session/file-checkpoints.js';
 import { AgentError, publicError } from './utils/errors.js';
 import { CliInput } from './cli/cli-input.js';
+import { CommandRegistry } from './cli/commands.js';
 import type { ApprovalControl } from './tools/tool-approval.js';
 import { acquireSessionLock } from './services/session/session-lock.js';
 
@@ -182,6 +183,35 @@ async function main(): Promise<void> {
       return resumed;
     };
     let rewindSelection: { plan: FileRewindPlan } | undefined;
+    // 命令模型统一保存命令记录；后续 Skill 以 prompt 类型复用同一注册与查找路径。
+    const commands = new CommandRegistry();
+    await commands.register({
+      name: '/clear',
+      displayName: '新建会话',
+      aliases: ['/new'],
+      type: 'local',
+      execute: async () => {
+        const id = newConversationId();
+        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+        await createSession(userHome, { id, workspace: config.workspace, config: persistedConfig });
+        const nextRelease = await acquireSessionLock(userHome, id);
+        await releaseSession?.();
+        releaseSession = nextRelease;
+        conversationId = id;
+        history = [];
+        fileBaselines = fileBaselinesForSession(conversationId);
+        recoveredRoundIds = [];
+        bindBackgroundNotifications(id);
+        process.stdout.write(`已新建会话：${id}\n`);
+      },
+    });
+    await commands.register({
+      name: '/exit',
+      displayName: '退出',
+      aliases: [],
+      type: 'local',
+      execute: () => ({ exit: true }),
+    });
     if (process.stdin.isTTY) input.prompt();
     while (true) {
       const workItem = await input.nextWorkItem(conversationId);
@@ -252,20 +282,10 @@ async function main(): Promise<void> {
         if (process.stdin.isTTY) input.prompt();
         continue;
       }
-      if (prompt === '/exit') break;
-      if (prompt === '/new' || prompt === '/clear') {
-        const id = newConversationId();
-        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
-        await createSession(userHome, { id, workspace: config.workspace, config: persistedConfig });
-        const nextRelease = await acquireSessionLock(userHome, id);
-        await releaseSession?.();
-        releaseSession = nextRelease;
-        conversationId = id;
-        history = [];
-        fileBaselines = fileBaselinesForSession(conversationId);
-        recoveredRoundIds = [];
-        bindBackgroundNotifications(id);
-        process.stdout.write(`已新建会话：${id}\n`);
+      const command = commands.find(prompt);
+      if (command?.type === 'local') {
+        const outcome = await command.execute();
+        if (outcome && outcome.exit) break;
         if (process.stdin.isTTY) input.prompt();
         continue;
       }
