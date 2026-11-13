@@ -4,7 +4,9 @@ import type { ModelMessage, ToolSet } from 'ai';
 import { DEFAULT_CONTEXT } from '../settings/config.js';
 import type { ResolvedConfig } from '../settings/config.js';
 import { AgentError } from '../../utils/errors.js';
+import type { BackgroundTaskStatusEntry } from '../../tools/AgentTool/background-agent-tasks.js';
 import { buildFileRecoverySection, selectRecoveryCandidates } from './recent-files.js';
+import { buildTaskStatusSection } from './task-status.js';
 
 /** 摘要请求的输出上限固定不超过该值，即使模型声明了更大的最大输出额度。 */
 export const SUMMARY_OUTPUT_TOKEN_CAP = 20_000;
@@ -75,7 +77,7 @@ export async function prepareConversation(
   signal: AbortSignal,
   onSummary?: (summary: { text: string; coveredMessages: number; compacted: ModelMessage[] }) => Promise<void> | void,
   transcriptPath?: string,
-  options: { force?: boolean; recentFiles?: readonly string[] } = {},
+  options: { force?: boolean; recentFiles?: readonly string[]; getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[] } = {},
 ): Promise<ModelMessage[]> {
   signal.throwIfAborted();
   const { threshold } = compactionBudget(config);
@@ -105,7 +107,7 @@ export async function generateSummary(
   messages: ModelMessage[],
   signal: AbortSignal,
   transcriptPath?: string,
-  options: { recentFiles?: readonly string[] } = {},
+  options: { recentFiles?: readonly string[]; getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[] } = {},
 ): Promise<{ text: string; compacted: ModelMessage[] }> {
   const { inputBudget, summaryOutputTokens } = compactionBudget(config);
   // 全历史摘要：当前有效历史整体进入摘要请求，不保留任何原文轮次。
@@ -144,6 +146,10 @@ export async function generateSummary(
   const candidates = selectRecoveryCandidates(options.recentFiles ?? []);
   const recovery = await buildFileRecoverySection(config.workspace, candidates, signal);
   signal.throwIfAborted();
+  // 待关注任务状态在摘要成功后只读快照；没有任务时不附加空段落。
+  const taskStatus = buildTaskStatusSection(options.getTaskStatuses?.() ?? []);
   const wrapper = buildSummaryWrapper(text, transcriptPath);
-  return { text, compacted: [{ ...wrapper, content: recovery ? `${wrapper.content}\n\n${recovery}` : wrapper.content }] };
+  const attachments = [recovery, taskStatus].filter((section): section is string => section !== undefined);
+  const content = attachments.length === 0 ? wrapper.content : `${wrapper.content}\n\n${attachments.join('\n\n')}`;
+  return { text, compacted: [{ ...wrapper, content }] };
 }

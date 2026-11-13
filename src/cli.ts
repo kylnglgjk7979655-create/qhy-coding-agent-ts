@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { runAgent } from './query/agent.js';
-import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession } from './tools/AgentTool/background-agent-tasks.js';
+import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession, type BackgroundTaskStatusEntry } from './tools/AgentTool/background-agent-tasks.js';
 import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
 import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, saveManualCompaction, sessionRecordPath, sessionTaskOutputDirectory, startSessionRound } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
@@ -172,6 +172,11 @@ async function main(): Promise<void> {
       unsubscribeNotifications = tasks.subscribeNotifications((notification) => input?.enqueueNotification(id, notification));
     };
     bindBackgroundNotifications(conversationId);
+    // 压缩附件只读当前会话任务池，不领取结果或改变通知状态。
+    const pendingTaskStatuses = (): readonly BackgroundTaskStatusEntry[] => {
+      const context = config.context ?? DEFAULT_CONTEXT;
+      return backgroundAgentTasksForSession(conversationId, sessionTaskOutputDirectory(userHome, conversationId), context.capacityTokens - context.answerReserveTokens).pendingStatuses();
+    };
     const switchSession = async (id: string) => {
       const resumed = await resumeSession(userHome, id);
       if (id !== conversationId) {
@@ -207,7 +212,7 @@ async function main(): Promise<void> {
       if (workItem.type === 'compact') {
         try {
           activeRound = new AbortController();
-          history = await compactIdleHistory(config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), legacyDirectory, recentFiles);
+          history = await compactIdleHistory(config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), legacyDirectory, recentFiles, pendingTaskStatuses);
         } catch (error) {
           if (cancellation.signal.aborted) throw error;
           if (publicError(error).code === 'CANCELLED') process.stdout.write('\n用户中断：Interrupt by user\n');
@@ -228,7 +233,7 @@ async function main(): Promise<void> {
         ].join('\n');
         try {
           activeRound = new AbortController();
-          history = await runTurn(notificationPrompt, config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles);
+          history = await runTurn(notificationPrompt, config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
           const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
           history = recovered.history;
           recoveredRoundIds = recovered.recoveredRoundIds;
@@ -389,7 +394,7 @@ async function main(): Promise<void> {
       try {
         activeRound = new AbortController();
         const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
-        history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles);
+        history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
@@ -439,6 +444,7 @@ async function compactIdleHistory(
   signal: AbortSignal,
   legacyDirectory: string | undefined,
   recentFiles: RecentFileTracker,
+  getTaskStatuses: () => readonly BackgroundTaskStatusEntry[],
 ): Promise<ModelMessage[]> {
   if (history.length === 0) {
     process.stdout.write('当前会话没有可压缩的历史。\n');
@@ -447,7 +453,7 @@ async function compactIdleHistory(
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new AgentError('TIMEOUT', `请求超过 ${config.timeoutMs}ms，已终止。`)), config.timeoutMs);
   try {
-    const summary = await generateSummary(config, history, AbortSignal.any([signal, deadline.signal]), sessionRecordPath(userHome, conversationId), { recentFiles: recentFiles.list() });
+    const summary = await generateSummary(config, history, AbortSignal.any([signal, deadline.signal]), sessionRecordPath(userHome, conversationId), { recentFiles: recentFiles.list(), getTaskStatuses });
     await saveManualCompaction(userHome, conversationId, { effectiveHistory: summary.compacted, summary: { text: summary.text }, recentFiles: recentFiles.list() });
     if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, summary.compacted).catch(() => undefined);
     process.stdout.write('已压缩当前会话历史。\n');
@@ -471,6 +477,7 @@ async function runTurn(
   fileBaselines: Map<string, WorkspaceFileSnapshot> = new Map(),
   consumeCompactionRequest?: () => boolean,
   recentFiles: RecentFileTracker = new RecentFileTracker(),
+  getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[],
 ): Promise<ModelMessage[]> {
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
@@ -507,6 +514,7 @@ async function runTurn(
       ...(!smokeTool ? { transcriptPath: sessionRecordPath(userHome, conversationId) } : {}),
       onFileRead: (target) => recentFiles.record(target),
       getRecentFiles: () => recentFiles.list(),
+      ...(getTaskStatuses ? { getTaskStatuses } : {}),
       onToolCallStart: async ({ callId, toolName, input }) => {
         if (!smokeTool && roundId) {
           await appendRoundMessages(userHome, conversationId, roundId, [{
