@@ -8,7 +8,7 @@ import type { ModelMessage } from 'ai';
 import { runAgent } from './query/agent.js';
 import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession } from './tools/AgentTool/background-agent-tasks.js';
 import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
-import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, sessionTaskOutputDirectory, startSessionRound } from './services/session/conversations.js';
+import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, sessionRecordPath, sessionTaskOutputDirectory, startSessionRound } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
 import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './services/session/file-checkpoints.js';
 import type { FileRewindPlan } from './services/session/file-checkpoints.js';
@@ -448,6 +448,7 @@ async function runTurn(
         if (!smokeTool && roundId) await appendRoundText(userHome, conversationId, roundId, chunk);
         process.stdout.write(chunk);
       },
+      ...(!smokeTool ? { transcriptPath: sessionRecordPath(userHome, conversationId) } : {}),
       onToolCallStart: async ({ callId, toolName, input }) => {
         if (!smokeTool && roundId) {
           await appendRoundMessages(userHome, conversationId, roundId, [{
@@ -463,7 +464,7 @@ async function runTurn(
       onCompaction: async (checkpoint) => {
         // 摘要成功即保存，不等待本轮最终结果；后续失败或取消仍可跨进程续聊压缩历史。
         if (!roundId) return;
-        await saveCompactionCheckpoint(userHome, conversationId, roundId, checkpoint);
+        return saveCompactionCheckpoint(userHome, conversationId, roundId, checkpoint);
       },
       onBeforeWrite: async (snapshot: WorkspaceFileSnapshot) => {
         if (!roundId) return;

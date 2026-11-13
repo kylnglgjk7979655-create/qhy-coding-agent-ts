@@ -290,29 +290,31 @@ export async function appendRoundText(home: string, conversationId: string, roun
 
 /**
  * 摘要成功后立即保存压缩检查点：活动轮次的摘要、覆盖边界和压缩后的有效历史立即可用于续聊。
+ * 覆盖边界取保存时 transcript 的实际长度，不依赖摘要或附件占用的消息数量。
  * 保存失败时抛出错误，调用方据此停止本轮，压缩前的有效历史保持可恢复。
  */
 export async function saveCompactionCheckpoint(home: string, conversationId: string, roundId: string, checkpoint: {
   effectiveHistory: ModelMessage[];
-  summary: SessionRecord['summaries'][number];
-}): Promise<void> {
+  summary: { text: string };
+}): Promise<SessionRecord['summaries'][number]> {
   const session = await loadSession(home, conversationId);
   const index = session.rounds.findIndex((round) => round.id === roundId);
   const current = session.rounds[index];
   if (!current || current.status !== 'running') throw new AgentError('PROVIDER_ERROR', '当前轮次记录不可用，压缩检查点未保存。');
+  const entry = { text: checkpoint.summary.text, coversThrough: session.transcript.length };
   const previous = session.summaries.at(-1);
   const unchanged = previous !== undefined
-    && previous.text === checkpoint.summary.text
-    && previous.coversThrough === checkpoint.summary.coversThrough;
-  const transcriptThrough = session.transcript.length;
+    && previous.text === entry.text
+    && previous.coversThrough === entry.coversThrough;
   await saveSession(home, {
     ...session,
     effectiveHistory: checkpoint.effectiveHistory,
-    summaries: unchanged ? session.summaries : [...session.summaries, checkpoint.summary],
+    summaries: unchanged ? session.summaries : [...session.summaries, entry],
     rounds: session.rounds.map((round, roundIndex) => roundIndex === index
-      ? { ...round, compactedThrough: Math.max(round.compactedThrough ?? 0, transcriptThrough) }
+      ? { ...round, compactedThrough: Math.max(round.compactedThrough ?? 0, entry.coversThrough) }
       : round),
   });
+  return entry;
 }
 
 export async function finishSessionRound(home: string, conversationId: string, roundId: string, outcome: {
@@ -348,7 +350,11 @@ async function updateRound(
   const round = update(current);
   const transcriptStart = current.transcriptStart ?? session.transcript.length - 1;
   const observed = [...(round.messages ?? []), ...(round.partialText ? [{ role: 'assistant' as const, content: round.partialText }] : [])];
-  const transcript = [...session.transcript.slice(0, transcriptStart + 1), ...observed];
+  const rebuilt = [...session.transcript.slice(0, transcriptStart + 1), ...observed];
+  // 压缩检查点按 transcript 实际长度记录覆盖边界；最终结果合并同批工具调用后可能更短，保留已保存记录避免边界失效。
+  const transcript = current.compactedThrough !== undefined && rebuilt.length < current.compactedThrough
+    ? session.transcript
+    : rebuilt;
   // 本轮摘要只替换本轮之前已保存的部分；检查点已经持久化的摘要由本轮结果统一覆盖，避免重复追加。
   const summaryStart = current.summaryStart ?? session.summaries.length;
   await saveSession(home, {
@@ -396,7 +402,7 @@ export async function saveLegacyConversation(directory: string, conversationId: 
   }
 }
 
-function sessionRecordPath(home: string, conversationId: string): string {
+export function sessionRecordPath(home: string, conversationId: string): string {
   if (!conversationIdPattern.test(conversationId)) {
     throw new AgentError('CONFIG_ERROR', 'conversationId 仅允许 1–128 位字母、数字、下划线或连字符。');
   }

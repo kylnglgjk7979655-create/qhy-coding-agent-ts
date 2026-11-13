@@ -59,7 +59,9 @@ export async function runAgent(
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
     /** 摘要成功后立即持久化压缩检查点；保存失败按停止本轮处理，不报告压缩成功。 */
-    onCompaction?: (checkpoint: { effectiveHistory: ModelMessage[]; summary: { text: string; coversThrough: number } }) => Promise<void> | void;
+    onCompaction?: (checkpoint: { effectiveHistory: ModelMessage[]; summary: { text: string } }) => Promise<{ coversThrough: number } | void> | { coversThrough: number } | void;
+    /** 会话原始记录路径，写入摘要续接包装供后续找回细节；子 Agent 没有会话记录时省略。 */
+    transcriptPath?: string;
     summaryCoverageBase?: number;
     /** general-purpose 子 Agent 使用独立循环，但不公布 agent 工具。 */
     generalPurposeSubagent?: boolean;
@@ -206,20 +208,23 @@ export async function runAgent(
       prepareStep: async ({ stepNumber, messages, responseMessages }) => {
         signal.throwIfAborted();
         preparedHistory = await prepareConversation(config, instructions, messages, tools, signal, async (summary) => {
-          // 已有摘要在有效历史中占一个消息槽位，不代表一条新的 transcript 原文。
-          const coversThrough = summaryCoverageBase + summary.coveredMessages - (hasSummary ? 1 : 0);
+          // 优先使用持久化层按实际 transcript 计算的覆盖边界，避免依赖摘要或附件占用的消息数量。
+          let saved: { coversThrough: number } | void = undefined;
+          if (options.onCompaction) {
+            try {
+              saved = await options.onCompaction({ effectiveHistory: summary.compacted, summary: { text: summary.text } });
+            } catch {
+              signal.throwIfAborted();
+              throw new AgentError('PROVIDER_ERROR', '压缩检查点保存失败，已停止本轮；压缩前的有效历史保持不变。');
+            }
+          }
+          const coversThrough = saved?.coversThrough
+            ?? summaryCoverageBase + summary.coveredMessages - (hasSummary ? 1 : 0);
           const entry = { text: summary.text, coversThrough };
           summaries.push(entry);
           summaryCoverageBase = coversThrough;
           hasSummary = true;
-          if (!options.onCompaction) return;
-          try {
-            await options.onCompaction({ effectiveHistory: summary.compacted, summary: entry });
-          } catch {
-            signal.throwIfAborted();
-            throw new AgentError('PROVIDER_ERROR', '压缩检查点保存失败，已停止本轮；压缩前的有效历史保持不变。');
-          }
-        });
+        }, options.transcriptPath);
         preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;
         signal.throwIfAborted();

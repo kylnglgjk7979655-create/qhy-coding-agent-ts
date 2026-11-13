@@ -76,8 +76,10 @@ if (process.env.FIXTURE_MODE === 'implement') {
 console.log(JSON.stringify({type:'assistant',message:{content:[{type:'text',text}]}}));
 console.log(JSON.stringify({type:'result',result:text}));
 `, { mode: 0o755 });
+    // 测试固定使用默认模型与地址，不继承运行环境里的模型覆盖。
+    const { AGENT_MODEL: _agentModel, ANTHROPIC_MODEL: _anthropicModel, CLAUDE_CODE_SUBAGENT_MODEL: _subagentModel, ...ambientEnv } = process.env;
     const baseEnv = {
-      ...process.env, HOME: home, PATH: `${bin}${delimiter}${process.env.PATH}`, GIT_CONFIG_GLOBAL: join(directory, 'gitconfig'),
+      ...ambientEnv, HOME: home, PATH: `${bin}${delimiter}${process.env.PATH}`, GIT_CONFIG_GLOBAL: join(directory, 'gitconfig'),
       ANTHROPIC_AUTH_TOKEN: 'fixture-token', GH_TOKEN: 'fixture', GH_REPO: 'owner/repo', MOCK_CALLS: calls, OUTPUT_DIR: output,
       ISSUE_NUMBER: '1', ISSUE_TITLE: 'Fixture', PR_NUMBER: '2', PARENT_NUMBER: '', BRANCH: 'agent/issue-1-fixture',
     };

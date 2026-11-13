@@ -278,10 +278,12 @@ it('工作区外 Glob 与 Grep 经逐次审批后返回搜索结果', async () =
       },
     });
 
-    expect(approvals).toEqual([`glob:${outside}`, `grep:${outside}`]);
-    const results = fixture.requests[1]!.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ content: string }>;
-    expect(JSON.parse(results[0]!.content)).toMatchObject({ is_error: false, output: { paths: [`../${basename(outside)}/outside.txt`] } });
-    expect(JSON.parse(results[1]!.content)).toMatchObject({ is_error: false, output: { matches: [expect.objectContaining({ text: 'external needle' })] } });
+    // 两个工具并行执行，审批与结果完成顺序不固定，按名称集合校验。
+    expect([...approvals].sort()).toEqual([`glob:${outside}`, `grep:${outside}`].sort());
+    const results = fixture.requests[1]!.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ tool_call_id: string; content: string }>;
+    const outputFor = (id: string) => JSON.parse(results.find(({ tool_call_id }) => tool_call_id === id)!.content);
+    expect(outputFor('external-glob')).toMatchObject({ is_error: false, output: { paths: [`../${basename(outside)}/outside.txt`] } });
+    expect(outputFor('external-grep')).toMatchObject({ is_error: false, output: { matches: [expect.objectContaining({ text: 'external needle' })] } });
   } finally {
     await closeFixture?.();
     await rm(workspace, { recursive: true, force: true });

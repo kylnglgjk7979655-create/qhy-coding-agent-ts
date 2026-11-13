@@ -67,11 +67,11 @@ cd "$QA_ROOT"
 
 ## 小预算、摘要及失败保护
 
-生成配置刻意使用小预算：`capacityTokens: 10000`、`answerReserveTokens: 1000`、`triggerRatio: 0.6`、`targetRatio: 0.5`、`keepRecentTurns: 0`。这是 QA 设置，产品默认值仍为 128000、8192、0.8、0.5、2。估算覆盖系统提示、消息与实际工具定义，不要求与服务端精确 token 数相同。
+生成配置刻意使用小预算：`capacityTokens: 19500`、`answerReserveTokens: 700`、`maxOutputTokens: 1000`，自动压缩阈值为 19500 − 1000 − 13000 = 5500。这是 QA 设置，产品默认值仍为 128000、8192、20000。估算覆盖系统提示、消息与实际工具定义，不要求与服务端精确 token 数相同。
 
-退出当前 CLI，用同一启动命令将 conversation ID 换为 `qa-summary`，输入 `growth`。它先批准写入 `kept.txt`、调用 alpha，再读取 `large.txt`；增长会在下一次主模型请求前触发独立摘要。预期本次增加主模型请求 2 次、审批 2 次、摘要 1 次、alpha 调用 1 次，最终回复 `夹具完成：growth`。当前轮的三个工具调用与结果保留，较早的 `原文标记` 被 `[对话摘要]` 替换。
+退出当前 CLI，用同一启动命令将 conversation ID 换为 `qa-summary`，输入 `growth`。它先批准写入 `kept.txt`、调用 alpha，再读取 `large.txt`；增长会在下一次主模型请求前触发独立摘要。预期本次增加主模型请求 2 次、审批 2 次、摘要 1 次、alpha 调用 1 次，最终回复 `夹具完成：压缩后继续`。全部有效历史（含当前轮工具调用与结果）进入摘要，压缩后主模型只收到 `[对话摘要]` 续接包装，较早的 `原文标记` 不再出现。
 
-成功保存后检查 `.agent/conversations/qa-summary.json`，只保留摘要和完整当前轮，不创建原文归档或独立摘要文件。退出并以相同 ID 重启，输入 `recover`，历史继续包含摘要而不恢复原文。**压缩后成功保存会丢失被替换原文的完整内容**。摘要只作为 assistant 历史资料，不改变系统提示或工具策略；产品不自动读取开发用 AGENTS.md。
+成功保存后检查 `.agent/conversations/qa-summary.json`，只保留摘要续接包装和本轮最终回复，不创建原文归档或独立摘要文件。退出并以相同 ID 重启，输入 `recover`，历史继续包含摘要而不恢复原文。**压缩后成功保存会丢失被替换原文的完整内容**。摘要只作为 assistant 历史资料，不改变系统提示或工具策略；产品不自动读取开发用 AGENTS.md。
 
 故障场景每次在终端 A 重新启动夹具，使用新的 `--directory` 和下列 `--scenario`；终端 B 同步修改 `QA_ROOT`，读取新配置：
 
@@ -137,8 +137,8 @@ pnpm exec vitest run tests/config.test.ts tests/agent-execution.test.ts tests/se
 | `bash.timeoutMs` | 30000ms；单命令上限，不能延长整轮预算 |
 | `mcp.servers` | 每项 `{name, url, headers}`；请求头值仅用 `{env: "变量名"}` 引用 |
 | `mcp.connectTimeoutMs`、`mcp.discoveryTimeoutMs`、`mcp.callTimeoutMs` | 10000ms、10000ms、30000ms；接入共用时限与取消入口，不代表延期专项边界已验收 |
-| `context.capacityTokens`、`context.answerReserveTokens` | 128000、8192；可用输入预算为两者之差 |
-| `context.triggerRatio`、`context.targetRatio`、`context.keepRecentTurns` | 0.8、0.5、2；保留完整轮次和当前轮，不拆工具配对 |
+| `context.capacityTokens`、`context.answerReserveTokens`、`context.maxOutputTokens` | 128000、8192、20000；自动压缩阈值为容量减去 `min(maxOutputTokens, 20000)` 与 13000 固定安全缓冲；回答预留独立控制普通回复输出上限 |
+| `context.triggerRatio`、`context.targetRatio`、`context.keepRecentTurns` | 旧参数，仍可解析但已废弃并提示，不参与固定预算压缩算法 |
 
 从仓库根目录执行自动验证：
 

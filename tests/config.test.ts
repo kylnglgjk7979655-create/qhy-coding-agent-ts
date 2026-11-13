@@ -134,11 +134,26 @@ describe('configuration', () => {
     await expect(loadConfig({ cwd, workspace: '.', env: {} })).rejects.toMatchObject({ code: 'CONFIG_ERROR', exitCode: 2 });
   });
 
-  it('上下文默认保留两轮，阈值八成且目标五成，容量和回答预留有明确默认值', () => {
+  it('上下文默认输出额度为 20000，容量和回答预留有明确默认值', () => {
     expect(configSchema.parse({ context: {} }).context).toEqual({
-      capacityTokens: 128_000, answerReserveTokens: 8192,
-      triggerRatio: 0.8, targetRatio: 0.5, keepRecentTurns: 2,
+      capacityTokens: 128_000, answerReserveTokens: 8192, maxOutputTokens: 20_000,
     });
+    expect(configSchema.parse({ context: { maxOutputTokens: 4_000 } }).context?.maxOutputTokens).toBe(4_000);
+  });
+
+  it('旧压缩参数仍可解析但提示废弃且不参与新算法', async () => {
+    const parsed = configSchema.parse({ context: { triggerRatio: 0.3, targetRatio: 0.2, keepRecentTurns: 1 } });
+    expect(parsed.context).toMatchObject({ triggerRatio: 0.3, targetRatio: 0.2, keepRecentTurns: 1 });
+
+    await mkdir(join(cwd, '.agent'), { recursive: true });
+    await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
+      context: { capacityTokens: 40_000, answerReserveTokens: 1_000, triggerRatio: 0.3, keepRecentTurns: 1 },
+    }));
+    const config = await loadConfig({ cwd, env: { OPENAI_API_KEY: 'key' } });
+    expect(config.migrationWarnings?.join('\n')).toContain('context.triggerRatio');
+    expect(config.migrationWarnings?.join('\n')).toContain('context.keepRecentTurns');
+    expect(config.migrationWarnings?.join('\n')).not.toContain('context.targetRatio');
+    expect(config.context).toMatchObject({ capacityTokens: 40_000, answerReserveTokens: 1_000, maxOutputTokens: 20_000 });
   });
 
   it('接受有效的 Explore 模型与根目录指令选项', () => {

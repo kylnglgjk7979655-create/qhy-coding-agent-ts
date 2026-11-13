@@ -26,7 +26,7 @@ it('独立 QA 入口生成可运行的配置和历史，CLI 无需真实模型�
   fixture.stderr.on('data', (chunk: Buffer) => { errors += chunk.toString(); });
   await expect.poll(() => output, { timeout: 5000 }).toContain('QA_READY');
   expect(errors).toBe('');
-  async function run(command: string, conversation = 'qa-summary') {
+  async function run(command: string, conversation = 'qa-summary', expected = `夹具完成：${command}`) {
     const child = spawn(process.execPath, [resolve('dist/cli.js'), '--workspace', 'work', '--conversation-id', conversation], {
       cwd: root, env: { ...process.env, HOME: root, USERPROFILE: root, TEST_MODEL_API_KEY: 'fake-model', QA_MCP_HEADER: 'fake-header' }, stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -37,10 +37,10 @@ it('独立 QA 入口生成可运行的配置和历史，CLI 无需真实模型�
     const closed = new Promise<number | null>((resolve) => child.once('close', resolve));
     child.stdin.end(command + '\n/exit\n');
     expect(await closed, text).toBe(0);
-    expect(text).toContain(`夹具完成：${command}`);
+    expect(text).toContain(expected);
     expect(text).not.toMatch(/CONTEXT_ERROR|APPROVAL_ERROR|PROVIDER_ERROR/);
   }
-  await run('growth');
+  await run('growth', 'qa-summary', '夹具完成：压缩后继续');
   const historyPath = join(root, '.agent/conversations/qa-summary.json');
   const saved = await readFile(historyPath, 'utf8');
   expect(saved).toContain('[对话摘要]');

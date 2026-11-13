@@ -10,11 +10,12 @@ export interface FixtureToolCall {
 export interface FixtureRequest {
   model?: string;
   stream?: boolean;
+  max_tokens?: number;
   messages: Array<{ role: string; content: string }>;
   tools: Array<{ function: { name: string; description?: string; parameters?: Record<string, unknown> } }>;
 }
 
-export type FixtureResponse = { content: string }
+export type FixtureResponse = { content: string; finishReason?: string }
   | { status: number; content: string }
   | { calls: FixtureToolCall[] }
   | { frames: Array<{ delta: Record<string, unknown>; finish_reason?: string | null; delayMs?: number }>; endDelayMs?: number };
@@ -49,7 +50,10 @@ export async function startLocalOpenAIModel(
       }
       if (!request.stream) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ id: 'chatcmpl-review', object: 'chat.completion', created: 1, model: 'fixture', choices: [{ index: 0, finish_reason: 'calls' in reply ? 'tool_calls' : 'stop', message: { role: 'assistant', content: 'content' in reply ? reply.content : null, ...('calls' in reply ? { tool_calls: reply.calls } : {}) } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
+        const finishReason = 'finishReason' in reply && reply.finishReason
+          ? reply.finishReason
+          : 'calls' in reply ? 'tool_calls' : 'stop';
+        res.end(JSON.stringify({ id: 'chatcmpl-review', object: 'chat.completion', created: 1, model: 'fixture', choices: [{ index: 0, finish_reason: finishReason, message: { role: 'assistant', content: 'content' in reply ? reply.content : null, ...('calls' in reply ? { tool_calls: reply.calls } : {}) } }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
         return;
       }
       const chunks = 'frames' in reply
