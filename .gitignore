@@ -13,3 +13,6 @@ coverage/
 .sandcastle/logs/
 .sandcastle/worktrees/
 .sandcastle/patches/
+
+# 本地 QA 运行产物
+.scratch/qa/

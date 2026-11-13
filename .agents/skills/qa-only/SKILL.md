@@ -1,6 +1,6 @@
 ---
 name: qa-only
-description: 功能验收。识别 spec，生成 QA plan，实际运行产品并记录结果；用于 CR 后验收、修复后复验，或只读检查，不修改产品代码和测试。
+description: 功能验收。生成并落盘 QA plan，按 surface 实际运行产品并记录证据；用于 CR 后验收、修复后复验，或只读检查，不修改产品代码和测试。
 ---
 
 通过用户实际使用的入口，验证产品是否满足 spec。交付的是运行证据和未解决的问题。
@@ -10,6 +10,8 @@ description: 功能验收。识别 spec，生成 QA plan，实际运行产品并
 读取项目执行约定。使用调用方或项目已指定的 fixed point；没有指定时询问，无法取得时报告 blocked。确认引用有效，记录 `git diff <fixed-point>...HEAD` 及 `git log <fixed-point>..HEAD --oneline`。
 
 记录比较基准、当前 HEAD、未提交产品改动和运行环境。检查运行入口、测试数据及所需服务，保留已有工作。
+
+创建本轮产物目录 `.scratch/qa/<run-id>/`，`run-id` 取 `YYYYMMDD-HHmmss-<被测 HEAD 前 7 位>`。本轮的计划、报告与证据只写入该目录，不覆盖先前运行。
 
 完成条件：能够定位本轮被测代码，并区分已提交代码与未提交改动。Diff 用于识别影响范围和相邻回归。
 
@@ -29,16 +31,18 @@ description: 功能验收。识别 spec，生成 QA plan，实际运行产品并
 
 ## 3. 生成 QA plan
 
-有可用计划时沿用并补齐覆盖缺口；没有时，根据 spec 和受影响行为生成。每项包含：
+有可用计划时读入 `.scratch/qa/<run-id>/qa-plan.md`，保留原有 ID 并补齐覆盖缺口；没有时，先跑一次真实入口（`--help`、启动命令、所需账号与初态）作为探索证据，再根据 spec 和受影响行为生成。探索截图只在该计划含视觉项时产出，按其 surface 采集。每项包含：
 
-| ID | Spec 引用 / acceptance criterion | 场景与操作 | 预期结果 | 环境与数据 |
-| --- | --- | --- | --- | --- |
+| ID | Spec 引用 / acceptance criterion | surface / 入口 | 前置数据 | 步骤 | 预期结果 | 证据形式 |
+| --- | --- | --- | --- | --- | --- | --- |
 
 将本轮 scope 内每条 acceptance criterion 映射到至少一项检查，覆盖正常路径、相关失败路径和相邻回归。保留稳定 ID，执行中可增加发现的场景。预期以 spec 及已确认的补充要求为依据；当前实现只是被测对象。
 
 选择足以证明该项预期的环境。优先自有、隔离的测试数据；只有与本项无关的服务可用替身。记录模拟服务不能证明的行为。要求真实服务的项目，必须取得该服务的运行证据。
 
-完成条件：本轮每项必验行为都有 spec 引用、操作、预期和可用环境，或明确的阻塞原因。计划列好后直接执行；scope 与 spec 冲突时先澄清。
+计划写入 `.scratch/qa/<run-id>/qa-plan.md`，含 spec 来源与版本、探索记录、上表。`surface` 取 `web`、`android`、`ios`、`harmony`、`desktop`、`native`。
+
+完成条件：本轮每项必验行为都填满 7 列——spec 引用、surface 与入口、前置数据、步骤、预期、证据形式——或写明阻塞原因。计划列好后直接执行；scope 与 spec 冲突时先澄清。
 
 ## 4. 实际执行
 
@@ -58,6 +62,8 @@ description: 功能验收。识别 spec，生成 QA plan，实际运行产品并
 | API / job / worker | 响应、状态转换和最终业务效果。HTTP 接受或任务入队只是中间状态。 |
 | 浏览器 | 实际用户操作后的页面状态、相关请求及 console；交互缺陷保存操作前后截图。 |
 
+按每项计划的 `surface` 选择执行工具，映射、调用入口与证据约定见 [surface 分派](surfaces.md)。确定性检查优先用原生入口（CLI 走真实终端或 PTY，取 exit code、stdout、stderr 与文件副作用）；需要渲染证据时用 desktop surface 追加截图，判定仍以原生观察为准。
+
 开发测试可作为补充证据；运行验收须使用对应入口取得实际观察。完成命令或加载页面本身不等于满足预期。
 
 本 skill 的写入范围限于约定的 QA 产物、隔离测试数据和运行临时文件；产品代码、产品测试、项目依赖和项目配置保持不变。使用已有依赖和服务；缺少准备条件时记录 blocked，交由调用方准备后重跑。
@@ -68,7 +74,7 @@ description: 功能验收。识别 spec，生成 QA plan，实际运行产品并
 
 ## 5. 报告
 
-使用 [报告模板](report-template.md)，写入调用方指定的产物目录；未指定时使用新的临时目录并返回路径。保存脱敏证据，避免覆盖先前运行。
+使用 [报告模板](report-template.md)，写入 `.scratch/qa/<run-id>/` 或调用方指定目录：`report.md`、`report.json`、`evidence/`。`report.json` 采用 `spec`、`summary`、`checks[{id, specReference, steps, expected, actual, status, evidence}]`、`findings`、`humanQa` 字段，另记 `verdict`、`head`、`fixedPoint`。证据路径相对 run 目录且为非空文件。保存脱敏证据，避免覆盖先前运行。
 
 逐项状态：
 
