@@ -15,6 +15,8 @@ import type { FileRewindPlan } from './services/session/file-checkpoints.js';
 import { AgentError, publicError } from './utils/errors.js';
 import { CliInput } from './cli/cli-input.js';
 import { CommandRegistry } from './cli/commands.js';
+import { loadSkillCatalogue } from './services/skills/skill-registry.js';
+import type { SkillCatalogue } from './services/skills/skill-registry.js';
 import type { ApprovalControl } from './tools/tool-approval.js';
 import { acquireSessionLock } from './services/session/session-lock.js';
 
@@ -145,9 +147,12 @@ async function main(): Promise<void> {
     } else history = [];
     if (smokeTool) {
       activeRound = new AbortController();
-      await runTurn('smoke', config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), true);
+      await runTurn('smoke', config, undefined, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), true);
       return;
     }
+
+    // 启动时注册一次 Skill；会话切换工作区后重新加载，本轮内来源文件变化不影响已注册内容。
+    let skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
 
     input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
     const fileBaselinesBySession = new Map<string, Map<string, WorkspaceFileSnapshot>>();
@@ -178,6 +183,7 @@ async function main(): Promise<void> {
       }
       config = resumed.config;
       conversationId = id;
+      skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
       bindBackgroundNotifications(id);
       process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
       return resumed;
@@ -226,7 +232,7 @@ async function main(): Promise<void> {
         ].join('\n');
         try {
           activeRound = new AbortController();
-          history = await runTurn(notificationPrompt, config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines);
+          history = await runTurn(notificationPrompt, config, skills, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines);
           const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
           history = recovered.history;
           recoveredRoundIds = recovered.recoveredRoundIds;
@@ -375,7 +381,7 @@ async function main(): Promise<void> {
       try {
         activeRound = new AbortController();
         const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
-        history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines);
+        history = await runTurn(prompt, config, skills, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines);
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
@@ -415,6 +421,7 @@ let lastRunStartedAt = performance.now();
 async function runTurn(
   prompt: string,
   config: Awaited<ReturnType<typeof loadConfig>>,
+  skills: SkillCatalogue | undefined,
   history: ModelMessage[],
   userHome: string,
   conversationId: string,
@@ -447,6 +454,7 @@ async function runTurn(
       history,
       summaryCoverageBase,
       fileBaselines,
+      ...(skills === undefined ? {} : { skills }),
       ...(!smokeTool ? { backgroundTasks: backgroundAgentTasksForSession(
         conversationId,
         sessionTaskOutputDirectory(userHome, conversationId),

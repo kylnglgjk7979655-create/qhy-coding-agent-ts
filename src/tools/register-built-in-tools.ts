@@ -10,6 +10,7 @@ import { registerBashTool } from './BashTool/BashTool.js';
 import { registerAgentTool } from './AgentTool/AgentTool.js';
 import type { ApprovalControl } from './tool-approval.js';
 import type { BackgroundAgentTasks } from './AgentTool/background-agent-tasks.js';
+import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 
 export interface BuiltInToolContext {
   config: ResolvedConfig;
@@ -19,6 +20,8 @@ export interface BuiltInToolContext {
   approvalControl?: ApprovalControl;
   backgroundTasks?: BackgroundAgentTasks;
   fileBaselines?: WorkspaceFileBaselines;
+  /** 主 Agent 与子 Agent 共享的 Skill 清单。 */
+  skills?: SkillCatalogue;
   fileWriteCallbacks: {
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;
@@ -34,6 +37,6 @@ export function registerBuiltInTools(registry: ToolRegistry, context: BuiltInToo
   registerFileWriteTool(registry, context);
   registerBashTool(registry, context);
   if (context.allowAgent !== false) {
-    registerAgentTool(registry, context.config, context.approvalControl, context.backgroundTasks, context.fileWriteCallbacks);
+    registerAgentTool(registry, context.config, context.approvalControl, context.backgroundTasks, context.fileWriteCallbacks, context.skills);
   }
 }

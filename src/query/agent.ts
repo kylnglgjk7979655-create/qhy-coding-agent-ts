@@ -16,6 +16,7 @@ import { registerBuiltInTools } from '../tools/register-built-in-tools.js';
 import { registerRemoteMCP } from '../services/mcp/remote-mcp.js';
 import { DEFAULT_CONTEXT } from '../services/settings/config.js';
 import { prepareConversation } from '../services/compact/context-summary.js';
+import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
 import type { BackgroundAgentTasks } from '../tools/AgentTool/background-agent-tasks.js';
 
@@ -63,6 +64,8 @@ export async function runAgent(
     generalPurposeSubagent?: boolean;
     modelOverride?: string;
     backgroundTasks?: BackgroundAgentTasks;
+    /** 已注册 Skill 的共享清单；主 Agent 与子 Agent 使用同一份。 */
+    skills?: SkillCatalogue;
   },
 ): Promise<RunResult> {
   if (options.smokeTool && config.maxSteps < 2) {
@@ -139,6 +142,7 @@ export async function runAgent(
     },
     fileBaselines,
     bashOperations,
+    ...(options.skills === undefined ? {} : { skills: options.skills }),
   });
   let closeMCP: (() => Promise<void>) | undefined;
   try {
@@ -180,6 +184,7 @@ export async function runAgent(
           '你是 general-purpose 子 Agent，负责独立完成委派的研究或多步骤修改任务。',
           '你不能再委派子 Agent。',
         ] : []),
+        ...(options.skills === undefined || options.skills.skills.length === 0 ? [] : [options.skills.instructions]),
     ].join('\n');
     const tools = registry.tools();
     let preparedResponseCount = 0;

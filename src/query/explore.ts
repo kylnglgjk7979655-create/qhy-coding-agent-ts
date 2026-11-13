@@ -7,6 +7,7 @@ import { registerFileReadTool } from '../tools/FileReadTool/FileReadTool.js';
 import { registerGlobTool } from '../tools/GlobTool/GlobTool.js';
 import { registerGrepTool } from '../tools/GrepTool/GrepTool.js';
 import type { BuiltInToolContext } from '../tools/register-built-in-tools.js';
+import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.js';
 import { readWorkspaceFile } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
@@ -29,6 +30,7 @@ export async function runExplore(
   modelOverride?: string,
   signal?: AbortSignal,
   approvalControl?: ApprovalControl,
+  skills?: SkillCatalogue,
 ): Promise<string> {
   signal?.throwIfAborted();
   const provider = createOpenAI({
@@ -46,12 +48,14 @@ export async function runExplore(
     probe: '',
     fileWriteCallbacks: {},
     bashOperations: new Set(),
+    ...(skills === undefined ? {} : { skills }),
   };
   registerGrepTool(registry, context);
   registerGlobTool(registry, context);
   registerFileReadTool(registry, context);
 
   let instructions = exploreInstructions;
+  if (skills !== undefined && skills.skills.length > 0) instructions += `\n\n${skills.instructions}`;
   if (config.explore?.loadRootAgents) {
     try {
       const rootInstructions = await readWorkspaceFile(config.workspace, 'AGENTS.md');
