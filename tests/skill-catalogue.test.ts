@@ -118,6 +118,81 @@ describe('Skill 注册与清单', () => {
     }
   });
 
+  it('引号未闭合的 Skill 不进入清单，调用返回 Unknown skill 且不注入正文', async () => {
+    const cwd = await directory('skill-catalogue-malformed-cwd');
+    const userDir = await directory('skill-catalogue-malformed-user');
+    const model = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'bad', type: 'function', function: {
+        name: 'skill', arguments: JSON.stringify({ name: 'bad' }),
+      } }] }
+      : { content: '已处理无效 Skill。' });
+    try {
+      await configure(cwd, model.baseURL);
+      await writeSkill(join(cwd, '.qhy-coding-agent', 'skills'), 'bad',
+        'name: bad\ndescription: "UNTERMINATED_DESCRIPTION', 'BAD_BODY');
+
+      const cli = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: 'CHECK_INVALID\n/exit\n' });
+      expect((await cli.done).code).toBe(0);
+      expect(model.requests).toHaveLength(2);
+      expect(systemText(model.requests[0]!)).not.toContain('UNTERMINATED_DESCRIPTION');
+      const results = model.requests[1]!.messages.filter(({ role }) => role === 'tool');
+      expect(results.map(({ content }) => JSON.parse(content))).toEqual([{
+        is_error: true,
+        error: { code: 'TOOL_EXECUTION_ERROR', message: 'Unknown skill: bad' },
+      }]);
+      expect(JSON.stringify(model.requests)).not.toContain('BAD_BODY');
+    } finally {
+      await model.close();
+    }
+  });
+
+  it.each([
+    {
+      format: '双引号和内联别名',
+      metadata: 'name: valid\ndescription: "说明：带 \\"引号\\""\ndisplay_name: "显示名称"\naliases: ["别名,一", 第二别名]',
+      description: '说明：带 "引号"',
+      identifier: '别名,一',
+    },
+    {
+      format: '单引号和逗号分隔别名',
+      metadata: "name: valid\ndescription: 'It''s valid'\naliases: first, second",
+      description: "It's valid",
+      identifier: 'second',
+    },
+    {
+      format: '字面块说明和块别名',
+      metadata: 'name: valid\ndescription: |-\n  第一行\n  第二行\naliases:\n  - first\n  - 第二别名',
+      description: '第一行\n第二行',
+      identifier: '第二别名',
+    },
+    {
+      format: '折叠块说明',
+      metadata: 'name: valid\ndescription: >-\n  第一行\n  第二行\ndisplay_name: 显示名称',
+      description: '第一行 第二行',
+      identifier: '显示名称',
+    },
+  ])('保留有效 frontmatter 的$format，清单与调用均可用', async ({ metadata, description, identifier }) => {
+    const cwd = await directory('skill-catalogue-formats-cwd');
+    const userDir = await directory('skill-catalogue-formats-user');
+    const model = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'valid', type: 'function', function: {
+        name: 'skill', arguments: JSON.stringify({ name: identifier }),
+      } }] }
+      : { content: '已加载有效 Skill。' });
+    try {
+      await configure(cwd, model.baseURL);
+      await writeSkill(join(cwd, '.qhy-coding-agent', 'skills'), 'valid', metadata, 'VALID_BODY');
+
+      const cli = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '加载有效 Skill\n/exit\n' });
+      expect((await cli.done).code).toBe(0);
+      expect(model.requests).toHaveLength(2);
+      expect(systemText(model.requests[0]!)).toContain(`- valid：${description}`);
+      expect(model.requests[1]!.messages.at(-1)).toEqual({ role: 'user', content: 'Skill: valid\nVALID_BODY\n' });
+    } finally {
+      await model.close();
+    }
+  });
+
   it('注册后修改 Skill 文件，本轮请求仍使用注册时读入的内容', async () => {
     const cwd = await directory('skill-catalogue-snapshot-cwd');
     const userDir = await directory('skill-catalogue-snapshot-user');

@@ -1,5 +1,6 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { parse } from 'yaml';
 import type { PromptCommandRecord } from '../../cli/commands.js';
 
 /** Skill 记录同时是 prompt 类型命令，并保留供清单展示的说明。 */
@@ -112,129 +113,30 @@ function parseFrontmatter(content: string): ParsedFrontmatter {
   const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---');
   if (end < 0) return {};
 
-  const fields = new Map<string, string | string[]>();
-  for (let index = 1; index < end; index += 1) {
-    const line = lines[index]!;
-    if (!line.trim() || line.trim().startsWith('#')) continue;
-    const match = /^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/.exec(line);
-    if (!match) continue;
-    const key = match[1]!;
-    const raw = match[2]!.trim();
-    if (raw === '') {
-      const block = readList(lines, index + 1, end);
-      if (!block) continue;
-      fields.set(key, block.values);
-      index = block.next - 1;
-      continue;
-    }
-    if (raw === '|' || raw === '>' || raw === '|-' || raw === '>-') {
-      const block = readBlockScalar(lines, index + 1, end, raw.startsWith('|'));
-      fields.set(key, block.text);
-      index = block.next - 1;
-      continue;
-    }
-    fields.set(key, parseValue(raw));
+  let metadata: unknown;
+  try {
+    // 使用 YAML 语法校验整个 frontmatter；损坏的可选字段也应使目录被跳过。
+    // failsafe 保留字符串标量语义，避免纯数字名称、别名被隐式转成其他类型。
+    metadata = parse(lines.slice(1, end).join('\n'), { schema: 'failsafe' }) as unknown;
+  } catch {
+    return {};
   }
-
+  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) return {};
+  const fields = metadata as Record<string, unknown>;
   return {
-    name: asString(fields.get('name')),
-    description: asString(fields.get('description')),
-    displayName: asString(fields.get('display_name')),
-    aliases: asStringArray(fields.get('aliases')),
+    name: asString(fields.name),
+    description: asString(fields.description),
+    displayName: asString(fields.display_name),
+    aliases: asStringArray(fields.aliases),
   };
 }
 
-interface ListBlock {
-  values: string[];
-  next: number;
-}
-
-function readList(lines: readonly string[], start: number, end: number): ListBlock | undefined {
-  const values: string[] = [];
-  let index = start;
-  for (; index < end; index += 1) {
-    const line = lines[index]!;
-    if (!line.trim()) continue;
-    if (!/^\s+/.test(line)) break;
-    const item = /^\s*-\s*(.*)$/.exec(line);
-    if (!item) break;
-    values.push(parseScalar(item[1]!));
-  }
-  return values.length === 0 ? undefined : { values, next: index };
-}
-
-interface BlockScalar {
-  text: string;
-  next: number;
-}
-
-function readBlockScalar(lines: readonly string[], start: number, end: number, literal: boolean): BlockScalar {
-  const collected: string[] = [];
-  let index = start;
-  for (; index < end; index += 1) {
-    const line = lines[index]!;
-    if (line.trim() && !/^\s+/.test(line)) break;
-    collected.push(line.trim());
-  }
-  return { text: literal ? collected.join('\n') : collected.join(' '), next: index };
-}
-
-function parseValue(raw: string): string | string[] {
-  if (raw.startsWith('[') && raw.endsWith(']')) {
-    return splitInlineArray(raw.slice(1, -1)).map(parseScalar).filter(Boolean);
-  }
-  return parseScalar(raw);
-}
-
-function splitInlineArray(raw: string): string[] {
-  const values: string[] = [];
-  let current = '';
-  let quote: string | undefined;
-  for (const character of raw) {
-    if (quote) {
-      current += character;
-      if (character === quote) quote = undefined;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      current += character;
-      continue;
-    }
-    if (character === ',') {
-      values.push(current.trim());
-      current = '';
-      continue;
-    }
-    current += character;
-  }
-  if (current.trim()) values.push(current.trim());
-  return values;
-}
-
-function parseScalar(raw: string): string {
-  const value = raw.trim();
-  if (value.startsWith('"') && value.endsWith('"')) {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      if (typeof parsed === 'string') return parsed;
-    } catch {
-      // 非标准转义时退回去除外层引号。
-    }
-    return value.slice(1, -1);
-  }
-  if (value.startsWith("'") && value.endsWith("'")) {
-    return value.slice(1, -1).replaceAll("''", "'");
-  }
-  return value;
-}
-
-function asString(value: string | string[] | undefined): string | undefined {
+function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-function asStringArray(value: string | string[] | undefined): string[] | undefined {
-  if (Array.isArray(value)) return value.filter(Boolean);
+function asStringArray(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) return value.filter((alias): alias is string => typeof alias === 'string' && alias.length > 0);
   if (typeof value === 'string') {
     const aliases = value.split(',').map((alias) => alias.trim()).filter(Boolean);
     return aliases.length === 0 ? undefined : aliases;
