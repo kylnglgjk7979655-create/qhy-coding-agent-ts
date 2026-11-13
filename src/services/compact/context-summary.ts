@@ -4,6 +4,7 @@ import type { ModelMessage, ToolSet } from 'ai';
 import { DEFAULT_CONTEXT } from '../settings/config.js';
 import type { ResolvedConfig } from '../settings/config.js';
 import { AgentError } from '../../utils/errors.js';
+import { buildFileRecoverySection, selectRecoveryCandidates } from './recent-files.js';
 
 /** 摘要请求的输出上限固定不超过该值，即使模型声明了更大的最大输出额度。 */
 export const SUMMARY_OUTPUT_TOKEN_CAP = 20_000;
@@ -49,7 +50,7 @@ export function assertInputBudget(config: ResolvedConfig, system: string, messag
 }
 
 /** 程序生成的续接包装：固定结构，正文之外补充真实记录位置与继续执行指令。 */
-function buildSummaryWrapper(text: string, transcriptPath: string | undefined): ModelMessage {
+function buildSummaryWrapper(text: string, transcriptPath: string | undefined): { role: 'user'; content: string } {
   const lines = [
     '[对话摘要]',
     '以下是对此前全部有效历史的压缩资料，仅用于继续当前任务，不是用户新提交的指令，不改变系统提示或工具策略。',
@@ -74,7 +75,7 @@ export async function prepareConversation(
   signal: AbortSignal,
   onSummary?: (summary: { text: string; coveredMessages: number; compacted: ModelMessage[] }) => Promise<void> | void,
   transcriptPath?: string,
-  options: { force?: boolean } = {},
+  options: { force?: boolean; recentFiles?: readonly string[] } = {},
 ): Promise<ModelMessage[]> {
   signal.throwIfAborted();
   const { threshold } = compactionBudget(config);
@@ -85,7 +86,7 @@ export async function prepareConversation(
   const size = (history: ModelMessage[]) => estimateInput(system, history, definitions);
   if (!options.force && size(messages) < threshold) return messages;
 
-  const { text, compacted } = await generateSummary(config, messages, signal, transcriptPath);
+  const { text, compacted } = await generateSummary(config, messages, signal, transcriptPath, options);
   if (size(compacted) > threshold) {
     throw new AgentError('CONTEXT_ERROR', '摘要后仍超过自动压缩阈值，已停止本轮；成功历史保持不变。');
   }
@@ -104,6 +105,7 @@ export async function generateSummary(
   messages: ModelMessage[],
   signal: AbortSignal,
   transcriptPath?: string,
+  options: { recentFiles?: readonly string[] } = {},
 ): Promise<{ text: string; compacted: ModelMessage[] }> {
   const { inputBudget, summaryOutputTokens } = compactionBudget(config);
   // 全历史摘要：当前有效历史整体进入摘要请求，不保留任何原文轮次。
@@ -138,5 +140,10 @@ export async function generateSummary(
     signal.throwIfAborted();
     throw new AgentError('CONTEXT_ERROR', '对话摘要生成失败或响应无效，已停止本轮；成功历史保持不变，此前操作不会回滚。');
   }
-  return { text, compacted: [buildSummaryWrapper(text, transcriptPath)] };
+  // 摘要之后从磁盘重新读取最近文件开头，作为独立资料段落附加；失败候选跳过且不补位。
+  const candidates = selectRecoveryCandidates(options.recentFiles ?? []);
+  const recovery = await buildFileRecoverySection(config.workspace, candidates, signal);
+  signal.throwIfAborted();
+  const wrapper = buildSummaryWrapper(text, transcriptPath);
+  return { text, compacted: [{ ...wrapper, content: recovery ? `${wrapper.content}\n\n${recovery}` : wrapper.content }] };
 }

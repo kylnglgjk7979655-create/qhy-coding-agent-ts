@@ -42,6 +42,8 @@ export interface SessionRecord {
   summaries: Array<{ text: string; coversThrough: number }>;
   checkpoints: Array<{ id: string; messageId: string; createdAt: string; files?: Array<{ path: string; backupId: string }> }>;
   backups: Array<{ id?: string; path: string; content?: string; existed: boolean }>;
+  /** 最近成功读取的文件标识（规范绝对路径），按最近优先去重保存，供压缩恢复使用。 */
+  recentFiles: string[];
 }
 
 export function sessionStorageRoot(home = homedir()): string {
@@ -83,6 +85,7 @@ export async function createSession(home: string, options: {
     summaries: [],
     checkpoints: [],
     backups: [],
+    recentFiles: [],
   };
   await writeSessionRecord(home, record, true);
   return record;
@@ -100,7 +103,8 @@ export async function loadSession(home: string, conversationId: string): Promise
   try {
     const value: unknown = JSON.parse(raw);
     if (!isSessionRecord(value) || value.id !== conversationId) throw new Error('Invalid session');
-    return { ...value, title: value.title?.trim() ? value.title : deriveSessionTitle(value.transcript) };
+    // 旧格式记录没有 recentFiles 字段，读取时补空数组，保存时升级。
+    return { ...value, recentFiles: value.recentFiles ?? [], title: value.title?.trim() ? value.title : deriveSessionTitle(value.transcript) };
   } catch {
     throw new AgentError('PROVIDER_ERROR', '会话记录格式无效或已损坏，未覆盖原记录。');
   }
@@ -296,6 +300,7 @@ export async function appendRoundText(home: string, conversationId: string, roun
 export async function saveCompactionCheckpoint(home: string, conversationId: string, roundId: string, checkpoint: {
   effectiveHistory: ModelMessage[];
   summary: { text: string };
+  recentFiles?: string[];
 }): Promise<SessionRecord['summaries'][number]> {
   const session = await loadSession(home, conversationId);
   const index = session.rounds.findIndex((round) => round.id === roundId);
@@ -310,6 +315,7 @@ export async function saveCompactionCheckpoint(home: string, conversationId: str
     ...session,
     effectiveHistory: checkpoint.effectiveHistory,
     summaries: unchanged ? session.summaries : [...session.summaries, entry],
+    ...(checkpoint.recentFiles ? { recentFiles: checkpoint.recentFiles } : {}),
     rounds: session.rounds.map((round, roundIndex) => roundIndex === index
       ? { ...round, compactedThrough: Math.max(round.compactedThrough ?? 0, entry.coversThrough) }
       : round),
@@ -325,6 +331,7 @@ export async function saveCompactionCheckpoint(home: string, conversationId: str
 export async function saveManualCompaction(home: string, conversationId: string, checkpoint: {
   effectiveHistory: ModelMessage[];
   summary: { text: string };
+  recentFiles?: string[];
 }): Promise<void> {
   const session = await loadSession(home, conversationId);
   const coversThrough = session.transcript.length;
@@ -337,6 +344,7 @@ export async function saveManualCompaction(home: string, conversationId: string,
     ...session,
     effectiveHistory: checkpoint.effectiveHistory,
     summaries: unchanged ? session.summaries : [...session.summaries, entry],
+    ...(checkpoint.recentFiles ? { recentFiles: checkpoint.recentFiles } : {}),
     rounds: session.rounds.map((round) => (round.compactedThrough ?? 0) >= coversThrough
       ? round
       : { ...round, compactedThrough: coversThrough }),
@@ -349,6 +357,7 @@ export async function finishSessionRound(home: string, conversationId: string, r
   effectiveHistory?: ModelMessage[];
   summaries?: SessionRecord['summaries'];
   recoveredRoundIds?: string[];
+  recentFiles?: string[];
   error?: { code: string; message: string };
 }): Promise<void> {
   await updateRound(home, conversationId, roundId, (round) => ({
@@ -357,7 +366,7 @@ export async function finishSessionRound(home: string, conversationId: string, r
     finishedAt: new Date().toISOString(),
     ...(outcome.error ? { error: outcome.error } : {}),
     ...(outcome.status === 'succeeded' ? { messages: outcome.response ?? round.messages ?? [], partialText: '' } : {}),
-  }), outcome.effectiveHistory, outcome.recoveredRoundIds, outcome.summaries);
+  }), outcome.effectiveHistory, outcome.recoveredRoundIds, outcome.summaries, outcome.recentFiles);
 }
 
 async function updateRound(
@@ -368,6 +377,7 @@ async function updateRound(
   effectiveHistory?: ModelMessage[],
   recoveredRoundIds: string[] = [],
   summaries: SessionRecord['summaries'] = [],
+  recentFiles?: string[],
 ): Promise<void> {
   const session = await loadSession(home, conversationId);
   const index = session.rounds.findIndex((round) => round.id === roundId);
@@ -391,6 +401,7 @@ async function updateRound(
       : recoveredRoundIds.includes(item.id) ? { ...item, recovered: true } : item),
     ...(effectiveHistory ? { effectiveHistory } : {}),
     ...(effectiveHistory ? { summaries: [...session.summaries.slice(0, summaryStart), ...summaries] } : {}),
+    ...(recentFiles ? { recentFiles } : {}),
   });
 }
 
@@ -466,7 +477,7 @@ async function writeSessionRecord(home: string, record: SessionRecord, createOnl
 function isSessionRecord(value: unknown): value is SessionRecord {
   if (typeof value !== 'object' || value === null) return false;
   const session = value as Partial<SessionRecord>;
-  const fields = ['version', 'id', 'title', 'workspace', 'createdAt', 'updatedAt', 'config', 'transcript', 'effectiveHistory', 'rounds', 'summaries', 'checkpoints', 'backups'];
+  const fields = ['version', 'id', 'title', 'workspace', 'createdAt', 'updatedAt', 'config', 'transcript', 'effectiveHistory', 'rounds', 'summaries', 'checkpoints', 'backups', 'recentFiles'];
   return Object.keys(value).every((field) => fields.includes(field))
     && session.version === 1
     && typeof session.id === 'string'
@@ -482,7 +493,9 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     && session.summaries.every((summary, index) => summary.coversThrough <= session.transcript!.length
       && (index === 0 || summary.coversThrough >= session.summaries![index - 1]!.coversThrough))
     && Array.isArray(session.checkpoints) && session.checkpoints.every(isCheckpointRecord)
-    && Array.isArray(session.backups) && session.backups.every(isBackupRecord);
+    && Array.isArray(session.backups) && session.backups.every(isBackupRecord)
+    && (session.recentFiles === undefined
+      || (Array.isArray(session.recentFiles) && session.recentFiles.every((file) => typeof file === 'string')));
 }
 
 function deriveSessionTitle(transcript: ModelMessage[]): string {

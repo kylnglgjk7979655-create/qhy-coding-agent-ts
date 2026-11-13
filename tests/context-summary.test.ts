@@ -107,6 +107,8 @@ it('同轮工具结果增长触发全历史摘要，后续步骤不再发送原�
   const saved = JSON.parse(await readFile(historyPath(), 'utf8')) as ModelMessage[];
   expect(saved).toHaveLength(4);
   expect(saved[0]!.role).toBe('user');
+  // 摘要包装内嵌最近读取文件 large.txt 的恢复资料段落。
+  expect(saved[0]!.content).toContain('[文件恢复资料]');
   expect(JSON.stringify(saved)).toContain('[对话摘要]');
   expect(JSON.stringify(saved)).not.toContain('轮内旧原文_MARKER');
   expect(saved.at(-1)).toEqual({ role: 'assistant', content: [{ type: 'text', text: '增长后完成' }] });

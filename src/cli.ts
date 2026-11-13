@@ -17,6 +17,7 @@ import { CliInput } from './cli/cli-input.js';
 import type { ApprovalControl } from './tools/tool-approval.js';
 import { acquireSessionLock } from './services/session/session-lock.js';
 import { generateSummary } from './services/compact/context-summary.js';
+import { RecentFileTracker } from './services/compact/recent-files.js';
 
 const help = `用法：node dist/cli.js [选项]
 
@@ -135,6 +136,8 @@ async function main(): Promise<void> {
       }
     }
     if (session) releaseSession = await acquireSessionLock(userHome, conversationId);
+    // 最近读取文件记录跨进程续聊保留；进程内以该记录为准，轮次结束或压缩时持久化。
+    const recentFiles = new RecentFileTracker(session?.recentFiles ?? []);
     const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
     let recoveredRoundIds: string[] = [];
     let history: ModelMessage[];
@@ -179,6 +182,7 @@ async function main(): Promise<void> {
       }
       config = resumed.config;
       conversationId = id;
+      recentFiles.replace(resumed.recentFiles);
       bindBackgroundNotifications(id);
       process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
       return resumed;
@@ -203,7 +207,7 @@ async function main(): Promise<void> {
       if (workItem.type === 'compact') {
         try {
           activeRound = new AbortController();
-          history = await compactIdleHistory(config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), legacyDirectory);
+          history = await compactIdleHistory(config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), legacyDirectory, recentFiles);
         } catch (error) {
           if (cancellation.signal.aborted) throw error;
           if (publicError(error).code === 'CANCELLED') process.stdout.write('\n用户中断：Interrupt by user\n');
@@ -224,7 +228,7 @@ async function main(): Promise<void> {
         ].join('\n');
         try {
           activeRound = new AbortController();
-          history = await runTurn(notificationPrompt, config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest);
+          history = await runTurn(notificationPrompt, config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles);
           const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
           history = recovered.history;
           recoveredRoundIds = recovered.recoveredRoundIds;
@@ -293,6 +297,7 @@ async function main(): Promise<void> {
         history = [];
         fileBaselines = fileBaselinesForSession(conversationId);
         recoveredRoundIds = [];
+        recentFiles.clear();
         bindBackgroundNotifications(id);
         process.stdout.write(`已新建会话：${id}\n`);
         if (process.stdin.isTTY) input.prompt();
@@ -384,7 +389,7 @@ async function main(): Promise<void> {
       try {
         activeRound = new AbortController();
         const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
-        history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest);
+        history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles);
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
@@ -433,6 +438,7 @@ async function compactIdleHistory(
   conversationId: string,
   signal: AbortSignal,
   legacyDirectory: string | undefined,
+  recentFiles: RecentFileTracker,
 ): Promise<ModelMessage[]> {
   if (history.length === 0) {
     process.stdout.write('当前会话没有可压缩的历史。\n');
@@ -441,8 +447,8 @@ async function compactIdleHistory(
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new AgentError('TIMEOUT', `请求超过 ${config.timeoutMs}ms，已终止。`)), config.timeoutMs);
   try {
-    const summary = await generateSummary(config, history, AbortSignal.any([signal, deadline.signal]), sessionRecordPath(userHome, conversationId));
-    await saveManualCompaction(userHome, conversationId, { effectiveHistory: summary.compacted, summary: { text: summary.text } });
+    const summary = await generateSummary(config, history, AbortSignal.any([signal, deadline.signal]), sessionRecordPath(userHome, conversationId), { recentFiles: recentFiles.list() });
+    await saveManualCompaction(userHome, conversationId, { effectiveHistory: summary.compacted, summary: { text: summary.text }, recentFiles: recentFiles.list() });
     if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, summary.compacted).catch(() => undefined);
     process.stdout.write('已压缩当前会话历史。\n');
     return summary.compacted;
@@ -464,6 +470,7 @@ async function runTurn(
   recoveredRoundIds: string[] = [],
   fileBaselines: Map<string, WorkspaceFileSnapshot> = new Map(),
   consumeCompactionRequest?: () => boolean,
+  recentFiles: RecentFileTracker = new RecentFileTracker(),
 ): Promise<ModelMessage[]> {
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
@@ -498,6 +505,8 @@ async function runTurn(
         process.stdout.write(chunk);
       },
       ...(!smokeTool ? { transcriptPath: sessionRecordPath(userHome, conversationId) } : {}),
+      onFileRead: (target) => recentFiles.record(target),
+      getRecentFiles: () => recentFiles.list(),
       onToolCallStart: async ({ callId, toolName, input }) => {
         if (!smokeTool && roundId) {
           await appendRoundMessages(userHome, conversationId, roundId, [{
@@ -513,7 +522,7 @@ async function runTurn(
       onCompaction: async (checkpoint) => {
         // 摘要成功即保存，不等待本轮最终结果；后续失败或取消仍可跨进程续聊压缩历史。
         if (!roundId) return;
-        const saved = await saveCompactionCheckpoint(userHome, conversationId, roundId, checkpoint);
+        const saved = await saveCompactionCheckpoint(userHome, conversationId, roundId, { ...checkpoint, recentFiles: recentFiles.list() });
         if (manualCompaction) {
           manualCompaction = false;
           process.stdout.write('\n已压缩当前会话历史。\n');
@@ -560,7 +569,7 @@ async function runTurn(
       if (!roundId) throw new AgentError('PROVIDER_ERROR', '当前轮次未能建立持久化记录。');
       await finishSessionRound(userHome, conversationId, roundId, {
         status: 'succeeded', response: result.responseMessages, effectiveHistory: nextHistory,
-        summaries: result.summaries, recoveredRoundIds,
+        summaries: result.summaries, recoveredRoundIds, recentFiles: recentFiles.list(),
       });
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }
@@ -580,7 +589,7 @@ async function runTurn(
     const interrupted = failure.code === 'CANCELLED' && failure.message === 'Interrupt by user';
     if (interrupted && !smokeTool && roundId) {
       await finishSessionRound(userHome, conversationId, roundId, {
-        status: 'cancelled', error: { code: 'CANCELLED', message: 'Interrupt by user' },
+        status: 'cancelled', error: { code: 'CANCELLED', message: 'Interrupt by user' }, recentFiles: recentFiles.list(),
       }).catch(() => undefined);
       process.stdout.write('\n用户中断：Interrupt by user\n');
       log({ event: 'run.finished', runId: lastRunId, status: 'cancelled', durationMs: Math.round(performance.now() - lastRunStartedAt), conversationId });
@@ -589,7 +598,7 @@ async function runTurn(
     if (!smokeTool && roundId) {
       await finishSessionRound(userHome, conversationId, roundId, {
         status: failure.code === 'CANCELLED' ? 'cancelled' : 'failed',
-        error: { code: failure.code, message: failure.message },
+        error: { code: failure.code, message: failure.message }, recentFiles: recentFiles.list(),
       }).catch(() => undefined);
     }
     if (!smokeTool) {
@@ -623,11 +632,12 @@ async function resumeSession(userHome: string, id: string): Promise<{
   conversationId: string;
   history: ModelMessage[];
   recoveredRoundIds: string[];
+  recentFiles: string[];
 }> {
   const session = await loadSession(userHome, id);
   const config = await restoreSessionConfig(session.config, process.env);
   const recovered = reconstructSessionHistory(session);
-  return { config, conversationId: id, ...recovered };
+  return { config, conversationId: id, ...recovered, recentFiles: session.recentFiles };
 }
 
 function userMessageText(message: ModelMessage): string {

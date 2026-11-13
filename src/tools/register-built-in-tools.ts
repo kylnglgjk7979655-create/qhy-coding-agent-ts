@@ -19,6 +19,8 @@ export interface BuiltInToolContext {
   approvalControl?: ApprovalControl;
   backgroundTasks?: BackgroundAgentTasks;
   fileBaselines?: WorkspaceFileBaselines;
+  /** 成功读取工作区文件后回调规范目标路径，供会话记录最近读取顺序；失败读取不触发。 */
+  onFileRead?: (target: string) => void;
   fileWriteCallbacks: {
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;

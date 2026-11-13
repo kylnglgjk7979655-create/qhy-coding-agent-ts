@@ -3,7 +3,7 @@ import { readWorkspaceFile, resolveReadTarget } from '../workspace-files.js';
 import type { BuiltInToolContext } from '../register-built-in-tools.js';
 import type { ToolRegistry } from '../tool-registry.js';
 
-export function registerFileReadTool(registry: ToolRegistry, { config, fileBaselines, allowWorkspaceExternalRead = true }: BuiltInToolContext): void {
+export function registerFileReadTool(registry: ToolRegistry, { config, fileBaselines, allowWorkspaceExternalRead = true, onFileRead }: BuiltInToolContext): void {
   registry.register({
     name: 'read_file',
     concurrency: 'parallel',
@@ -13,8 +13,13 @@ export function registerFileReadTool(registry: ToolRegistry, { config, fileBasel
       const target = await resolveReadTarget(config.workspace, path);
       return { input: { path, target }, details: { requestedPath: path, target } };
     },
-    execute: async ({ path, target }) => ({ content: await readWorkspaceFile(
-      config.workspace, path, fileBaselines, target, !allowWorkspaceExternalRead,
-    ) }),
+    execute: async ({ path, target }) => {
+      const content = await readWorkspaceFile(
+        config.workspace, path, fileBaselines, target, !allowWorkspaceExternalRead,
+      );
+      // 只在成功读取后刷新最近文件顺序；恢复读取不经过该工具。
+      onFileRead?.(target);
+      return { content };
+    },
   });
 }

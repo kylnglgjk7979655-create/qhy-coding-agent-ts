@@ -62,6 +62,10 @@ export async function runAgent(
     onCompaction?: (checkpoint: { effectiveHistory: ModelMessage[]; summary: { text: string } }) => Promise<{ coversThrough: number } | void> | { coversThrough: number } | void;
     /** 会话原始记录路径，写入摘要续接包装供后续找回细节；子 Agent 没有会话记录时省略。 */
     transcriptPath?: string;
+    /** 成功读取文件后刷新最近文件顺序；子 Agent 没有会话记录时省略。 */
+    onFileRead?: (target: string) => void;
+    /** 压缩时提供当前最近读取文件候选；子 Agent 没有会话记录时省略。 */
+    getRecentFiles?: () => readonly string[];
     /** 执行中登记的手动压缩请求；在工具结果写入后、下一次主模型请求前取出并强制压缩。 */
     consumeCompactionRequest?: () => boolean;
     summaryCoverageBase?: number;
@@ -145,6 +149,7 @@ export async function runAgent(
     },
     fileBaselines,
     bashOperations,
+    ...(options.onFileRead ? { onFileRead: options.onFileRead } : {}),
   });
   let closeMCP: (() => Promise<void>) | undefined;
   try {
@@ -228,7 +233,7 @@ export async function runAgent(
           summaries.push(entry);
           summaryCoverageBase = coversThrough;
           hasSummary = true;
-        }, options.transcriptPath, { force: forceCompaction });
+        }, options.transcriptPath, { force: forceCompaction, ...(options.getRecentFiles ? { recentFiles: options.getRecentFiles() } : {}) });
         preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;
         signal.throwIfAborted();
