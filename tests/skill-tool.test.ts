@@ -78,6 +78,16 @@ describe('Skill 工具', () => {
         { name: 'alpha' }, { name: 'alpha' }, { name: 'alpha' }, { name: 'alpha' },
       ]);
       expect(JSON.stringify(results)).not.toContain('ALPHA_BODY_MARKER');
+      // 正文由工具结果之后的独立 user 消息提供，每次成功调用各一条。
+      const followUp = model.requests[1]!.messages;
+      const injections = followUp.filter(({ role, content }) =>
+        role === 'user' && typeof content === 'string' && content.startsWith('Skill: alpha'));
+      expect(injections).toHaveLength(4);
+      expect(injections[0]!.content).toBe('Skill: alpha\n---\nname: alpha\ndisplay_name: 阿尔法\naliases: [a, 别名]\ndescription: 阿尔法说明\n---\n\nALPHA_BODY_MARKER\n');
+      const firstInjection = followUp.findIndex(({ role, content }) =>
+        role === 'user' && typeof content === 'string' && content.startsWith('Skill: alpha'));
+      expect(followUp[firstInjection - 1]!.role).toBe('tool');
+      expect(JSON.stringify(model.requests[0])).not.toContain('ALPHA_BODY_MARKER');
       expect(model.approvalRequests).toHaveLength(0);
     } finally {
       await model.close();
@@ -162,8 +172,9 @@ describe('Skill 工具', () => {
       }
       expect(toolResults(model.requests[2])).toEqual([{ is_error: false, output: { name: 'shared-skill' } }]);
       expect(toolResults(model.requests[5])).toEqual([{ is_error: false, output: { name: 'shared-skill' } }]);
-      expect(JSON.stringify(model.requests[2])).not.toContain('SHARED_BODY_MARKER');
-      expect(JSON.stringify(model.requests[5])).not.toContain('SHARED_BODY_MARKER');
+      // Explore 与 general-purpose 子 Agent 同样把正文注入后续请求。
+      expect(model.requests[2]!.messages.at(-1)).toEqual({ role: 'user', content: 'Skill: shared-skill\n---\nname: shared-skill\ndescription: 共享说明\n---\n\nSHARED_BODY_MARKER\n' });
+      expect(model.requests[5]!.messages.at(-1)).toEqual({ role: 'user', content: 'Skill: shared-skill\n---\nname: shared-skill\ndescription: 共享说明\n---\n\nSHARED_BODY_MARKER\n' });
       expect(model.approvalRequests).toHaveLength(0);
     } finally {
       await model.close();

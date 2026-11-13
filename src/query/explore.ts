@@ -7,6 +7,7 @@ import { registerFileReadTool } from '../tools/FileReadTool/FileReadTool.js';
 import { registerGlobTool } from '../tools/GlobTool/GlobTool.js';
 import { registerGrepTool } from '../tools/GrepTool/GrepTool.js';
 import { registerSkillTool } from '../tools/SkillTool/SkillTool.js';
+import { collectSkillInjections } from '../services/skills/skill-injection.js';
 import type { BuiltInToolContext } from '../tools/register-built-in-tools.js';
 import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.js';
@@ -40,6 +41,8 @@ export async function runExplore(
     ...(config.baseURL === undefined ? {} : { baseURL: config.baseURL }),
   });
   let approvalHistory: ModelMessage[] = [];
+  // Explore 没有会话记录；只在本运行内记录已注入的 Skill 调用。
+  const injectedSkillCalls = new Set<string>();
   const approvalSignal = signal ?? new AbortController().signal;
   const registry = new ToolRegistry({
     approve: (call) => approveToolCall(config, call, approvalSignal, approvalControl, undefined, approvalHistory),
@@ -59,7 +62,7 @@ export async function runExplore(
 
   let instructions = exploreInstructions;
   if (skills !== undefined) {
-    instructions += '\n可使用 skill 工具按名称、显示名称或别名加载已注册 Skill；工具结果只表示调用成功。';
+    instructions += '\n可使用 skill 工具按名称、显示名称或别名加载已注册 Skill；工具结果只表示调用成功，正文由后续消息提供。';
     if (skills.skills.length > 0) instructions += `\n\n${skills.instructions}`;
   }
   if (config.explore?.loadRootAgents) {
@@ -79,9 +82,20 @@ export async function runExplore(
     toolCallConcurrency: MAX_TOOL_CALL_CONCURRENCY,
     stopWhen: isStepCount(config.maxSteps),
     maxRetries: 0,
-    prepareStep: async ({ messages }) => {
-      approvalHistory = [...messages];
-      return {};
+    prepareStep: async ({ messages, responseMessages }) => {
+      if (skills === undefined) {
+        approvalHistory = [...messages];
+        return {};
+      }
+      // 只扫描本轮响应消息；注入消息排在工具结果之后并延续到后续步骤。
+      const injections = collectSkillInjections(skills, responseMessages, injectedSkillCalls);
+      if (injections.length === 0) {
+        approvalHistory = [...messages];
+        return {};
+      }
+      const stepMessages = [...messages, ...injections.map(({ message }) => message)];
+      approvalHistory = stepMessages;
+      return { messages: stepMessages };
     },
   });
   const result = await agent.stream({

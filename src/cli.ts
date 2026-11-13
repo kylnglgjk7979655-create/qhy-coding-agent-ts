@@ -510,7 +510,7 @@ async function runTurn(
     if (!smokeTool) {
       if (!roundId) throw new AgentError('PROVIDER_ERROR', '当前轮次未能建立持久化记录。');
       await finishSessionRound(userHome, conversationId, roundId, {
-        status: 'succeeded', response: result.responseMessages, effectiveHistory: nextHistory,
+        status: 'succeeded', response: result.roundMessages, effectiveHistory: nextHistory,
         summaries: result.summaries, recoveredRoundIds,
       });
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
