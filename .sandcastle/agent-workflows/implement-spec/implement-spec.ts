@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import { run } from '@ai-hero/sandcastle';
 import { noSandbox } from '@ai-hero/sandcastle/sandboxes/no-sandbox';
-import { codexAgent, fail, required } from '../shared/common.js';
+import { claudeAgent, fail, required } from '../shared/common.js';
 import { GitHub, hasLabel } from '../tickets/github.js';
 import { assertAcyclic } from './dependencies.js';
 
@@ -40,7 +40,7 @@ try {
   assertAcyclic(dependencies);
   await run({
     name: `implement-spec-#${number}`,
-    agent: codexAgent(), sandbox: noSandbox(), logging: { type: 'stdout' },
+    agent: claudeAgent(), sandbox: noSandbox(), logging: { type: 'stdout' },
     promptFile: path.join(import.meta.dirname, 'prompt.md'),
     promptArgs: { ISSUE_NUMBER: raw, BRANCH: required('BRANCH') },
     completionSignal: '<promise>COMPLETE</promise>',

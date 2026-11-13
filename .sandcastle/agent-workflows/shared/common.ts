@@ -1,10 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFileSync, execSync, spawnSync } from "node:child_process";
-import { homedir } from "node:os";
+import { execFileSync, execSync } from "node:child_process";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { codexAuthEnvironment, resolveCodexModel } from "../../codex-auth.js";
 
 export const outputDir = (): string => process.env.OUTPUT_DIR ?? process.env.RUNNER_TEMP ?? "/tmp";
 
@@ -54,20 +52,20 @@ export const writeText = (filename: string, value: string): void => {
   fs.writeFileSync(path.join(outputDir(), filename), value);
 };
 
-// 唯一的模型适配：沿用官方任务编排，使用现有 Codex 订阅及其会话目录。
-export const codexAgent = () => {
-  const command = (args: string[], env: NodeJS.ProcessEnv) => {
-    const result = spawnSync("codex", args, { env, encoding: "utf8", timeout: 15_000 });
-    if (result.error || result.status !== 0) throw new Error("Codex 配置检查失败。");
-    return result.stdout + (args[0] === "login" ? result.stderr : "");
-  };
-  const env = codexAuthEnvironment(process.env, (childEnv) => command(["login", "status"], childEnv));
-  const model = resolveCodexModel({ ...process.env, ...env }, (childEnv) => command(["debug", "models"], childEnv));
-  const codexHome = process.env.CODEX_HOME || path.join(homedir(), ".codex");
-  console.log(`Codex 模型：${model}`);
-  return sandcastle.codex(model, {
-    effort: "high", env: { ...env, CODEX_HOME: codexHome }, captureSessions: true,
-    sessionStorage: { hostSessionsDir: path.join(codexHome, "sessions") },
+export const DEFAULT_AGENT_MODEL = "deepseek-v4.1-flash";
+export const DEFAULT_ANTHROPIC_BASE_URL = "https://qianfan.baidubce.com/anthropic/tokenplan/personal";
+
+// 唯一的模型适配：沿用官方任务编排，通过 Anthropic 兼容端点调用 Claude Code。
+export const claudeAgent = () => {
+  const model = process.env.AGENT_MODEL?.trim() || DEFAULT_AGENT_MODEL;
+  console.log(`Agent 模型：${model}`);
+  return sandcastle.claudeCode(model, {
+    env: {
+      ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL?.trim() || DEFAULT_ANTHROPIC_BASE_URL,
+      ANTHROPIC_AUTH_TOKEN: required("ANTHROPIC_AUTH_TOKEN"),
+      CLAUDE_CODE_SUBAGENT_MODEL: model,
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    },
   });
 };
 

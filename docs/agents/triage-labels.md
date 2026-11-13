@@ -18,9 +18,7 @@
 | `agent:implement` | Issue：开始或恢复实现；PR：处理已有反馈 |
 | `agent:implement-spec` | 父 Issue：对已有子任务按 `implement-spec` 并行实现并交付集成 PR，不拆票 |
 | `agent:queued` | Issue／父 Issue：保留实现授权，等待依赖或下一张子票 |
-| `agent:review` | PR：整体审查、允许修复并发布 COMMENT；手动 CR 标记 Ready，implement 发起的 CR 自动接 QA |
-| `agent:qa` | PR：验收、implement 修复、CR 和复验；发布报告，全部通过后标记 Ready |
-| `agent:qa-only` | 同仓库开放 PR：只读功能验收，发布 QA 报告与证据，不修复、不提交、不改变 Ready |
+| `agent:review` | PR：整体审查、允许修复并发布 COMMENT，完成后标记 Ready |
 | `agent:update-branch` | 同仓库 PR：合并基准分支并处理冲突 |
 | `agent:explore` | 批量调查开放的 explore Issue，识别重复并转交 |
 | `agent:in-progress` | 当前任务执行中 |
@@ -32,4 +30,4 @@
 
 Explore 的 verdict 是输出字段，不是标签：easy-call 转交 implement，needs-a-human 转 ready-for-human，blocked 转 agent:blocked；重复 Issue 被评论并关闭。
 
-持久队列、PAT 配置和失败恢复见 [GitHub Actions](github-actions.md)。正文的依赖文字不代替原生依赖，关闭前置必须为 completed。
+标签触发、`AGENT_PAT` 配置和失败恢复见 [GitHub Actions](github-actions.md)。正文的依赖文字不代替原生依赖，关闭前置必须为 completed。QA 入口（`agent:qa`、`agent:qa-only`）暂未接入 workflow，`qa-only` skill 保留供本地验证。

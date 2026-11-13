@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import { execFileSync } from "node:child_process";
-import { createRequire } from "node:module";
 import {
   asArray,
   asRecord,
@@ -33,11 +32,6 @@ const PLAN_FILE = required("PLAN_FILE");
 const GH_REPO = required("GH_REPO");
 const DRY_RUN = process.env.DRY_RUN === "true";
 const AGENT_PAT = process.env.AGENT_PAT ?? "";
-const require = createRequire(import.meta.url);
-const { assertSafeInputs, renderRequest } = require("../../../.github/scripts/task-queue.cjs") as {
-  assertSafeInputs: (inputs: unknown) => void;
-  renderRequest: (request: Record<string, unknown>) => string;
-};
 
 const summary = (markdown: string): void => {
   const file = process.env.GITHUB_STEP_SUMMARY;
@@ -131,23 +125,7 @@ const apply = (effect: GitHubEffect): void => {
         { token: effect.to === "agent:implement" ? AGENT_PAT : undefined },
       );
       if (effect.to === "agent:implement" && !AGENT_PAT) {
-        const request = {
-          version: 1,
-          id: `explore-${process.env.GITHUB_RUN_ID}-${issue}`,
-          kind: "implement",
-          number: effect.issue,
-          workflow: "agent-implement.yml",
-          inputs: { issue_number: issue, authorization_label: "agent:implement" },
-          queuedAt: new Date().toISOString(),
-          status: "waiting",
-        };
-        assertSafeInputs(request.inputs);
-        ghWith(["api", "--method", "POST", `repos/${GH_REPO}/issues/${issue}/comments`, "--input", "-"], {
-          input: JSON.stringify({ body: renderRequest(request) }),
-        });
-        ghWith(["api", "--method", "POST", `repos/${GH_REPO}/actions/workflows/agent-queue.yml/dispatches`, "--input", "-"], {
-          input: JSON.stringify({ ref: "main", inputs: {} }),
-        });
+        throw new Error("转交 agent:implement 需要 AGENT_PAT，否则标签不会触发下游 workflow。");
       }
       return;
     }

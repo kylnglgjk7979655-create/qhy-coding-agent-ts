@@ -106,15 +106,8 @@ export class Queue {
           && (this.hasPull(sibling.number, parent) || hasLabel(sibling, 'agent:in-progress')))) continue;
       }
       if (!(parent !== null ? this.eligible(root, parent) : this.select(root))) continue;
-      const writer = this.dispatch ?? this.github;
-      writer.addLabels(root.number, ['agent:implement']);
-      if (!this.dispatch) {
-        this.github.queueTask({
-          id: `promote-${blocker}-${root.number}-${Math.floor(Date.now() / 1000)}`,
-          kind: 'implement', number: root.number, workflow: 'agent-implement.yml',
-          inputs: { issue_number: String(root.number), authorization_label: 'agent:implement' },
-        });
-      }
+      if (!this.dispatch) throw new Error('标签接续需要 AGENT_PAT。');
+      this.dispatch.addLabels(root.number, ['agent:implement']);
       promoted.push(root.number);
     }
     return promoted;

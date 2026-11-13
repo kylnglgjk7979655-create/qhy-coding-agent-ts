@@ -171,15 +171,15 @@ describe('GitHub 自动拆票和依赖队列的真实控制脚本', () => {
     expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
   }, 30_000);
 
-  it('子票未完成时拒绝接续；无需 PAT 时将父票持久入队', () => {
+  it('子票未完成时拒绝接续；没有 AGENT_PAT 时拒绝接续而不是入队', () => {
     const h = harness(); h.publish();
     h.update((state) => { state.issues[23]!.labels.push('agent:queued'); });
     expect(h.run('continue-parent', { ISSUE_NUMBER: '24', PARENT_NUMBER: '23' }).status).toBe(1);
     h.update((state) => { state.issues[24]!.state = 'closed'; state.issues[24]!.state_reason = 'completed'; });
-    h.ok('continue-parent', { ISSUE_NUMBER: '24', PARENT_NUMBER: '23', AGENT_PAT: '' });
-    expect(h.read().issues[23]!.labels).toContain('agent:implement');
-    expect(h.read().comments[23]?.map((comment) => comment.body).join('\n')).toContain('<!-- agent-subscription-queue:v1 ');
-    expect(h.read().requests).toContainEqual(expect.objectContaining({ resource: 'actions/workflows/agent-queue.yml/dispatches' }));
+    const failed = h.run('continue-parent', { ISSUE_NUMBER: '24', PARENT_NUMBER: '23', AGENT_PAT: '' });
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain('AGENT_PAT');
+    expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
   }, 30_000);
 
   it('拆票预检后立即切换执行标签', () => {
@@ -210,35 +210,36 @@ describe('GitHub 自动拆票和依赖队列的真实控制脚本', () => {
     h.ok('promote', { ISSUE_NUMBER: '22' });
     expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
     h.update((state) => { state.issues[22]!.state_reason = 'completed'; });
-    h.ok('promote', { ISSUE_NUMBER: '22', AGENT_PAT: '' });
+    h.ok('promote', { ISSUE_NUMBER: '22' });
     expect(h.read().issues[23]!.labels).toContain('agent:implement');
     expect(h.read().issues[24]!.labels).not.toContain('agent:implement');
     expect(h.read().issues[26]!.labels).not.toContain('agent:implement');
-    expect(h.read().comments[23]?.map((comment) => comment.body).join('\n')).toContain('<!-- agent-subscription-queue:v1 ');
     expect(h.read().requests).toContainEqual(expect.objectContaining({
-      resource: 'actions/workflows/agent-queue.yml/dispatches',
-      body: { ref: 'main', inputs: {} },
+      method: 'POST', resource: 'issues/23/labels', token: 'dispatch-token', body: { labels: ['agent:implement'] },
     }));
+    h.update((state) => { state.issues[23]!.labels = ['agent:queued']; state.requests = []; });
+    const failed = h.run('promote', { ISSUE_NUMBER: '22', AGENT_PAT: '' });
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain('AGENT_PAT');
+    expect(h.read().issues[23]!.labels).not.toContain('agent:implement');
   }, 30_000);
 
-  it('实现发起的 Review 有无 PAT 都写入持久队列，仅无 PAT 时显式调度 Check', () => {
+  it('实现发起的 Review 用 PAT 重新贴标签，不写队列；没有 PAT 时拒绝接续', () => {
     const h = harness();
     h.update((state) => {
       state.issues[90] = issue(90);
       state.pulls = [{ number: 90, state: 'open', body: '', base: { ref: 'main' }, head: { ref: 'agent/issue-24', sha: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), repo: { full_name: 'owner/repo' } } }];
     });
-    h.ok('review', { PR_NUMBER: '90', BRANCH: 'agent/issue-24', AGENT_PAT: '' });
-    expect(h.read().requests.filter((entry) => entry.resource.endsWith('/dispatches'))).toMatchObject([
-      { resource: 'actions/workflows/check.yml/dispatches', body: { ref: 'agent/issue-24' } },
-      { resource: 'actions/workflows/agent-queue.yml/dispatches', body: { ref: 'main', inputs: {} } },
-    ]);
-    expect(h.read().comments[90]?.map((comment) => comment.body).join('\n')).toContain('<!-- agent-subscription-queue:v1 ');
-    h.update((state) => { state.requests = []; state.issues[90]!.labels = []; });
     h.ok('review', { PR_NUMBER: '90', BRANCH: 'agent/issue-24' });
-    expect(h.read().requests).toContainEqual(expect.objectContaining({ method: 'POST', resource: 'issues/90/labels', token: 'github-token' }));
-    expect(h.read().requests.filter((entry) => entry.resource.endsWith('/dispatches'))).toMatchObject([
-      { resource: 'actions/workflows/agent-queue.yml/dispatches', body: { ref: 'main', inputs: {} } },
-    ]);
+    expect(h.read().requests).toContainEqual(expect.objectContaining({
+      method: 'POST', resource: 'issues/90/labels', token: 'dispatch-token', body: { labels: ['agent:review'] },
+    }));
+    expect(h.read().requests.filter((entry) => entry.resource.endsWith('/dispatches'))).toEqual([]);
+    h.update((state) => { state.requests = []; state.issues[90]!.labels = []; });
+    const failed = h.run('review', { PR_NUMBER: '90', BRANCH: 'agent/issue-24', AGENT_PAT: '' });
+    expect(failed.status).toBe(1);
+    expect(failed.stderr).toContain('AGENT_PAT');
+    expect(h.read().issues[90]!.labels).toEqual([]);
   });
 
   it('失败子票不被自动重试，人工重加 implement 后才允许重试；推送前重新检查依赖', () => {
@@ -266,25 +267,22 @@ describe('GitHub 自动拆票和依赖队列的真实控制脚本', () => {
     const git = (...args: string[]) => execFileSync('git', args, { cwd: work, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     git('init', '-b', 'main'); git('config', 'user.name', 'test'); git('config', 'user.email', 'test@example.com');
     writeFileSync(join(work, 'README.md'), 'fixture'); git('add', '.'); git('commit', '-m', 'test: fixture');
-    const codex = join(h.root, 'bin', 'codex');
+    const claude = join(h.root, 'bin', 'claude');
     const emitted = join(h.root, 'draft.json'); writeFileSync(emitted, JSON.stringify(draft));
-    writeFileSync(codex, `#!/usr/bin/env node
-const fs = require('node:fs'); const path = require('node:path');
+    writeFileSync(claude, `#!/usr/bin/env node
+const fs = require('node:fs');
 const args = process.argv.slice(2);
-if (args[0] === 'login') { console.error('Logged in using ChatGPT'); process.exit(0); }
-if (args[0] === 'debug') { console.log(JSON.stringify({models:[{slug:'fixture-model'}]})); process.exit(0); }
 const prompt = fs.readFileSync(0, 'utf8'); fs.writeFileSync(process.env.MOCK_PROMPT, prompt);
-const sessions = path.join(process.env.CODEX_HOME, 'sessions', '2026', '11', '07'); fs.mkdirSync(sessions,{recursive:true});
-fs.writeFileSync(path.join(sessions,'rollout-fixture-ticket.jsonl'),JSON.stringify({type:'session_meta',payload:{id:'fixture-ticket',cwd:process.cwd()}})+'\\n');
 const text = '<output>'+fs.readFileSync(process.env.MOCK_DRAFT,'utf8')+'</output>';
-console.log(JSON.stringify({type:'thread.started',thread_id:'fixture-ticket'}));
-console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text}}));
-console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,cached_input_tokens:0,output_tokens:1}}));
+console.log(JSON.stringify({type:'system',subtype:'init',session_id:'fixture-ticket'}));
+console.log(JSON.stringify({type:'assistant',message:{content:[{type:'text',text}]}}));
+console.log(JSON.stringify({type:'result',result:text}));
 `, { mode: 0o755 });
+    mkdirSync(join(h.root, 'home'), { recursive: true });
     const promptFile = join(h.root, 'prompt.txt');
     execFileSync(process.execPath, ['--import', require.resolve('tsx'), join(directory, 'to-issues.ts')], {
       cwd: work, encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...h.env, CODEX_HOME: join(h.root, 'codex'), CODEX_AUTH_MODE: 'chatgpt', CODEX_MODEL: 'fixture-model', MOCK_PROMPT: promptFile, MOCK_DRAFT: emitted },
+      env: { ...h.env, HOME: join(h.root, 'home'), AGENT_MODEL: 'fixture-model', ANTHROPIC_AUTH_TOKEN: 'fixture-token', MOCK_PROMPT: promptFile, MOCK_DRAFT: emitted },
     });
     const prompt = readFileSync(promptFile, 'utf8');
     expect(prompt).toContain('gh issue view 23 --comments');

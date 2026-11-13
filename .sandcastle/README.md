@@ -6,19 +6,19 @@
 
 ## 项目适配
 
-- `shared/common.ts` 的 `codexAgent()` 使用 Codex 订阅，认证由 `.github/actions/codex-auth-restore/`、`codex-auth-save/` 与 `.github/scripts/subscription.cjs` 管理。
-- 标签入口先写入持久队列，队列持有仓库级订阅锁串行分发。登录态回存成功后才推送和发布；失败时也尝试回存。
-- 阶段 prompt 调用仓库固定版本的 `$to-tickets`、`$implement`、`$pr` 和 `$code-review`；项目规范统一在仓库根目录 `CODING_STANDARDS.md`。详细职责见 [skill-execution.md](../docs/agents/skill-execution.md)。
-- `agent:qa-only` 是项目自定义的独立验收入口，阶段 prompt 显式调用 `$qa-only`。只读运行、发布报告和证据，不修复、不提交、不改变 PR Ready 状态。
-- `agent:qa` 沿用阶段 prompt 编排：QA、implement、CR subagent 分别调用对应 skill。验收和审查只返回结果，prompt 负责安排修复及复验。普通 implement 发起的 CR 自动接续 QA；手动 CR 不接续，`implement-spec` 暂不接入。QA 通过后标记 Ready；同一问题达到三次修复上限时，报告保留次数和未解决问题。本地可用 `pnpm agent:qa`，不推送或发布。
-- CR、QA 与 QA Only 保留 workflow 对应提交的 runner、依赖和 skill，在独立的 PR `worktree/` 中运行；旧 PR 无需包含新增的 QA 命令。
-- 实现会话末尾用 `$pr` 编写文案，workflow 创建或更新 Draft PR；没有独立的 write-pr 模型会话。
+- `shared/common.ts` 的 `claudeAgent()` 使用官方 `sandcastle.claudeCode()`，通过 Anthropic 兼容端点（百度千帆 Token Plan）调用 Claude Code；认证只用 `ANTHROPIC_AUTH_TOKEN`，不使用订阅登录，也不回存登录态。
+- 标签直接触发 workflow；每个 workflow 用 `concurrency` group 按 Issue 或 PR 串行，不同 Issue/PR 可以并行。同一父需求共享分支的子票通过 `AGENT_PAT` 重新贴 `agent:implement` 接续，没有持久队列或仓库级锁。
+- 阶段 prompt 调用仓库固定版本的 `/to-tickets`、`/implement`、`/pr` 和 `/code-review`；项目规范统一在仓库根目录 `CODING_STANDARDS.md`。详细职责见 [skill-execution.md](../docs/agents/skill-execution.md)。
+- 技能原文固定在 `.agents/skills/`，同时复制到 `.claude/skills/` 供 Claude Code 发现；两处内容必须一致（`pnpm test` 会校验）。根目录 `CLAUDE.md` 与 `AGENTS.md` 内容一致。
+- QA 暂不接入 GitHub workflow：`agent:qa`、`agent:qa-only` 入口和脚本已移除，只保留 `.agents/skills/qa-only` 供本地 Claude 会话验证。
+- CR 与分支更新保留 workflow 对应提交的 runner、依赖和 skill，在独立的 PR `worktree/` 中运行；旧 PR 无需包含新增命令。
+- 实现会话末尾用 `/pr` 编写文案，workflow 创建或更新 Draft PR；没有独立的 write-pr 模型会话。
 - 父需求按原生依赖逐票实施，共享分支与 PR。整体审查读取父需求及全部子票；合并 PR 后关闭父 Issue。
 
 ## 拆票与依赖扩展
 
-参考 [`mattpocock/course-video-manager@1558f6f`](https://github.com/mattpocock/course-video-manager/tree/1558f6fe107c9aba7d51d251d3b89c7c17c04404)，`agent:to-issues` 直接创建原生子 Issue，并保留本项目的稳定 key、blockedBy、来源指纹与幂等恢复。已取消独立 publish-tickets 审批入口；创建子票后仍由维护者给父 Issue 加 `agent:implement` 开始实现。
+参考 [`mattpocock/course-video-manager@1558f6f`](https://github.com/mattpocock/course-video-manager/tree/1558f6fe107c9aba7d51d251d3b89c7c17c04404)，`agent:to-issues` 直接创建原生子 Issue，并保留本项目的稳定 key、blockedBy、来源指纹与幂等恢复。创建子票后仍由维护者给父 Issue 加 `agent:implement` 开始实现。
 
-有 PAT 时通过标签转交；没有时由内置 Token 写入持久队列并 dispatch。队列请求保存于来源 Issue/PR 的状态评论，立即调度和五分钟定时扫描均可恢复等待请求。
+`AGENT_PAT` 是必需配置：GITHUB_TOKEN 贴出的标签不会触发下游 workflow，父票接续、implement → CR 接续和依赖推进都依赖 PAT 重新贴标签。
 
-定时架构提案未启用。配置、迁移与恢复见 [GitHub Actions](../docs/agents/github-actions.md)。旧调查结论保留在 [notes](../docs/notes/course-video-manager-ticket-workflows.md)，不作为当前操作步骤。
+配置、迁移与恢复见 [GitHub Actions](../docs/agents/github-actions.md)。旧调查结论保留在 [notes](../docs/notes/course-video-manager-ticket-workflows.md)。

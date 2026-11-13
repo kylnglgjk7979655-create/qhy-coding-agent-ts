@@ -3,68 +3,32 @@ name: Agent Explore
 # Batch triage. Any `agent:explore` label kicks a run, but each run ignores the
 # event payload and explores EVERY open `agent:explore` issue together.
 on:
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: "Write planned comments, label swaps and closes to the run summary instead of applying them"
-        type: boolean
-        default: true
-      issue_number:
-        description: '队列来源 Issue 编号'
-        type: string
-        required: false
-      queue_request_id:
-        description: '由持久化订阅队列分发的请求编号'
-        type: string
-        required: false
+  issues:
+    types: [labeled]
 
 jobs:
-  enqueue-manual:
-    if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id == ''
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-      contents: read
-      issues: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          persist-credentials: false
-      - uses: actions/github-script@v7
-        with:
-          script: |
-            const result = await require('./.github/scripts/queue-ingress.cjs').route({ github, context });
-            core.info(JSON.stringify(result));
-
   explore:
-    if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id != ''
+    if: github.event.label.name == 'agent:explore'
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # 任务 Token 只读；认证步骤另用仅有 Secrets 写权限的 Token 回存登录。
+    concurrency:
+      group: agent-explore-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       contents: read
       issues: read
-      actions: read
     env:
-      CODEX_MODEL: ${{ vars.CODEX_MODEL }}
-      ISSUE_NUMBER: ${{ inputs.issue_number }}
+      AGENT_MODEL: ${{ vars.AGENT_MODEL }}
+      ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
     outputs:
       count: ${{ steps.batch.outputs.count }}
 
     steps:
-      - name: Checkout trusted queue scripts
+      - name: Checkout trusted scripts
         uses: actions/checkout@v4
         with:
           ref: main
           persist-credentials: false
-
-      - name: Verify queued authorization
-        uses: ./.github/actions/queue-authorization
-        with:
-          queue-request-id: ${{ inputs.queue_request_id }}
-          item-number: ${{ inputs.issue_number }}
-          workflow: agent-explore.yml
 
       # Never read issue titles or bodies into shell or `${{ }}` — they are
       # untrusted. They go to a JSON file and only the TS scripts read them.
@@ -97,14 +61,6 @@ jobs:
           name: explore-batch
           path: ${{ runner.temp }}/batch/issues.json
 
-      - name: Checkout main
-        if: steps.batch.outputs.count != '0'
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-          persist-credentials: false
-
       - name: Setup Node.js and pnpm
         if: steps.batch.outputs.count != '0'
         uses: ./.github/actions/setup
@@ -113,26 +69,23 @@ jobs:
         if: steps.batch.outputs.count != '0'
         run: pnpm build
 
-      - name: Restore Codex subscription
-        id: auth
+      - name: Install Claude Code
         if: steps.batch.outputs.count != '0'
-        uses: ./.github/actions/codex-auth-restore
-        with:
-          auth-json: ${{ secrets.CODEX_AUTH_JSON }}
-          store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Prepare Claude Code config
+        if: steps.batch.outputs.count != '0'
+        run: |
+          mkdir -p "$HOME/.claude"
+          printf '{"hasCompletedOnboarding":true}\n' > "$HOME/.claude.json"
 
       - name: Run explore agent
         if: steps.batch.outputs.count != '0'
         env:
           ISSUES_FILE: ${{ runner.temp }}/batch/issues.json
           OUTPUT_DIR: ${{ runner.temp }}/out
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
         run: pnpm exec tsx .sandcastle/agent-workflows/explore/explore.ts
-
-      - name: Save refreshed Codex subscription
-        if: always() && steps.auth.outputs.restored == 'true'
-        uses: ./.github/actions/codex-auth-save
-        with:
-          store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
 
       - name: Upload plan
         if: steps.batch.outputs.count != '0'
@@ -147,7 +100,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      actions: write
       contents: read
       issues: write
 
@@ -188,13 +140,5 @@ jobs:
           BATCH_FILE: ${{ runner.temp }}/batch/issues.json
           PLAN_FILE: ${{ runner.temp }}/out/plan.json
           OUTPUT_DIR: ${{ runner.temp }}
-          DRY_RUN: ${{ inputs.dry_run }}
+          DRY_RUN: 'false'
         run: pnpm exec tsx .sandcastle/agent-workflows/explore/apply.ts
-
-      # The run summary isn't readable through the API; this artifact is.
-      - name: Upload dry-run effects
-        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
-        uses: actions/upload-artifact@v4
-        with:
-          name: explore-dry-run
-          path: ${{ runner.temp }}/effects.json

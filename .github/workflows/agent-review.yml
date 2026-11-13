@@ -1,91 +1,49 @@
 name: Agent Review
 
 on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: '内部接续：同仓库、开放且携带 agent:review 标签的 PR 编号'
-        type: string
-        required: true
-      queue_request_id:
-        description: '由持久化订阅队列分发的请求编号'
-        type: string
-        required: true
-      qa_after_review:
-        description: '内部接续参数；实际授权以队列记录为准'
-        type: string
-        default: 'false'
-        required: false
-      expected_head_sha:
-        description: '入队时记录的 PR 分支版本'
-        type: string
-        required: false
+  pull_request_target:
+    types: [labeled]
 
 jobs:
   review:
-    if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id != ''
+    if: |
+      github.event.label.name == 'agent:review' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: agent-mutate-pr-${{ inputs.pr_number }}
+      group: agent-mutate-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     permissions:
-      actions: write
       contents: write
       issues: read
       pull-requests: write
 
     env:
-      CODEX_MODEL: ${{ vars.CODEX_MODEL }}
-      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      AGENT_MODEL: ${{ vars.AGENT_MODEL }}
+      ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
-      - name: Checkout trusted queue scripts
+      - name: Checkout trusted scripts
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.workflow_sha }}
+          ref: main
           persist-credentials: false
-
-      - name: Verify queued authorization
-        id: authorization
-        uses: ./.github/actions/queue-authorization
-        with:
-          queue-request-id: ${{ inputs.queue_request_id }}
-          item-number: ${{ inputs.pr_number }}
-          workflow: agent-review.yml
-          expected-head-sha: ${{ inputs.expected_head_sha }}
 
       - name: Read and verify PR
         id: pr
-        env:
-          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
         run: |
-          gh pr view "$PR_NUMBER" --json state,headRefName,headRefOid --jq 'select(.state == "OPEN") | [.headRefName, .headRefOid] | @tsv' > "$RUNNER_TEMP/pr.tsv"
-          if [ ! -s "$RUNNER_TEMP/pr.tsv" ]; then echo "PR is closed." >&2; exit 1; fi
-          IFS=$'\t' read -r branch head_sha < "$RUNNER_TEMP/pr.tsv"
-          if [ -n "$EXPECTED_HEAD_SHA" ] && [ "$EXPECTED_HEAD_SHA" != "$head_sha" ]; then
-            echo "PR branch changed after enqueue; please re-add agent:review." >&2; exit 1
-          fi
-          echo "branch=$branch" >> "$GITHUB_OUTPUT"
-          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
-          echo "BRANCH=$branch" >> "$GITHUB_ENV"
-          echo "BRANCH_HEAD_SHA=$head_sha" >> "$GITHUB_ENV"
-
-      - name: Validate PR and resolve current snapshot
-        run: |
-          set -euo pipefail
-          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
-            exit 1
-          fi
-          pr_file="$RUNNER_TEMP/dispatched-pr.json"
-          gh pr view "$PR_NUMBER" --json state,isCrossRepository,headRefName,headRefOid,labels > "$pr_file"
-          jq -e '.state == "OPEN" and .isCrossRepository == false and any(.labels[]; .name == "agent:review")' "$pr_file" > /dev/null
-          branch=$(jq -r '.headRefName' "$pr_file")
-          sha=$(jq -r '.headRefOid' "$pr_file")
+          gh pr view "$PR_NUMBER" --json state,isCrossRepository,headRefName,headRefOid,labels > "$RUNNER_TEMP/pr.json"
+          jq -e '.state == "OPEN" and .isCrossRepository == false and any(.labels[]; .name == "agent:review")' "$RUNNER_TEMP/pr.json" > /dev/null
+          branch=$(jq -r '.headRefName' "$RUNNER_TEMP/pr.json")
+          sha=$(jq -r '.headRefOid' "$RUNNER_TEMP/pr.json")
           git check-ref-format --branch "$branch" > /dev/null
           [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$sha" >> "$GITHUB_OUTPUT"
           printf 'BRANCH=%s\nBRANCH_HEAD_SHA=%s\n' "$branch" "$sha" >> "$GITHUB_ENV"
 
       - name: Transition labels
@@ -119,26 +77,22 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
 
-      - name: Restore Codex subscription
-        id: auth
-        uses: ./.github/actions/codex-auth-restore
-        with:
-          auth-json: ${{ secrets.CODEX_AUTH_JSON }}
-          store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Prepare Claude Code config
+        run: |
+          mkdir -p "$HOME/.claude"
+          printf '{"hasCompletedOnboarding":true}\n' > "$HOME/.claude.json"
 
       - name: Run review agent
         working-directory: worktree
         env:
           OUTPUT_DIR: ${{ runner.temp }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
         run: |
           export PATH="$GITHUB_WORKSPACE/node_modules/.bin:$PATH"
           tsx "$GITHUB_WORKSPACE/.sandcastle/agent-workflows/review/review.ts"
-
-      - name: Save refreshed Codex subscription
-        if: always() && steps.auth.outputs.restored == 'true'
-        uses: ./.github/actions/codex-auth-save
-        with:
-          store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
 
       - name: Push branch
         working-directory: worktree
@@ -160,16 +114,6 @@ jobs:
             exit $status
           fi
 
-      - name: Check review changes without PAT
-        working-directory: worktree
-        if: success()
-        env:
-          AGENT_PAT: ${{ secrets.AGENT_PAT }}
-        run: |
-          if [ -z "$AGENT_PAT" ] && [ "$(git rev-parse HEAD)" != "$BRANCH_HEAD_SHA" ]; then
-            gh api --method POST "repos/$GH_REPO/actions/workflows/check.yml/dispatches" -f ref="$BRANCH"
-          fi
-
       - name: Post PR review
         if: success()
         env:
@@ -177,7 +121,7 @@ jobs:
         run: gh api --method POST "repos/{owner}/{repo}/pulls/${PR_NUMBER}/reviews" --input "$PAYLOAD"
 
       - name: Mark PR ready
-        if: success() && steps.authorization.outputs.qa-after-review != 'true'
+        if: success()
         run: gh pr ready "$PR_NUMBER" || true
 
       - name: Post thread replies
@@ -199,13 +143,6 @@ jobs:
             fi
             gh api --method POST "repos/{owner}/{repo}/pulls/${PR_NUMBER}/comments/${rest_id}/replies" -f body="$body"
           done
-
-      - name: Request automated QA
-        working-directory: worktree
-        if: success() && steps.authorization.outputs.qa-after-review == 'true'
-        run: |
-          export PATH="$GITHUB_WORKSPACE/node_modules/.bin:$PATH"
-          tsx "$GITHUB_WORKSPACE/.sandcastle/agent-workflows/tickets/control.ts" qa
 
       - name: Mark blocked on failure
         if: failure()

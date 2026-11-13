@@ -1,82 +1,52 @@
 name: Agent Implement PR
 
 on:
-  # Agent Queue dispatches only after confirming this is an open same-repository PR.
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: '队列中的目标 PR 编号'
-        type: string
-        required: true
-      queue_request_id:
-        description: '由持久化订阅队列分发的请求编号'
-        type: string
-        required: true
-      expected_head_sha:
-        description: '入队时记录的 PR 分支版本'
-        type: string
-        required: false
+  pull_request_target:
+    types: [labeled]
 
 jobs:
   implement-pr:
-    if: github.event_name == 'workflow_dispatch' && inputs.queue_request_id != ''
+    if: |
+      github.event.label.name == 'agent:implement' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: agent-mutate-pr-${{ inputs.pr_number }}
+      group: agent-mutate-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: false
     permissions:
-      actions: read
       contents: write
       issues: read
       pull-requests: write
 
     env:
-      CODEX_MODEL: ${{ vars.CODEX_MODEL }}
-      PR_NUMBER: ${{ inputs.pr_number }}
+      AGENT_MODEL: ${{ vars.AGENT_MODEL }}
+      ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
 
     steps:
-      - name: Checkout trusted queue scripts
+      - name: Checkout trusted scripts
         uses: actions/checkout@v4
         with:
           ref: main
           persist-credentials: false
-
-      - name: Verify queued authorization
-        uses: ./.github/actions/queue-authorization
-        with:
-          queue-request-id: ${{ inputs.queue_request_id }}
-          item-number: ${{ inputs.pr_number }}
-          workflow: agent-implement-pr.yml
-          expected-head-sha: ${{ inputs.expected_head_sha }}
 
       - name: Read PR branch
         id: pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr view "$PR_NUMBER" --json state,headRefName,headRefOid --jq 'select(.state == "OPEN") | [.headRefName, .headRefOid] | @tsv' > "$RUNNER_TEMP/pr.tsv"
-          if [ ! -s "$RUNNER_TEMP/pr.tsv" ]; then
-            echo "PR #$PR_NUMBER is closed; refusing queued work." >&2
-            exit 1
-          fi
-          IFS=$'\t' read -r branch head_sha < "$RUNNER_TEMP/pr.tsv"
+          gh pr view "$PR_NUMBER" --json state,isCrossRepository,headRefName,headRefOid,labels > "$RUNNER_TEMP/pr.json"
+          jq -e '.state == "OPEN" and .isCrossRepository == false and any(.labels[]; .name == "agent:implement")' "$RUNNER_TEMP/pr.json" > /dev/null
+          branch=$(jq -r '.headRefName' "$RUNNER_TEMP/pr.json")
+          sha=$(jq -r '.headRefOid' "$RUNNER_TEMP/pr.json")
+          git check-ref-format --branch "$branch" > /dev/null
+          [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
-          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
-          echo "BRANCH=$branch" >> "$GITHUB_ENV"
-          echo "BRANCH_HEAD_SHA=$head_sha" >> "$GITHUB_ENV"
-
-      - name: Verify queued branch version
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
-        run: |
-          if [ -n "$EXPECTED_HEAD_SHA" ] && [ "$EXPECTED_HEAD_SHA" != "${BRANCH_HEAD_SHA}" ]; then
-            echo "PR branch changed after enqueue; please re-add agent:implement." >&2
-            exit 1
-          fi
+          echo "head_sha=$sha" >> "$GITHUB_OUTPUT"
+          printf 'BRANCH=%s\nBRANCH_HEAD_SHA=%s\n' "$branch" "$sha" >> "$GITHUB_ENV"
 
       - name: Transition labels
         if: success()
@@ -109,25 +79,22 @@ jobs:
         if: success()
         run: pnpm build
 
-      - name: Restore Codex subscription
-        id: auth
+      - name: Install Claude Code
         if: success()
-        uses: ./.github/actions/codex-auth-restore
-        with:
-          auth-json: ${{ secrets.CODEX_AUTH_JSON }}
-          store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Prepare Claude Code config
+        if: success()
+        run: |
+          mkdir -p "$HOME/.claude"
+          printf '{"hasCompletedOnboarding":true}\n' > "$HOME/.claude.json"
 
       - name: Run implement-PR agent
         if: success()
         env:
           OUTPUT_DIR: ${{ runner.temp }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
         run: pnpm exec tsx .sandcastle/agent-workflows/implement-pr/implement-pr.ts
-
-      - name: Save refreshed Codex subscription
-        if: always() && steps.auth.outputs.restored == 'true'
-        uses: ./.github/actions/codex-auth-save
-        with:
-          store-token: ${{ secrets.CODEX_AUTH_STORE_PAT }}
 
       - name: Push branch
         if: success()
