@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | code-review | 规范、需求两个独立视角审查 | Matt 固定版本 |
 | qa-only | 根据 spec 生成 QA plan，实际运行并输出验收证据，只读报告 | 项目自定义，参考 Matt 与 gstack |
+| qa | QA 与修复循环：验收失败后批量修复并复验，全绿后一次 CR | 项目自定义 |
 | tdd | 通过公共接口测试行为，逐条 red→green | Matt 固定版本 |
 | diagnosing-bugs | 可复现反馈、最小化、诊断、回归 | Matt 固定版本 |
 | codebase-design | 共享设计词汇与深化方法 | Matt 固定版本 |
@@ -17,7 +18,7 @@
 
 执行时先读取 [项目适配](../../docs/agents/skill-execution.md)。更新上游时按固定 commit 复制完整目录，包括参考文档、脚本、agents 配置及 credits；更新来源和文件校验值，通过 PR 审核。项目特有规则集中在项目适配和任务入口，避免直接改动上游原文。
 
-`qa-only` 是项目自定义方法，来源记录在自身 `CREDITS.md` 和 `UPSTREAM.json` 的 `projectSkills`。PR 标签 `agent:qa-only` 对应的阶段 prompt 显式调用 `$qa-only`，不会触发修复或额外 CR。
+`qa-only` 是项目自定义方法，来源记录在自身 `CREDITS.md` 和 `UPSTREAM.json` 的 `projectSkills`。PR 标签 `agent:qa-only` 对应的阶段 prompt 显式调用 `$qa-only`，不会触发修复或额外 CR。`qa` 是本地循环入口：复用 `qa-only` 的只读验收与产物格式，云端仍由 `agent:qa` 阶段 prompt 调度。
 
 PR 标签 `agent:qa` 支持验收与修复。普通 implement 发起的 CR 完成后自动接续此标签；手动 `agent:review` 不接续，`implement-spec` 暂不接入。QA 的修复编排放在 [阶段 prompt](../../.sandcastle/agent-workflows/qa/prompt.md)：分别启动 QA、implement 和 CR subagent，显式调用 `$qa-only`、`$implement` 和 `$code-review`。验收和审查 skill 只出结果，修复由 prompt 调度实现 subagent，沿用现有 CR 的职责划分。
 

@@ -39,7 +39,9 @@
     "qa-only/SKILL.md": "572aea2d943390d89da4342588ee5ef85b8a8f1a71be1fd9ed6f6b726b95efbb",
     "qa-only/agents/openai.yaml": "31f1106874de3035fd6d1e2237c52b8092c30bf1aae20d95ad1d4e557360c4a9",
     "qa-only/report-template.md": "e46d5d2b80ee6a6dd13ca95faf5d2e0385a1d30a61a149365c7f19bfea5c8845",
-    "qa-only/surfaces.md": "53436bb17a5bb4dbc24e4c6164c478f2458a01e66304c5c80328310297dfc5d0"
+    "qa-only/surfaces.md": "53436bb17a5bb4dbc24e4c6164c478f2458a01e66304c5c80328310297dfc5d0",
+    "qa/SKILL.md": "9164891f6800bc60f5890fc234eec252e13980fd1755eaddc2e00b6930491d67",
+    "qa/agents/openai.yaml": "14c451700a9dce62d804c8b0e151baeef8a14366687af37b4a7ca9ab6bb5823e"
   },
   "localSnapshots": {
     "implement-spec": {
@@ -64,6 +66,13 @@
   "projectSkills": {
     "qa-only": {
       "description": "项目自定义的只读功能验收；方法参考 Matt 与 gstack，按标签独立调用。",
+      "references": [
+        "https://github.com/mattpocock/skills/tree/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
+        "https://github.com/garrytan/gstack/tree/6b327148e37134e2628d2d20cd98f33dcbeef51c"
+      ]
+    },
+    "qa": {
+      "description": "项目自定义的本地 QA 与修复循环；复用 qa-only、implement 与 code-review。",
       "references": [
         "https://github.com/mattpocock/skills/tree/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
         "https://github.com/garrytan/gstack/tree/6b327148e37134e2628d2d20cd98f33dcbeef51c"
