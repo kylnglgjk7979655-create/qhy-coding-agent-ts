@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -32,7 +32,8 @@ async function setup(
   respond: Parameters<typeof startLocalOpenAIModel>[0],
   extra: Record<string, unknown> = {},
 ) {
-  const cwd = await mkdtemp(join(tmpdir(), 'qhy-recover-workspace-'));
+  // 记录按文件的规范绝对路径去重，断言须用 realpath：macOS 的 tmpdir 位于 /var，实际指向 /private/var。
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'qhy-recover-workspace-')));
   const userDir = await mkdtemp(join(tmpdir(), 'qhy-recover-user-'));
   roots.push(cwd, userDir);
   for (const [name, content] of Object.entries(files)) {
