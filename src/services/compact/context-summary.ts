@@ -46,7 +46,7 @@ export async function prepareConversation(
 
   // Skill 注入消息是程序生成的指导内容，不作为用户轮次边界，避免当前轮被摘要替换。
   const turnStarts = messages.flatMap((message, index) =>
-    message.role === 'user' && !isSkillInjectionMessage(message) ? [index] : []);
+    message.role === 'user' && !isSkillInjectionMessage(message, restore?.catalogue.skills) ? [index] : []);
   const cut = turnStarts[Math.max(0, turnStarts.length - context.keepRecentTurns - 1)] ?? 0;
   if (cut === 0) {
     if (size(messages) > budget) throw new AgentError('CONTEXT_ERROR', '必要上下文无法容纳，已停止本轮；成功历史保持不变。');
