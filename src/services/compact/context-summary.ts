@@ -3,6 +3,8 @@ import { asSchema, generateText } from 'ai';
 import type { ModelMessage, ToolSet } from 'ai';
 import { DEFAULT_CONTEXT } from '../settings/config.js';
 import type { ResolvedConfig } from '../settings/config.js';
+import { restoreSkillInjections } from '../skills/skill-injection.js';
+import type { SkillRestoreSource } from '../skills/skill-injection.js';
 import { AgentError } from '../../utils/errors.js';
 import type { BackgroundTaskStatusEntry } from '../../tools/AgentTool/background-agent-tasks.js';
 import { buildFileRecoverySection, selectRecoveryCandidates } from './recent-files.js';
@@ -75,9 +77,20 @@ export async function prepareConversation(
   messages: ModelMessage[],
   tools: ToolSet,
   signal: AbortSignal,
-  onSummary?: (summary: { text: string; coveredMessages: number; compacted: ModelMessage[] }) => Promise<void> | void,
+  onSummary?: (summary: {
+    text: string;
+    coveredMessages: number;
+    compacted: ModelMessage[];
+    restoredMessages: number;
+  }) => Promise<void> | void,
   transcriptPath?: string,
-  options: { force?: boolean; recentFiles?: readonly string[]; getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[] } = {},
+  options: {
+    force?: boolean;
+    recentFiles?: readonly string[];
+    getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[];
+    /** 压缩后恢复被摘要移除的 Skill 正文；没有 Skill 时省略。 */
+    restore?: SkillRestoreSource;
+  } = {},
 ): Promise<ModelMessage[]> {
   signal.throwIfAborted();
   const { threshold } = compactionBudget(config);
@@ -88,13 +101,13 @@ export async function prepareConversation(
   const size = (history: ModelMessage[]) => estimateInput(system, history, definitions);
   if (!options.force && size(messages) < threshold) return messages;
 
-  const { text, compacted } = await generateSummary(config, messages, signal, transcriptPath, options);
+  const { text, compacted, restoredMessages } = await generateSummary(config, messages, signal, transcriptPath, options);
   if (size(compacted) > threshold) {
     throw new AgentError('CONTEXT_ERROR', '摘要后仍超过自动压缩阈值，已停止本轮；成功历史保持不变。');
   }
   signal.throwIfAborted();
   // 回调在返回前完成：摘要持久化失败时本函数抛出，调用方不会把压缩视为成功。
-  await onSummary?.({ text, coveredMessages: messages.length, compacted });
+  await onSummary?.({ text, coveredMessages: messages.length, compacted, restoredMessages });
   return compacted;
 }
 
@@ -107,8 +120,12 @@ export async function generateSummary(
   messages: ModelMessage[],
   signal: AbortSignal,
   transcriptPath?: string,
-  options: { recentFiles?: readonly string[]; getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[] } = {},
-): Promise<{ text: string; compacted: ModelMessage[] }> {
+  options: {
+    recentFiles?: readonly string[];
+    getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[];
+    restore?: SkillRestoreSource;
+  } = {},
+): Promise<{ text: string; compacted: ModelMessage[]; restoredMessages: number }> {
   const { inputBudget, summaryOutputTokens } = compactionBudget(config);
   // 全历史摘要：当前有效历史整体进入摘要请求，不保留任何原文轮次。
   const prompt = JSON.stringify(messages);
@@ -151,5 +168,9 @@ export async function generateSummary(
   const wrapper = buildSummaryWrapper(text, transcriptPath);
   const attachments = [recovery, taskStatus].filter((section): section is string => section !== undefined);
   const content = attachments.length === 0 ? wrapper.content : `${wrapper.content}\n\n${attachments.join('\n\n')}`;
-  return { text, compacted: [{ ...wrapper, content }] };
+  // 全历史压缩覆盖所有原文轮次，因此被摘要移除的 Skill 正文全部按最近加载顺序恢复；
+  // 恢复消息不在 transcript 中，条数由调用方从覆盖边界中扣除。
+  const restored = options.restore === undefined ? [] : restoreSkillInjections(options.restore, []);
+  signal.throwIfAborted();
+  return { text, compacted: [{ ...wrapper, content }, ...restored], restoredMessages: restored.length };
 }

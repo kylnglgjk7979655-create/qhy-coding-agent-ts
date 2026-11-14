@@ -14,6 +14,9 @@ import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepar
 import type { FileRewindPlan } from './services/session/file-checkpoints.js';
 import { AgentError, publicError } from './utils/errors.js';
 import { CliInput } from './cli/cli-input.js';
+import { CommandRegistry } from './cli/commands.js';
+import { loadSkillCatalogue } from './services/skills/skill-registry.js';
+import type { SkillCatalogue } from './services/skills/skill-registry.js';
 import type { ApprovalControl } from './tools/tool-approval.js';
 import { acquireSessionLock } from './services/session/session-lock.js';
 import { generateSummary } from './services/compact/context-summary.js';
@@ -149,9 +152,12 @@ async function main(): Promise<void> {
     } else history = [];
     if (smokeTool) {
       activeRound = new AbortController();
-      await runTurn('smoke', config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), true);
+      await runTurn('smoke', config, undefined, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), true);
       return;
     }
+
+    // 启动时注册一次 Skill；会话切换工作区后重新加载，本轮内来源文件变化不影响已注册内容。
+    let skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
 
     input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
     const fileBaselinesBySession = new Map<string, Map<string, WorkspaceFileSnapshot>>();
@@ -188,6 +194,7 @@ async function main(): Promise<void> {
       config = resumed.config;
       conversationId = id;
       recentFiles.replace(resumed.recentFiles);
+      skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
       bindBackgroundNotifications(id);
       process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
       return resumed;
@@ -203,6 +210,36 @@ async function main(): Promise<void> {
         // 读取失败时保留当前内存历史，不影响已经展示的错误。
       }
     };
+    // 命令模型统一保存命令记录；后续 Skill 以 prompt 类型复用同一注册与查找路径。
+    const commands = new CommandRegistry();
+    await commands.register({
+      name: '/clear',
+      displayName: '新建会话',
+      aliases: ['/new'],
+      type: 'local',
+      execute: async () => {
+        const id = newConversationId();
+        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
+        await createSession(userHome, { id, workspace: config.workspace, config: persistedConfig });
+        const nextRelease = await acquireSessionLock(userHome, id);
+        await releaseSession?.();
+        releaseSession = nextRelease;
+        conversationId = id;
+        history = [];
+        fileBaselines = fileBaselinesForSession(conversationId);
+        recoveredRoundIds = [];
+        recentFiles.clear();
+        bindBackgroundNotifications(id);
+        process.stdout.write(`已新建会话：${id}\n`);
+      },
+    });
+    await commands.register({
+      name: '/exit',
+      displayName: '退出',
+      aliases: [],
+      type: 'local',
+      execute: () => ({ exit: true }),
+    });
     if (process.stdin.isTTY) input.prompt();
     // 执行中登记的请求由 Agent 在下次主模型请求前消费；空闲时从工作项进入手动压缩。
     const consumeCompactionRequest = (): boolean => input?.consumeCompactRequest() ?? false;
@@ -212,7 +249,7 @@ async function main(): Promise<void> {
       if (workItem.type === 'compact') {
         try {
           activeRound = new AbortController();
-          history = await compactIdleHistory(config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), legacyDirectory, recentFiles, pendingTaskStatuses);
+          history = await compactIdleHistory(config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), legacyDirectory, recentFiles, pendingTaskStatuses, skills);
         } catch (error) {
           if (cancellation.signal.aborted) throw error;
           if (publicError(error).code === 'CANCELLED') process.stdout.write('\n用户中断：Interrupt by user\n');
@@ -233,7 +270,7 @@ async function main(): Promise<void> {
         ].join('\n');
         try {
           activeRound = new AbortController();
-          history = await runTurn(notificationPrompt, config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
+          history = await runTurn(notificationPrompt, config, skills, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
           const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
           history = recovered.history;
           recoveredRoundIds = recovered.recoveredRoundIds;
@@ -290,21 +327,10 @@ async function main(): Promise<void> {
         if (process.stdin.isTTY) input.prompt();
         continue;
       }
-      if (prompt === '/exit') break;
-      if (prompt === '/new' || prompt === '/clear') {
-        const id = newConversationId();
-        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
-        await createSession(userHome, { id, workspace: config.workspace, config: persistedConfig });
-        const nextRelease = await acquireSessionLock(userHome, id);
-        await releaseSession?.();
-        releaseSession = nextRelease;
-        conversationId = id;
-        history = [];
-        fileBaselines = fileBaselinesForSession(conversationId);
-        recoveredRoundIds = [];
-        recentFiles.clear();
-        bindBackgroundNotifications(id);
-        process.stdout.write(`已新建会话：${id}\n`);
+      const command = commands.find(prompt);
+      if (command?.type === 'local') {
+        const outcome = await command.execute();
+        if (outcome && outcome.exit) break;
         if (process.stdin.isTTY) input.prompt();
         continue;
       }
@@ -394,7 +420,7 @@ async function main(): Promise<void> {
       try {
         activeRound = new AbortController();
         const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
-        history = await runTurn(prompt, config, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
+        history = await runTurn(prompt, config, skills, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
@@ -445,6 +471,7 @@ async function compactIdleHistory(
   legacyDirectory: string | undefined,
   recentFiles: RecentFileTracker,
   getTaskStatuses: () => readonly BackgroundTaskStatusEntry[],
+  skills: SkillCatalogue | undefined,
 ): Promise<ModelMessage[]> {
   if (history.length === 0) {
     process.stdout.write('当前会话没有可压缩的历史。\n');
@@ -453,8 +480,25 @@ async function compactIdleHistory(
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new AgentError('TIMEOUT', `请求超过 ${config.timeoutMs}ms，已终止。`)), config.timeoutMs);
   try {
-    const summary = await generateSummary(config, history, AbortSignal.any([signal, deadline.signal]), sessionRecordPath(userHome, conversationId), { recentFiles: recentFiles.list(), getTaskStatuses });
-    await saveManualCompaction(userHome, conversationId, { effectiveHistory: summary.compacted, summary: { text: summary.text }, recentFiles: recentFiles.list() });
+    // 空闲压缩与自动压缩共用 Skill 恢复路径，按会话记录中的最近加载顺序补回被摘要移除的正文。
+    const current = await loadSession(userHome, conversationId);
+    const restore = skills === undefined
+      ? undefined
+      : {
+        catalogue: skills,
+        recentLoads: current.skillLoads ?? [],
+        ...(current.skillBodies === undefined ? {} : { bodies: current.skillBodies }),
+      };
+    const summary = await generateSummary(config, history, AbortSignal.any([signal, deadline.signal]), sessionRecordPath(userHome, conversationId), {
+      recentFiles: recentFiles.list(),
+      getTaskStatuses,
+      ...(restore === undefined ? {} : { restore }),
+    });
+    await saveManualCompaction(userHome, conversationId, {
+      effectiveHistory: summary.compacted,
+      summary: { text: summary.text, restoredMessages: summary.restoredMessages },
+      recentFiles: recentFiles.list(),
+    });
     if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, summary.compacted).catch(() => undefined);
     process.stdout.write('已压缩当前会话历史。\n');
     return summary.compacted;
@@ -466,6 +510,7 @@ async function compactIdleHistory(
 async function runTurn(
   prompt: string,
   config: Awaited<ReturnType<typeof loadConfig>>,
+  skills: SkillCatalogue | undefined,
   history: ModelMessage[],
   userHome: string,
   conversationId: string,
@@ -481,6 +526,9 @@ async function runTurn(
 ): Promise<ModelMessage[]> {
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
+  let summaryRestoredBase = 0;
+  let recentSkillLoads: string[] = [];
+  let skillBodies: Record<string, string> = {};
   let bashFailed = false;
   let manualCompaction = false;
   lastRunId = randomUUID();
@@ -495,13 +543,22 @@ async function runTurn(
       roundId = await startSessionRound(userHome, conversationId, prompt, persistedConfig, () => {
         reportCheckpointWarning('checkpoint.snapshot_failed', '消息检查点文件快照失败，本轮继续处理。', { conversationId });
       });
-      summaryCoverageBase = (await loadSession(userHome, conversationId)).summaries.at(-1)?.coversThrough ?? 0;
+      const current = await loadSession(userHome, conversationId);
+      const lastSummary = current.summaries.at(-1);
+      summaryCoverageBase = lastSummary?.coversThrough ?? 0;
+      summaryRestoredBase = lastSummary?.restoredMessages ?? 0;
+      recentSkillLoads = current.skillLoads ?? [];
+      skillBodies = current.skillBodies ?? {};
     }
     const result = await runAgent(config, prompt, {
       smokeTool,
       history,
       summaryCoverageBase,
+      summaryRestoredBase,
+      recentSkillLoads,
+      skillBodies,
       fileBaselines,
+      ...(skills === undefined ? {} : { skills }),
       ...(!smokeTool ? { backgroundTasks: backgroundAgentTasksForSession(
         conversationId,
         sessionTaskOutputDirectory(userHome, conversationId),
@@ -576,8 +633,9 @@ async function runTurn(
     if (!smokeTool) {
       if (!roundId) throw new AgentError('PROVIDER_ERROR', '当前轮次未能建立持久化记录。');
       await finishSessionRound(userHome, conversationId, roundId, {
-        status: 'succeeded', response: result.responseMessages, effectiveHistory: nextHistory,
+        status: 'succeeded', response: result.roundMessages, effectiveHistory: nextHistory,
         summaries: result.summaries, recoveredRoundIds, recentFiles: recentFiles.list(),
+        skillLoads: result.skillLoads, skillBodies: result.skillBodies,
       });
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }

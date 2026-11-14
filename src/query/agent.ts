@@ -16,6 +16,9 @@ import { registerBuiltInTools } from '../tools/register-built-in-tools.js';
 import { registerRemoteMCP } from '../services/mcp/remote-mcp.js';
 import { DEFAULT_CONTEXT } from '../services/settings/config.js';
 import { prepareConversation } from '../services/compact/context-summary.js';
+import { appendRecentSkillLoads, collectSkillInjections, insertSkillInjections } from '../services/skills/skill-injection.js';
+import type { SkillCatalogue } from '../services/skills/skill-registry.js';
+import type { SkillInjection } from '../services/skills/skill-injection.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
 import type { BackgroundAgentTasks, BackgroundTaskStatusEntry } from '../tools/AgentTool/background-agent-tasks.js';
 
@@ -26,9 +29,15 @@ export type { ToolExecutionEvent } from '../tools/tool-registry.js';
 export interface RunResult {
   text: string;
   responseMessages: ModelMessage[];
+  /** 本轮完整消息序列，Skill 正文注入排在对应工具结果之后，供会话记录保存本轮原文。 */
+  roundMessages: ModelMessage[];
+  /** 本轮实际注入的 Skill 规范名称，按加载顺序；同一 Skill 只保留最近一次位置。 */
+  skillLoads: string[];
+  /** 本轮各规范名最近实际注入的完整正文；随成功轮次保存。 */
+  skillBodies: Record<string, string>;
   /** 本轮成功使用的完整有效历史，可直接用于保存及下一轮输入。 */
   effectiveHistory: ModelMessage[];
-  summaries: Array<{ text: string; coversThrough: number }>;
+  summaries: Array<{ text: string; coversThrough: number; /** 该摘要恢复的 Skill 正文条数，不计入覆盖边界。 */ restoredMessages?: number }>;
   steps: number;
   toolCalls: number;
   finishReason: string;
@@ -59,7 +68,10 @@ export async function runAgent(
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
     /** 摘要成功后立即持久化压缩检查点；保存失败按停止本轮处理，不报告压缩成功。 */
-    onCompaction?: (checkpoint: { effectiveHistory: ModelMessage[]; summary: { text: string } }) => Promise<{ coversThrough: number } | void> | { coversThrough: number } | void;
+    onCompaction?: (checkpoint: {
+      effectiveHistory: ModelMessage[];
+      summary: { text: string; restoredMessages?: number };
+    }) => Promise<{ coversThrough: number } | void> | { coversThrough: number } | void;
     /** 会话原始记录路径，写入摘要续接包装供后续找回细节；子 Agent 没有会话记录时省略。 */
     transcriptPath?: string;
     /** 成功读取文件后刷新最近文件顺序；子 Agent 没有会话记录时省略。 */
@@ -71,10 +83,18 @@ export async function runAgent(
     /** 执行中登记的手动压缩请求；在工具结果写入后、下一次主模型请求前取出并强制压缩。 */
     consumeCompactionRequest?: () => boolean;
     summaryCoverageBase?: number;
+    /** 上一份摘要恢复的正文条数；这些消息不在 transcript 中，计算覆盖边界时要扣除。 */
+    summaryRestoredBase?: number;
     /** general-purpose 子 Agent 使用独立循环，但不公布 agent 工具。 */
     generalPurposeSubagent?: boolean;
     modelOverride?: string;
     backgroundTasks?: BackgroundAgentTasks;
+    /** 已注册 Skill 的共享清单；主 Agent 与子 Agent 使用同一份。 */
+    skills?: SkillCatalogue;
+    /** 会话记录中此前实际加载的 Skill 规范名称，按加载顺序；用于压缩后恢复正文。 */
+    recentSkillLoads?: readonly string[];
+    /** 先前成功加载的正文快照，避免同规范名记录在恢复时被重新解析为另一来源。 */
+    skillBodies?: Readonly<Record<string, string>>;
   },
 ): Promise<RunResult> {
   if (options.smokeTool && config.maxSteps < 2) {
@@ -152,6 +172,7 @@ export async function runAgent(
     fileBaselines,
     bashOperations,
     ...(options.onFileRead ? { onFileRead: options.onFileRead } : {}),
+    ...(options.skills === undefined ? {} : { skills: options.skills }),
   });
   let closeMCP: (() => Promise<void>) | undefined;
   try {
@@ -193,11 +214,20 @@ export async function runAgent(
           '你是 general-purpose 子 Agent，负责独立完成委派的研究或多步骤修改任务。',
           '你不能再委派子 Agent。',
         ] : []),
+        ...(options.skills === undefined || options.skills.skills.length === 0 ? [] : [
+          '可用 skill 工具按规范名称、显示名称或别名加载 Skill；工具结果只表示调用成功，正文由后续消息提供。',
+          options.skills.instructions,
+        ]),
     ].join('\n');
     const tools = registry.tools();
     let preparedResponseCount = 0;
     const summaries: RunResult['summaries'] = [];
+    // 本运行内已生成的 Skill 注入；注入消息随 SDK 的步进消息延续到后续请求。
+    const injectedSkillCalls = new Set<string>();
+    const skillInjections: SkillInjection[] = [];
+    let skillBodies = { ...options.skillBodies };
     let summaryCoverageBase = options.summaryCoverageBase ?? 0;
+    let restoredCoverageBase = options.summaryRestoredBase ?? 0;
     let hasSummary = summaryCoverageBase > 0;
     const agent = new ToolLoopAgent({
       model,
@@ -218,24 +248,52 @@ export async function runAgent(
         signal.throwIfAborted();
         // 手动压缩在工具结果写入历史之后、本次主模型请求之前执行；不重置步骤额度或执行时限。
         const forceCompaction = options.consumeCompactionRequest?.() ?? false;
-        preparedHistory = await prepareConversation(config, instructions, messages, tools, signal, async (summary) => {
+        // 只扫描本轮响应消息；历史中的旧 Skill 调用已在历史里带有注入消息。
+        const injections = options.skills === undefined
+          ? []
+          : collectSkillInjections(options.skills, responseMessages, injectedSkillCalls);
+        if (injections.length > 0) {
+          skillInjections.push(...injections);
+          skillBodies = { ...skillBodies, ...Object.fromEntries(injections.map(({ name, body }) => [name, body])) };
+        }
+        // 注入消息排在工具结果之后，并作为本轮消息延续到后续步骤。
+        const stepMessages = injections.length === 0
+          ? messages
+          : [...messages, ...injections.map(({ message }) => message)];
+        // 压缩恢复顺序包含本运行内新的加载，使同轮加载的正文也参与恢复。
+        const restore = options.skills === undefined
+          ? undefined
+          : { catalogue: options.skills, recentLoads: appendRecentSkillLoads(options.recentSkillLoads ?? [], skillInjections.map(({ name }) => name)), bodies: skillBodies };
+        preparedHistory = await prepareConversation(config, instructions, stepMessages, tools, signal, async (summary) => {
           // 优先使用持久化层按实际 transcript 计算的覆盖边界，避免依赖摘要或附件占用的消息数量。
           let saved: { coversThrough: number } | void = undefined;
           if (options.onCompaction) {
             try {
-              saved = await options.onCompaction({ effectiveHistory: summary.compacted, summary: { text: summary.text } });
+              saved = await options.onCompaction({
+                effectiveHistory: summary.compacted,
+                summary: { text: summary.text, restoredMessages: summary.restoredMessages },
+              });
             } catch {
               signal.throwIfAborted();
               throw new AgentError('PROVIDER_ERROR', '压缩检查点保存失败，已停止本轮；压缩前的有效历史保持不变。');
             }
           }
-          const coversThrough = saved?.coversThrough
-            ?? summaryCoverageBase + summary.coveredMessages - (hasSummary ? 1 : 0);
-          const entry = { text: summary.text, coversThrough };
+          // 被覆盖的有效历史包含上一份摘要槽位及其恢复的正文，二者都不在 transcript 中。
+          const coveredMessages = summary.coveredMessages - (hasSummary ? 1 + restoredCoverageBase : 0);
+          const coversThrough = saved?.coversThrough ?? summaryCoverageBase + coveredMessages;
+          const entry = summary.restoredMessages > 0
+            ? { text: summary.text, coversThrough, restoredMessages: summary.restoredMessages }
+            : { text: summary.text, coversThrough };
           summaries.push(entry);
           summaryCoverageBase = coversThrough;
+          restoredCoverageBase = summary.restoredMessages;
           hasSummary = true;
-        }, options.transcriptPath, { force: forceCompaction, ...(options.getRecentFiles ? { recentFiles: options.getRecentFiles() } : {}), ...(options.getTaskStatuses ? { getTaskStatuses: options.getTaskStatuses } : {}) });
+        }, options.transcriptPath, {
+          force: forceCompaction,
+          ...(options.getRecentFiles ? { recentFiles: options.getRecentFiles() } : {}),
+          ...(options.getTaskStatuses ? { getTaskStatuses: options.getTaskStatuses } : {}),
+          ...(restore === undefined ? {} : { restore }),
+        });
         preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;
         signal.throwIfAborted();
@@ -329,6 +387,9 @@ export async function runAgent(
     return {
       text,
       responseMessages,
+      roundMessages: insertSkillInjections(responseMessages, skillInjections),
+      skillLoads: appendRecentSkillLoads([], skillInjections.map(({ name }) => name)),
+      skillBodies: Object.fromEntries(skillInjections.map(({ name, body }) => [name, body])),
       // 最后一次请求的历史已包含此前工具往返，只追加该请求之后的新响应。
       effectiveHistory: [...preparedHistory, ...responseMessages.slice(preparedResponseCount)],
       summaries,

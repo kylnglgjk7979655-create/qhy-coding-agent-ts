@@ -2,6 +2,7 @@ import type { ResolvedConfig } from '../services/settings/config.js';
 import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from './workspace-files.js';
 import type { ToolRegistry } from './tool-registry.js';
 import { registerRuntimeInfoTool } from './RuntimeInfoTool/RuntimeInfoTool.js';
+import { registerSkillTool } from './SkillTool/SkillTool.js';
 import { registerFileReadTool } from './FileReadTool/FileReadTool.js';
 import { registerGlobTool } from './GlobTool/GlobTool.js';
 import { registerGrepTool } from './GrepTool/GrepTool.js';
@@ -10,6 +11,7 @@ import { registerBashTool } from './BashTool/BashTool.js';
 import { registerAgentTool } from './AgentTool/AgentTool.js';
 import type { ApprovalControl } from './tool-approval.js';
 import type { BackgroundAgentTasks } from './AgentTool/background-agent-tasks.js';
+import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 
 export interface BuiltInToolContext {
   config: ResolvedConfig;
@@ -19,8 +21,10 @@ export interface BuiltInToolContext {
   approvalControl?: ApprovalControl;
   backgroundTasks?: BackgroundAgentTasks;
   fileBaselines?: WorkspaceFileBaselines;
-  /** 成功读取工作区文件后回调规范目标路径，供会话记录最近读取顺序；失败读取不触发。 */
+/** 成功读取工作区文件后回调规范目标路径，供会话记录最近读取顺序；失败读取不触发。 */
   onFileRead?: (target: string) => void;
+  /** 主 Agent 与子 Agent 共享的 Skill 清单。 */
+  skills?: SkillCatalogue;
   fileWriteCallbacks: {
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;
@@ -30,12 +34,13 @@ export interface BuiltInToolContext {
 
 export function registerBuiltInTools(registry: ToolRegistry, context: BuiltInToolContext): void {
   registerRuntimeInfoTool(registry, context);
+  if (context.skills !== undefined) registerSkillTool(registry, context.skills);
   registerFileReadTool(registry, context);
   registerGlobTool(registry, context);
   registerGrepTool(registry, context);
   registerFileWriteTool(registry, context);
   registerBashTool(registry, context);
   if (context.allowAgent !== false) {
-    registerAgentTool(registry, context.config, context.approvalControl, context.backgroundTasks, context.fileWriteCallbacks);
+    registerAgentTool(registry, context.config, context.approvalControl, context.backgroundTasks, context.fileWriteCallbacks, context.skills);
   }
 }
