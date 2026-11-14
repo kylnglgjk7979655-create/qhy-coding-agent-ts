@@ -673,6 +673,37 @@ describe('compiled CLI process driver', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('resolves /clear through the command model and exits with /exit without extra model requests', async () => {
+    const cwd = await directory('command-model-cwd');
+    const userDir = await directory('command-model-user');
+    const model = await startLocalOpenAIModel(() => ({ content: '回答' }));
+    try {
+      await configure(cwd, model.baseURL);
+      let output = '';
+      const child = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      child.send('保留的原对话\n');
+      await waitForOutput(() => output, '回答', 1);
+      child.send('/clear\n');
+      await waitForOutput(() => output, '已新建会话：', 1);
+      child.end('/exit\n');
+      const result = await child.done;
+
+      expect(result.code).toBe(0);
+      expect(model.requests).toHaveLength(1);
+      const sessionRoot = join(userDir, '.qhy-coding-agents', 'sessions');
+      const ids = await readdir(sessionRoot);
+      expect(ids).toHaveLength(2);
+      const records = await Promise.all(ids.map(async (id) => ({
+        id,
+        record: JSON.parse(await readFile(join(sessionRoot, id, 'record.json'), 'utf8')) as { transcript: unknown[] },
+      })));
+      expect(records.find(({ record }) => JSON.stringify(record.transcript).includes('保留的原对话'))?.record.transcript.length).toBeGreaterThan(0);
+      expect(records.find(({ record }) => record.transcript.length === 0)).toBeDefined();
+    } finally {
+      await model.close();
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('resumes a session from another directory with its workspace and saved model configuration', async () => {
     const originalCwd = await directory('resume-original-cwd');
     const launchCwd = await directory('resume-launch-cwd');

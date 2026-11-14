@@ -7,6 +7,7 @@ import type { ToolRegistry } from '../tool-registry.js';
 import type { ApprovalControl } from '../tool-approval.js';
 import type { BackgroundAgentTasks } from './background-agent-tasks.js';
 import type { WorkspaceFileSnapshot } from '../workspace-files.js';
+import type { SkillCatalogue } from '../../services/skills/skill-registry.js';
 
 export function registerAgentTool(
   registry: ToolRegistry,
@@ -17,6 +18,7 @@ export function registerAgentTool(
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;
   } = {},
+  skills?: SkillCatalogue,
 ): void {
   registry.register({
     name: 'agent',
@@ -55,6 +57,7 @@ export function registerAgentTool(
               ...(fileWriteCallbacks.onCheckpointError === undefined ? {} : { onCheckpointError: fileWriteCallbacks.onCheckpointError }),
               ...(approvalControl === undefined ? {} : { approvalControl }),
               ...(model === undefined ? {} : { modelOverride: model }),
+              ...(skills === undefined ? {} : { skills }),
             });
             return { report: result.text, usage: result.usage };
           });
@@ -72,12 +75,13 @@ export function registerAgentTool(
           ...(approvalControl === undefined ? {} : { approvalControl }),
           ...(model === undefined ? {} : { modelOverride: model }),
           ...(execution.abortSignal === undefined ? {} : { signal: execution.abortSignal }),
+          ...(skills === undefined ? {} : { skills }),
         });
         return { report: result.text };
       }
       if (background === true) throw new ToolExecutionError('Explore 暂不支持后台模式。', undefined);
       if (type !== 'explore') throw new ToolExecutionError(`未知子智能体类型“${subagent_type}”；可用类型：general-purpose、Explore。`, undefined);
-      const report = await runExplore(config, description, prompt, model, execution.abortSignal, approvalControl);
+      const report = await runExplore(config, description, prompt, model, execution.abortSignal, approvalControl, skills);
       return { report };
     },
   });

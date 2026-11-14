@@ -61,7 +61,7 @@ export async function approveToolCall(
   // 范围要求审批时，不能被另一条宽泛 allow 跳过。
   if (!permissionRequiresApproval && permissionAction === 'allow') return true;
   if (!permissionRequiresApproval
-    && ['read_file', 'glob', 'grep', 'runtimeInfo', 'agent'].includes(call.toolName)) return true;
+    && ['read_file', 'glob', 'grep', 'runtimeInfo', 'agent', 'skill'].includes(call.toolName)) return true;
 
   if (config.approval.mode === 'default') {
     if (!control) return false;
@@ -186,6 +186,7 @@ function historicalToolInput(toolName: string, input: unknown): unknown {
     glob: ['pattern', 'path'],
     grep: ['pattern', 'path', 'glob'],
     runtimeInfo: [],
+    skill: ['name'],
     agent: ['description', 'prompt', 'subagent_type', 'model', 'background'],
   };
   const selected = fields[toolName];

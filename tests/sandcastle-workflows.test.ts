@@ -80,6 +80,8 @@ console.log(JSON.stringify({type:'result',result:text}));
       ...process.env, HOME: home, PATH: `${bin}${delimiter}${process.env.PATH}`, GIT_CONFIG_GLOBAL: join(directory, 'gitconfig'),
       ANTHROPIC_AUTH_TOKEN: 'fixture-token', GH_TOKEN: 'fixture', GH_REPO: 'owner/repo', MOCK_CALLS: calls, OUTPUT_DIR: output,
       ISSUE_NUMBER: '1', ISSUE_TITLE: 'Fixture', PR_NUMBER: '2', PARENT_NUMBER: '', BRANCH: 'agent/issue-1-fixture',
+      // 显式固定模型环境，避免宿主注入的 AGENT_MODEL 改变被测工作流的默认选择。
+      AGENT_MODEL: 'deepseek-v4.1-flash', ANTHROPIC_BASE_URL: 'https://qianfan.baidubce.com/anthropic/tokenplan/personal',
     };
     const run = (mode: string, fixtureMode: string) => execFileSync(process.execPath, [
       '--import', require.resolve('tsx'),
