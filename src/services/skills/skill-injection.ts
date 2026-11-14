@@ -3,7 +3,7 @@ import { findCommand } from '../../cli/commands.js';
 import { estimateInput } from '../../utils/input-estimate.js';
 import type { SkillCatalogue, SkillRecord } from './skill-registry.js';
 
-/** Skill 注入消息的标头前缀；同时用于在压缩时识别这类程序生成消息。 */
+/** Skill 注入消息的展示标头；来源识别使用独立的持久化标记。 */
 const injectionPrefix = 'Skill: ';
 
 /** 单篇 Skill 正文的恢复预算（估算 token）；超出时从开头保留可容纳部分。 */
@@ -27,44 +27,61 @@ export interface SkillInjection {
   readonly toolCallId: string;
   /** 命中的 Skill 规范名称，用于记录最近加载顺序。 */
   readonly name: string;
+  /** 实际命中记录在注册时读入的完整正文，供后续压缩恢复。 */
+  readonly body: string;
   readonly message: ModelMessage;
 }
 
 /** 注入消息由规范名称标头和注册时读入的正文组成。 */
 export function skillInjectionMessage(record: SkillRecord): ModelMessage {
-  return { role: 'user', content: `${injectionPrefix}${record.name}\n${record.getPromptForCommand()}` };
+  return markedSkillMessage(`${injectionPrefix}${record.name}\n${record.getPromptForCommand()}`);
+}
+
+/** 保留在 ModelMessage 中的来源标记随有效历史跨进程保存，不改变用户可见正文。 */
+function markedSkillMessage(content: string): ModelMessage {
+  return { role: 'user', content, providerOptions: { qhy: { skillInjection: true } } };
 }
 
 /**
- * 注入消息是程序生成的指导内容，不参与轮次切分。
- * 标头后必须另有正文换行，避免把以 “Skill: ” 开头的普通用户消息误判为注入。
+ * 程序标记的注入消息不参与轮次切分。
+ * 旧会话缺少标记时，仅在标头后的规范名称精确命中已注册 Skill 时回退识别；
+ * 普通用户消息不会仅凭 “Skill: ” 展示前缀被当成注入。
  */
-export function isSkillInjectionMessage(message: ModelMessage): boolean {
-  return message.role === 'user'
-    && typeof message.content === 'string'
-    && message.content.startsWith(injectionPrefix)
-    && message.content.includes('\n');
+export function isSkillInjectionMessage(message: ModelMessage, skills?: readonly SkillRecord[]): boolean {
+  if (message.role !== 'user') return false;
+  if (message.providerOptions?.qhy?.skillInjection === true) return true;
+  if (skills === undefined) return false;
+  const name = displayedInjectionName(message);
+  return name !== undefined && skills.some((record) => record.name === name);
+}
+
+/** 从展示标头取规范名称；标头后必须有正文换行。 */
+function displayedInjectionName(message: ModelMessage): string | undefined {
+  if (typeof message.content !== 'string' || !message.content.startsWith(injectionPrefix)) return undefined;
+  const header = message.content.slice(injectionPrefix.length);
+  const lineEnd = header.indexOf('\n');
+  if (lineEnd <= 0) return undefined;
+  const name = header.slice(0, lineEnd).trim();
+  return name === '' ? undefined : name;
 }
 
 /** 取注入消息的 Skill 规范名称；非注入消息或缺少标头时返回 undefined。 */
-function skillInjectionName(message: ModelMessage): string | undefined {
-  if (!isSkillInjectionMessage(message)) return undefined;
-  const content = (message as { content: string }).content;
-  const header = content.slice(injectionPrefix.length);
-  const lineEnd = header.indexOf('\n');
-  const name = (lineEnd < 0 ? header : header.slice(0, lineEnd)).trim();
-  return name === '' ? undefined : name;
+function skillInjectionName(message: ModelMessage, skills?: readonly SkillRecord[]): string | undefined {
+  if (!isSkillInjectionMessage(message, skills)) return undefined;
+  return displayedInjectionName(message);
 }
 
 /** 压缩恢复所需的 Skill 来源：注册清单与按加载顺序排列的规范名称（最近的在末尾）。 */
 export interface SkillRestoreSource {
   readonly catalogue: SkillCatalogue;
   readonly recentLoads: readonly string[];
+  /** 按规范名保存最近实际注入的正文；旧会话缺少快照时回退到清单。 */
+  readonly bodies?: Readonly<Record<string, string>>;
 }
 
 /**
  * 压缩后恢复被摘要移除的 Skill 正文：按最近加载顺序（最近优先）生成注入消息。
- * 正文仍在保留历史中的 Skill 不重复添加；清单中找不到对应记录时跳过。
+ * 正文仍在保留历史中的 Skill 不重复添加；优先使用实际加载快照，旧记录回退到清单。
  * 单篇与合计预算沿用上下文估算；超出时从正文开头保留可容纳部分并追加省略标记，
  * 省略标记计入预算，预算耗尽后不再恢复更早加载的 Skill。
  */
@@ -74,25 +91,27 @@ export function restoreSkillInjections(
   budget: SkillRestoreBudget = DEFAULT_SKILL_RESTORE_BUDGET,
 ): ModelMessage[] {
   const present = new Set(retained
-    .map(skillInjectionName)
+    .map((message) => skillInjectionName(message, source.catalogue.skills))
     .filter((name): name is string => name !== undefined));
   const restored: ModelMessage[] = [];
   let remaining = budget.totalTokens;
   for (let index = source.recentLoads.length - 1; index >= 0; index -= 1) {
     const name = source.recentLoads[index]!;
     if (present.has(name)) continue;
-    const record = findByCanonicalName(source.catalogue, name);
-    if (record === undefined) continue;
+    const body = source.bodies !== undefined && Object.hasOwn(source.bodies, name)
+      ? source.bodies[name]
+      : findByCanonicalName(source.catalogue, name)?.getPromptForCommand();
+    if (body === undefined) continue;
     present.add(name);
     const allowance = Math.min(budget.perSkillTokens, remaining);
-    const full = skillInjectionMessage(record);
+    const full = markedSkillMessage(`${injectionPrefix}${name}\n${body}`);
     const fullTokens = estimateMessageTokens(full);
     if (fullTokens <= allowance) {
       restored.push(full);
       remaining -= fullTokens;
       continue;
     }
-    const truncated = truncateSkillInjection(record, allowance);
+    const truncated = truncateSkillInjection(name, body, allowance);
     // 连标头与省略标记都容纳不下时预算已耗尽，更早加载的 Skill 不再恢复。
     if (truncated === undefined) break;
     restored.push(truncated);
@@ -110,13 +129,11 @@ function estimateMessageTokens(message: ModelMessage): number {
  * 在预算内从正文开头截取并保留 `Skill: <规范名称>` 标头与省略标记。
  * 使用二分查找，保证截断结果按同一估算方式不超过给定预算。
  */
-function truncateSkillInjection(record: SkillRecord, allowanceTokens: number): ModelMessage | undefined {
-  const header = `${injectionPrefix}${record.name}\n`;
-  const body = record.getPromptForCommand();
-  const fits = (length: number): boolean => estimateMessageTokens({
-    role: 'user',
-    content: `${header}${body.slice(0, length)}${SKILL_RESTORE_OMISSION_MARKER}`,
-  }) <= allowanceTokens;
+function truncateSkillInjection(name: string, body: string, allowanceTokens: number): ModelMessage | undefined {
+  const header = `${injectionPrefix}${name}\n`;
+  const fits = (length: number): boolean => estimateMessageTokens(
+    markedSkillMessage(`${header}${body.slice(0, length)}${SKILL_RESTORE_OMISSION_MARKER}`),
+  ) <= allowanceTokens;
   if (!fits(0)) return undefined;
   let low = 0;
   let high = body.length;
@@ -128,7 +145,7 @@ function truncateSkillInjection(record: SkillRecord, allowanceTokens: number): M
   // 避免把代理对截成半个码点。
   const last = body.charCodeAt(low - 1);
   const end = low > 0 && last >= 0xd800 && last <= 0xdbff ? low - 1 : low;
-  return { role: 'user', content: `${header}${body.slice(0, end)}${SKILL_RESTORE_OMISSION_MARKER}` };
+  return markedSkillMessage(`${header}${body.slice(0, end)}${SKILL_RESTORE_OMISSION_MARKER}`);
 }
 
 /**
@@ -151,7 +168,7 @@ export function collectSkillInjections(
       const record = resolveSkill(catalogue, part.output, callInputs.get(part.toolCallId));
       if (record === undefined) continue;
       injected.add(part.toolCallId);
-      collected.push({ toolCallId: part.toolCallId, name: record.name, message: skillInjectionMessage(record) });
+      collected.push({ toolCallId: part.toolCallId, name: record.name, body: record.getPromptForCommand(), message: skillInjectionMessage(record) });
     }
   }
   return collected;
