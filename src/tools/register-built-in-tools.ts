@@ -21,6 +21,8 @@ export interface BuiltInToolContext {
   approvalControl?: ApprovalControl;
   backgroundTasks?: BackgroundAgentTasks;
   fileBaselines?: WorkspaceFileBaselines;
+/** 成功读取工作区文件后回调规范目标路径，供会话记录最近读取顺序；失败读取不触发。 */
+  onFileRead?: (target: string) => void;
   /** 主 Agent 与子 Agent 共享的 Skill 清单。 */
   skills?: SkillCatalogue;
   fileWriteCallbacks: {

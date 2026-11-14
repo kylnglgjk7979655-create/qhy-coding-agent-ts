@@ -20,7 +20,7 @@ import { appendRecentSkillLoads, collectSkillInjections, insertSkillInjections }
 import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import type { SkillInjection } from '../services/skills/skill-injection.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
-import type { BackgroundAgentTasks } from '../tools/AgentTool/background-agent-tasks.js';
+import type { BackgroundAgentTasks, BackgroundTaskStatusEntry } from '../tools/AgentTool/background-agent-tasks.js';
 
 export type { ApprovalControl } from '../tools/tool-approval.js';
 export type { ToolApprovalRequest } from '../tools/tool-registry.js';
@@ -37,7 +37,7 @@ export interface RunResult {
   skillBodies: Record<string, string>;
   /** 本轮成功使用的完整有效历史，可直接用于保存及下一轮输入。 */
   effectiveHistory: ModelMessage[];
-  summaries: Array<{ text: string; coversThrough: number; restoredMessages: number }>;
+  summaries: Array<{ text: string; coversThrough: number; /** 该摘要恢复的 Skill 正文条数，不计入覆盖边界。 */ restoredMessages?: number }>;
   steps: number;
   toolCalls: number;
   finishReason: string;
@@ -67,6 +67,21 @@ export async function runAgent(
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
+    /** 摘要成功后立即持久化压缩检查点；保存失败按停止本轮处理，不报告压缩成功。 */
+    onCompaction?: (checkpoint: {
+      effectiveHistory: ModelMessage[];
+      summary: { text: string; restoredMessages?: number };
+    }) => Promise<{ coversThrough: number } | void> | { coversThrough: number } | void;
+    /** 会话原始记录路径，写入摘要续接包装供后续找回细节；子 Agent 没有会话记录时省略。 */
+    transcriptPath?: string;
+    /** 成功读取文件后刷新最近文件顺序；子 Agent 没有会话记录时省略。 */
+    onFileRead?: (target: string) => void;
+    /** 压缩时提供当前最近读取文件候选；子 Agent 没有会话记录时省略。 */
+    getRecentFiles?: () => readonly string[];
+    /** 压缩时提供待关注的后台任务状态；只读，不领取结果或改变通知状态。 */
+    getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[];
+    /** 执行中登记的手动压缩请求；在工具结果写入后、下一次主模型请求前取出并强制压缩。 */
+    consumeCompactionRequest?: () => boolean;
     summaryCoverageBase?: number;
     /** 上一份摘要恢复的正文条数；这些消息不在 transcript 中，计算覆盖边界时要扣除。 */
     summaryRestoredBase?: number;
@@ -156,6 +171,7 @@ export async function runAgent(
     },
     fileBaselines,
     bashOperations,
+    ...(options.onFileRead ? { onFileRead: options.onFileRead } : {}),
     ...(options.skills === undefined ? {} : { skills: options.skills }),
   });
   let closeMCP: (() => Promise<void>) | undefined;
@@ -230,6 +246,8 @@ export async function runAgent(
       maxRetries: 0,
       prepareStep: async ({ stepNumber, messages, responseMessages }) => {
         signal.throwIfAborted();
+        // 手动压缩在工具结果写入历史之后、本次主模型请求之前执行；不重置步骤额度或执行时限。
+        const forceCompaction = options.consumeCompactionRequest?.() ?? false;
         // 只扫描本轮响应消息；历史中的旧 Skill 调用已在历史里带有注入消息。
         const injections = options.skills === undefined
           ? []
@@ -246,15 +264,36 @@ export async function runAgent(
         const restore = options.skills === undefined
           ? undefined
           : { catalogue: options.skills, recentLoads: appendRecentSkillLoads(options.recentSkillLoads ?? [], skillInjections.map(({ name }) => name)), bodies: skillBodies };
-        preparedHistory = await prepareConversation(config, instructions, stepMessages, tools, signal, (summary) => {
-          // 被覆盖的有效历史消息包含上一份摘要槽位及其恢复的正文，二者都不在 transcript 中。
+        preparedHistory = await prepareConversation(config, instructions, stepMessages, tools, signal, async (summary) => {
+          // 优先使用持久化层按实际 transcript 计算的覆盖边界，避免依赖摘要或附件占用的消息数量。
+          let saved: { coversThrough: number } | void = undefined;
+          if (options.onCompaction) {
+            try {
+              saved = await options.onCompaction({
+                effectiveHistory: summary.compacted,
+                summary: { text: summary.text, restoredMessages: summary.restoredMessages },
+              });
+            } catch {
+              signal.throwIfAborted();
+              throw new AgentError('PROVIDER_ERROR', '压缩检查点保存失败，已停止本轮；压缩前的有效历史保持不变。');
+            }
+          }
+          // 被覆盖的有效历史包含上一份摘要槽位及其恢复的正文，二者都不在 transcript 中。
           const coveredMessages = summary.coveredMessages - (hasSummary ? 1 + restoredCoverageBase : 0);
-          const coversThrough = summaryCoverageBase + coveredMessages;
-          summaries.push({ text: summary.text, coversThrough, restoredMessages: summary.restoredMessages });
+          const coversThrough = saved?.coversThrough ?? summaryCoverageBase + coveredMessages;
+          const entry = summary.restoredMessages > 0
+            ? { text: summary.text, coversThrough, restoredMessages: summary.restoredMessages }
+            : { text: summary.text, coversThrough };
+          summaries.push(entry);
           summaryCoverageBase = coversThrough;
           restoredCoverageBase = summary.restoredMessages;
           hasSummary = true;
-        }, restore);
+        }, options.transcriptPath, {
+          force: forceCompaction,
+          ...(options.getRecentFiles ? { recentFiles: options.getRecentFiles() } : {}),
+          ...(options.getTaskStatuses ? { getTaskStatuses: options.getTaskStatuses } : {}),
+          ...(restore === undefined ? {} : { restore }),
+        });
         preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;
         signal.throwIfAborted();

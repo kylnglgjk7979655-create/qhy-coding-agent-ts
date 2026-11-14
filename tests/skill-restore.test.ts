@@ -79,7 +79,7 @@ describe('压缩后恢复 Skill 正文', () => {
       : { content: index === 2 ? '已加载两个 Skill。' : '压缩后完成。' }, undefined, () => ({ content: summaryText }));
     try {
       await configure(cwd, model.baseURL, {
-        capacityTokens: 20000, answerReserveTokens: 2000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 0,
+        capacityTokens: 28400, answerReserveTokens: 2000, maxOutputTokens: 1000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 0,
       });
       await writeSkill(join(userDir, '.qhy-coding-agents', 'skills'), 'alpha', 'ALPHA_BODY_MARKER');
       await writeSkill(join(userDir, '.qhy-coding-agents', 'skills'), 'beta', 'BETA_BODY_MARKER');
@@ -99,7 +99,7 @@ describe('压缩后恢复 Skill 正文', () => {
       expect(model.summaryRequests).toHaveLength(1);
       expect(model.requests).toHaveLength(3);
 
-      // 第一轮注入成功，第二轮压缩移除旧原文后恢复正文。
+      // 第一轮注入成功，第二轮全历史压缩把原文一并摘要后恢复正文。
       expect(injectionNames(model.requests[1]!.messages)).toEqual(['alpha', 'beta']);
       const compacted = model.requests[2]!;
       const serialized = JSON.stringify(compacted);
@@ -111,7 +111,9 @@ describe('压缩后恢复 Skill 正文', () => {
       expect(injectionNames(compacted.messages)).toEqual(['beta', 'alpha']);
       expect(count(serialized, 'ALPHA_BODY_MARKER')).toBe(1);
       expect(count(serialized, 'BETA_BODY_MARKER')).toBe(1);
-      expect(compacted.messages.at(-1)?.content).toBe(secondPrompt);
+      // 全历史压缩连当前需求一起摘要；摘要请求包含它，压缩后的请求不再保留原文。
+      expect(JSON.stringify(model.summaryRequests[0])).toContain(secondPrompt);
+      expect(serialized).not.toContain(secondPrompt);
 
       // 系统指令与工具策略不随恢复变化。
       expect(compacted.messages[0]).toEqual(model.requests[0]!.messages[0]);
@@ -142,7 +144,7 @@ describe('压缩后恢复 Skill 正文', () => {
       : { content: '完成。' }, undefined, () => ({ content: summaryText }));
     try {
       await configure(cwd, model.baseURL, {
-        capacityTokens: 20000, answerReserveTokens: 2000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 0,
+        capacityTokens: 28400, answerReserveTokens: 2000, maxOutputTokens: 1000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 0,
       });
       await writeSkill(join(cwd, '.qhy-coding-agent', 'skills'), 'alpha', 'PROJECT_BODY_MARKER');
       const globalRoot = join(userDir, '.qhy-coding-agents', 'skills', 'alpha');
@@ -192,7 +194,7 @@ describe('压缩后恢复 Skill 正文', () => {
     }
   });
 
-  it('正文仍在有效历史中的 Skill 不重复恢复', async () => {
+  it('全历史压缩后所有已加载 Skill 各恢复一次，最近加载者优先', async () => {
     const cwd = await directory('skill-restore-keep-cwd');
     const userDir = await directory('skill-restore-keep-user');
     const model = await startLocalOpenAIModel((_request, index) => {
@@ -202,7 +204,7 @@ describe('压缩后恢复 Skill 正文', () => {
     }, undefined, () => ({ content: summaryText }));
     try {
       await configure(cwd, model.baseURL, {
-        capacityTokens: 20000, answerReserveTokens: 2000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 1,
+        capacityTokens: 28400, answerReserveTokens: 2000, maxOutputTokens: 1000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 1,
       });
       await writeSkill(join(userDir, '.qhy-coding-agents', 'skills'), 'alpha', 'ALPHA_BODY_MARKER');
       await writeSkill(join(userDir, '.qhy-coding-agents', 'skills'), 'beta', 'BETA_BODY_MARKER');
@@ -220,24 +222,27 @@ describe('压缩后恢复 Skill 正文', () => {
       expect(result.code).toBe(0);
       expect(model.summaryRequests).toHaveLength(1);
 
-      // 压缩只移除 alpha 所在轮次；beta 注入仍在保留历史中。
+      // 全历史压缩覆盖两轮加载；两个 Skill 正文都按最近加载顺序恢复。
       const compacted = model.requests.at(-1)!;
       const serialized = JSON.stringify(compacted);
       expect(serialized).toContain(summaryText);
       expect(serialized).not.toContain('旧原文_MARKER');
-      expect(injectionNames(compacted.messages)).toEqual(['alpha', 'beta']);
+      // 摘要请求包含全部原文轮次，压缩后的请求不再保留这些用户消息。
+      expect(JSON.stringify(model.summaryRequests[0])).toContain('加载 Beta');
+      expect(serialized).not.toContain('加载 Alpha');
+      expect(serialized).not.toContain('加载 Beta');
+      expect(injectionNames(compacted.messages)).toEqual(['beta', 'alpha']);
       expect(count(serialized, 'ALPHA_BODY_MARKER')).toBe(1);
       expect(count(serialized, 'BETA_BODY_MARKER')).toBe(1);
-      // 恢复只补 alpha，beta 仍是保留历史中的原注入消息。
+      // 恢复消息紧跟在摘要包装之后，各自只出现一次。
       const messages = compacted.messages;
+      const summaryIndex = messages.findIndex(({ content }) => typeof content === 'string' && content.includes(summaryText));
       const alphaIndex = messages.findIndex(({ role, content }) =>
         role === 'user' && typeof content === 'string' && content.startsWith('Skill: alpha'));
       const betaIndex = messages.findIndex(({ role, content }) =>
         role === 'user' && typeof content === 'string' && content.startsWith('Skill: beta'));
-      const betaPromptIndex = messages.findIndex(({ role, content }) => role === 'user' && content === '加载 Beta');
-      const summaryIndex = messages.findIndex(({ content }) => typeof content === 'string' && content.includes(summaryText));
-      expect(alphaIndex).toBe(summaryIndex + 1);
-      expect(betaIndex).toBeGreaterThan(betaPromptIndex);
+      expect(alphaIndex).toBe(summaryIndex + 2);
+      expect(betaIndex).toBe(summaryIndex + 1);
     } finally {
       await model.close();
     }
@@ -251,7 +256,7 @@ describe('压缩后恢复 Skill 正文', () => {
       : { content: `第 ${index} 步完成。` }, undefined, () => ({ content: summaryText }));
     try {
       await configure(cwd, model.baseURL, {
-        capacityTokens: 20000, answerReserveTokens: 2000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 0,
+        capacityTokens: 39000, answerReserveTokens: 2000, maxOutputTokens: 1000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 0,
       });
       await writeSkill(join(userDir, '.qhy-coding-agents', 'skills'), 'alpha', 'ALPHA_BODY_MARKER');
       await writeSkill(join(userDir, '.qhy-coding-agents', 'skills'), 'beta', 'BETA_BODY_MARKER');
@@ -260,8 +265,8 @@ describe('压缩后恢复 Skill 正文', () => {
         { role: 'assistant', content: '旧原文_MARKER' + '旧'.repeat(7000) },
       ]);
 
-      const secondPrompt = '需求二'.repeat(3000);
-      const thirdPrompt = '需求三'.repeat(3000);
+      const secondPrompt = '需求二'.repeat(7000);
+      const thirdPrompt = '需求三'.repeat(10000);
       const cli = startCLI({
         cwd, userDir, conversationId: 'skill-restore-boundary', env: { TEST_MODEL_API_KEY: secret },
         input: `加载两个 Skill\n${secondPrompt}\n${thirdPrompt}\n继续\n/exit\n`,
@@ -271,7 +276,7 @@ describe('压缩后恢复 Skill 正文', () => {
       expect(result.code).toBe(0);
       expect(model.summaryRequests).toHaveLength(2);
 
-      // 恢复正文不进 transcript，因此覆盖边界等于触发压缩的用户消息在 transcript 中的下标。
+      // 恢复正文不进 transcript；全历史压缩覆盖触发请求的用户消息，覆盖边界为其后的排他位置。
       const record = await sessionRecord(userDir);
       const indexOf = (prompt: string) => record.transcript
         .findIndex(({ role, content }) => role === 'user' && content === prompt);
@@ -279,7 +284,7 @@ describe('压缩后恢复 Skill 正文', () => {
       const thirdIndex = indexOf(thirdPrompt);
       expect(secondIndex).toBeGreaterThan(0);
       expect(thirdIndex).toBeGreaterThan(secondIndex);
-      expect(record.summaries.map(({ coversThrough }) => coversThrough)).toEqual([secondIndex, thirdIndex]);
+      expect(record.summaries.map(({ coversThrough }) => coversThrough)).toEqual([secondIndex + 1, thirdIndex + 1]);
       expect(record.summaries.map(({ restoredMessages }) => restoredMessages)).toEqual([2, 2]);
       expect(count(JSON.stringify(record.transcript), 'ALPHA_BODY_MARKER')).toBe(1);
 
@@ -304,7 +309,7 @@ describe('压缩后恢复 Skill 正文', () => {
       : { content: '压缩后完成。' }, undefined, () => ({ content: summaryText }));
     try {
       await configure(cwd, model.baseURL, {
-        capacityTokens: 60000, answerReserveTokens: 2000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 0,
+        capacityTokens: 60400, answerReserveTokens: 2000, maxOutputTokens: 1000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 0,
       });
       const body = `ALPHA_HEAD_MARKER${'A'.repeat(20000)}ALPHA_TAIL_MARKER`;
       await writeSkill(join(userDir, '.qhy-coding-agents', 'skills'), 'alpha', body);
@@ -354,7 +359,7 @@ describe('压缩后恢复 Skill 正文', () => {
       : { content: '压缩后完成。' }, undefined, () => ({ content: summaryText }));
     try {
       await configure(cwd, model.baseURL, {
-        capacityTokens: 60000, answerReserveTokens: 2000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 0,
+        capacityTokens: 60400, answerReserveTokens: 2000, maxOutputTokens: 1000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 0,
       });
       const skillsRoot = join(userDir, '.qhy-coding-agents', 'skills');
       for (const name of names) {

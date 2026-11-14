@@ -133,7 +133,7 @@ it('模型审批复用已有摘要，只提取摘要之后的用户文本和工�
 it('模型审批上下文超出可用预算时停止且不发送审查请求', async () => {
   const fixture = await setup((_request, index) => index === 1
     ? { calls: [call('oversized', 'write_file', { path: 'large.txt', content: '超长参数'.repeat(8000) })] }
-    : { content: '不应到达' }, undefined, { context: { capacityTokens: 12_000, answerReserveTokens: 1_000 } });
+    : { content: '不应到达' }, undefined, { context: { capacityTokens: 19_500, answerReserveTokens: 18_500, maxOutputTokens: 1_000 } });
   const result = await run().done;
 
   expect(result.code).toBe(0);

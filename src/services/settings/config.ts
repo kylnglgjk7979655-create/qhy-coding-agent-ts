@@ -5,19 +5,21 @@ import { z } from 'zod';
 import { AgentError } from '../../utils/errors.js';
 
 export const DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS = 300_000;
+/** 模型最大输出额度默认值；摘要请求输出上限取它与该默认值的较小值。 */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 20_000;
 
 const contextSchema = z.strictObject({
   capacityTokens: z.number().int().min(1).max(10_000_000).default(128_000),
   answerReserveTokens: z.number().int().min(1).max(10_000_000).default(8192),
-  triggerRatio: z.number().gt(0).lte(1).default(0.8),
-  targetRatio: z.number().gt(0).lt(1).default(0.5),
-  keepRecentTurns: z.number().int().min(0).max(100).default(2),
+  // 普通回复的输出预留保持独立；压缩阈值与摘要输出上限只使用 maxOutputTokens。
+  maxOutputTokens: z.number().int().min(1).max(10_000_000).default(DEFAULT_MAX_OUTPUT_TOKENS),
+  // 旧压缩参数仅为兼容继续解析，不参与固定预算算法；显式配置时由 loadConfig 提示废弃。
+  triggerRatio: z.number().gt(0).lte(1).optional(),
+  targetRatio: z.number().gt(0).lt(1).optional(),
+  keepRecentTurns: z.number().int().min(0).max(100).optional(),
 }).superRefine((context, ctx) => {
   if (context.answerReserveTokens >= context.capacityTokens) {
     ctx.addIssue({ code: 'custom', path: ['answerReserveTokens'], message: '回答预留必须小于上下文容量' });
-  }
-  if (context.targetRatio >= context.triggerRatio) {
-    ctx.addIssue({ code: 'custom', path: ['targetRatio'], message: '压缩目标必须小于触发阈值' });
   }
 });
 
@@ -148,6 +150,11 @@ export async function loadConfig(options: ConfigOptions): Promise<ResolvedConfig
 
   const raw = mergeSettings(mergeSettings(userSettings, projectSettings), localSettings);
   raw.workspace = workspace;
+  const rawContext: unknown = raw.context;
+  const deprecationWarnings = ['triggerRatio', 'targetRatio', 'keepRecentTurns']
+    .filter((field) => typeof rawContext === 'object' && rawContext !== null && field in rawContext)
+    .map((field) => `配置项 context.${field} 已废弃，不参与固定预算压缩算法，请移除。`);
+  for (const warning of deprecationWarnings) process.stderr.write(`迁移提示：${warning}\n`);
   const parsed = configSchema.safeParse(raw);
   if (!parsed.success) {
     const fields = [...new Set(parsed.error.issues.map((issue) => issue.path.join('.') || '配置根对象'))];
@@ -161,8 +168,9 @@ export async function loadConfig(options: ConfigOptions): Promise<ResolvedConfig
   const approvalApiKey = reviewKeyEnv === undefined ? undefined : options.env[reviewKeyEnv]?.trim();
   if (reviewKeyEnv !== undefined && !approvalApiKey) throw new AgentError('CONFIG_ERROR', `缺少审批凭据：请设置环境变量 ${reviewKeyEnv}。`);
   const mcpHeaders = resolveMcpHeaders(config, options.env);
+  const warnings = [...migrationWarnings, ...deprecationWarnings];
   return { ...config, workspace, apiKey, mcpHeaders, ...(approvalApiKey === undefined ? {} : { approvalApiKey }),
-    ...(migrationWarnings.length === 0 ? {} : { migrationWarnings }) };
+    ...(warnings.length === 0 ? {} : { migrationWarnings: warnings }) };
 }
 
 export async function restoreSessionConfig(config: ModelConfig, env: NodeJS.ProcessEnv): Promise<ResolvedConfig> {

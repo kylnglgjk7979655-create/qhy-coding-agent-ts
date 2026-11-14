@@ -2,7 +2,7 @@ import { createInterface, emitKeypressEvents } from 'node:readline';
 import type { ApprovalControl } from '../tools/tool-approval.js';
 import type { BackgroundAgentTaskNotification } from '../tools/AgentTool/background-agent-tasks.js';
 
-export type CliWorkItem = { type: 'user'; text: string } | { type: 'notification'; conversationId: string; notification: BackgroundAgentTaskNotification };
+export type CliWorkItem = { type: 'user'; text: string } | { type: 'notification'; conversationId: string; notification: BackgroundAgentTaskNotification } | { type: 'compact' };
 
 // 单一输入消费者将对话消息与正在等待的审批答复分开，已排队的消息不会变成批准。
 export class CliInput {
@@ -14,6 +14,7 @@ export class CliInput {
   private closed = false;
   private sequence = 0;
   private selector: (() => void) | undefined;
+  private compactRequested = false;
 
   constructor(private readonly signal: AbortSignal, cancel: () => void, private readonly humanTimeoutMs: number) {
     this.input = createInterface({
@@ -31,6 +32,11 @@ export class CliInput {
         else process.stdout.write(`\n有待审批调用，请按对应编号答复：${[...this.approvals.keys()].join('、')}。\n`);
       } else if (/^(approve|deny)(\s|$)/i.test(line.trim())) {
         process.stdout.write('\n当前没有对应的待审批调用，答复已忽略。\n');
+      } else if (line.trim() === '/compact') {
+        // 空闲时由主循环处理；执行中登记为待压缩请求，在工具结果写入后、下一次主模型请求前生效。
+        this.compactRequested = true;
+        process.stdout.write('\n已收到 /compact。\n');
+        this.wakeNext?.();
       } else if (this.wakeNext) {
         this.queued.push(line);
         this.wakeNext();
@@ -118,6 +124,10 @@ export class CliInput {
   async nextWorkItem(conversationId: string): Promise<CliWorkItem | undefined> {
     while (true) {
       this.signal.throwIfAborted();
+      if (this.compactRequested) {
+        this.compactRequested = false;
+        return { type: 'compact' };
+      }
       const line = this.queued.shift();
       if (line !== undefined) return { type: 'user', text: line };
       const notificationIndex = this.notifications.findIndex((item) => item.conversationId === conversationId);
@@ -126,6 +136,13 @@ export class CliInput {
       await new Promise<void>((resolve) => { this.wakeNext = resolve; });
       this.wakeNext = undefined;
     }
+  }
+
+  /** 供执行中的主模型循环取出待处理的手动压缩请求，取出后立即清除。 */
+  consumeCompactRequest(): boolean {
+    if (!this.compactRequested) return false;
+    this.compactRequested = false;
+    return true;
   }
 
   readonly approve: ApprovalControl = async (call, signal) => {

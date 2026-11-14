@@ -105,7 +105,7 @@ it.each(['summary-error', 'summary-invalid'] as const)('混合副作用与工具
   await setup(scenario);
   await mkdir(join(cwd, '.agent'), { recursive: true });
   await writeFile(join(cwd, '.agent/settings.json'), JSON.stringify({ ...qa.config,
-    context: { capacityTokens: 10000, answerReserveTokens: 1000, triggerRatio: 0.6, targetRatio: 0.5, keepRecentTurns: 0 },
+    context: { capacityTokens: 19_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
   }));
   const directory = join(cwd, '.agent/conversations');
   await mkdir(directory, { recursive: true });
@@ -128,24 +128,28 @@ it.each(['summary-error', 'summary-invalid'] as const)('混合副作用与工具
   expect(JSON.stringify(qa.model.requests.at(-1))).not.toMatch(/kept-remote|private-large-content|"growth"/);
 });
 
-it('混合工具增长后成功摘要，完整保存当前轮工具配对并跨进程续聊', async () => {
+it('混合工具增长后整体摘要，工具往返进入摘要且跨进程续聊', async () => {
   await setup();
   await mkdir(join(cwd, '.agent'), { recursive: true });
   await writeFile(join(cwd, '.agent/settings.json'), JSON.stringify({ ...qa.config,
-    context: { capacityTokens: 10000, answerReserveTokens: 1000, triggerRatio: 0.6, targetRatio: 0.5, keepRecentTurns: 0 },
+    context: { capacityTokens: 19_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
   }));
   await mkdir(join(cwd, '.agent/conversations'), { recursive: true });
   const historyPath = join(cwd, '.agent/conversations/combined.json');
   await writeFile(historyPath, JSON.stringify([{ role: 'user', content: '旧目标' }, { role: 'assistant', content: '原文标记' + '旧'.repeat(3000) }]));
   await writeFile(join(cwd, 'large.txt'), '新'.repeat(1800));
   const result = await run('growth\n/exit\n').done;
-  expect(result.stdout).toContain('夹具完成：growth');
+  expect(result.stdout).toContain('夹具完成：压缩后继续');
   expect(qa.model.summaryRequests).toHaveLength(1);
+  // 全部有效历史进入摘要，包含当前轮已完成的工具调用与结果。
+  const summarized = JSON.parse(qa.model.summaryRequests[0]!.messages[1]!.content) as Array<{ role: string; content: unknown }>;
+  expect(JSON.stringify(summarized)).toContain('原文标记');
+  expect(JSON.stringify(summarized)).toContain('growth-read');
+  expect(JSON.stringify(summarized)).toContain('新新新');
   const request = qa.model.requests[1]!;
   expect(JSON.stringify(request)).toContain('[对话摘要]');
   expect(JSON.stringify(request)).not.toContain('原文标记');
-  const tools = request.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ tool_call_id: string }>;
-  expect(tools.map(({ tool_call_id }) => tool_call_id)).toEqual(['kept-file', 'kept-remote', 'growth-read']);
+  expect(request.messages.filter(({ role }) => role === 'tool')).toEqual([]);
   const saved = await readFile(historyPath, 'utf8');
   expect(saved).toContain('[对话摘要]');
   expect(saved).not.toContain('原文标记');
@@ -158,7 +162,8 @@ it.each([
   ['pairing', 'PROVIDER_ERROR'], ['oversized', 'CONTEXT_ERROR'],
 ] as const)('%s 停止后没有实际操作或后续模型请求，仍可继续新消息', async (command, code) => {
   await setup();
-  await writeFile(join(cwd, 'huge.txt'), '超'.repeat(12000));
+  // 超过摘要请求输入预算的工具结果无法压缩，按既有停止条件终止本轮。
+  await writeFile(join(cwd, 'huge.txt'), '超'.repeat(40_000));
   await run('baseline\n/exit\n').done;
   const historyPath = join(cwd, '.agent/conversations/combined.json');
   const previous = await readFile(historyPath, 'utf8');

@@ -1,6 +1,9 @@
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { ModelMessage } from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
+import { isSkillInjectionMessage } from '../src/services/skills/skill-injection.js';
+import type { SkillRecord } from '../src/services/skills/skill-registry.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureRequest, FixtureToolCall } from './helpers/local-openai-fixture.js';
 import { startCLI } from './helpers/cli-process.js';
@@ -107,7 +110,7 @@ describe('Skill 正文注入', () => {
     }
   });
 
-  it('注入消息不参与轮次切分，压缩时当前轮用户消息与工具往返不被摘要替换', async () => {
+  it('全历史压缩后当前轮用户消息与工具往返进入摘要，Skill 正文按恢复消息保留', async () => {
     const cwd = await directory('skill-inject-compact-cwd');
     const userDir = await directory('skill-inject-compact-user');
     const model = await startLocalOpenAIModel((_request, index) => {
@@ -117,7 +120,7 @@ describe('Skill 正文注入', () => {
     });
     try {
       await configure(cwd, model.baseURL, {
-        capacityTokens: 20000, answerReserveTokens: 2000, triggerRatio: 0.5, targetRatio: 0.45, keepRecentTurns: 0,
+        capacityTokens: 23000, answerReserveTokens: 2000, maxOutputTokens: 1000, triggerRatio: 0.5, targetRatio: 0.45, keepRecentTurns: 0,
       });
       await writeSkill(join(userDir, '.qhy-coding-agents', 'skills'), 'alpha',
         'name: alpha\ndescription: 阿尔法说明', 'ALPHA_BODY_MARKER');
@@ -133,57 +136,43 @@ describe('Skill 正文注入', () => {
       expect(result.stdout + result.stderr).not.toContain('CONTEXT_ERROR');
       expect(model.summaryRequests).toHaveLength(1);
 
-      // 摘要只覆盖较早轮次，不包含当前轮的用户消息。
+      // 全历史压缩覆盖当前轮的用户消息与已完成工具往返。
       const source = JSON.parse(model.summaryRequests[0]!.messages[1]!.content) as Array<{ role: string; content: string }>;
-      expect(JSON.stringify(source)).not.toContain('当前需求_MARKER');
+      expect(JSON.stringify(source)).toContain('当前需求_MARKER');
 
       const compacted = model.requests.at(-1)!;
-      expect(JSON.stringify(compacted)).toContain('当前需求_MARKER');
+      expect(JSON.stringify(compacted)).not.toContain('当前需求_MARKER');
       expect(JSON.stringify(compacted)).toContain('ALPHA_BODY_MARKER');
-      // 当前轮的工具往返与注入消息一起保留，注入消息仍排在工具结果之后。
+      // 工具往返已被摘要替换；注入正文作为恢复消息排在摘要包装之后。
+      expect(compacted.messages.filter(({ role }) => role === 'tool')).toEqual([]);
       const injectionIndex = compacted.messages.findIndex(({ role, content }) =>
         role === 'user' && typeof content === 'string' && content.startsWith('Skill: alpha'));
       expect(injectionIndex).toBeGreaterThan(0);
-      expect(compacted.messages[injectionIndex - 1]!.role).toBe('tool');
+      expect(compacted.messages[injectionIndex - 1]!.content).toContain('[对话摘要]');
     } finally {
       await model.close();
     }
   });
 
-  it('旧历史中以 Skill: 开头的普通多行用户消息仍划分轮次并保留最近一轮', async () => {
-    const cwd = await directory('skill-ordinary-cwd');
-    const userDir = await directory('skill-ordinary-user');
-    const model = await startLocalOpenAIModel(() => ({ content: '继续完成。' }));
-    try {
-      await configure(cwd, model.baseURL, {
-        capacityTokens: 20000, answerReserveTokens: 2000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 1,
-      });
-      await mkdir(join(cwd, '.agent', 'conversations'), { recursive: true });
-      const note = 'Skill: 这是用户普通说明\nUSER_NOTE_MARKER';
-      await writeFile(join(cwd, '.agent', 'conversations', 'ordinary.json'), JSON.stringify([
-        { role: 'user', content: 'OLD_GOAL' },
-        { role: 'assistant', content: 'OLD_MARKER' + '旧'.repeat(17000) },
-        { role: 'user', content: note },
-        { role: 'assistant', content: 'NOTE_REPLY' },
-      ]));
-
-      const cli = startCLI({ cwd, userDir, conversationId: 'ordinary', input: 'CURRENT\n/exit\n', env: { TEST_MODEL_API_KEY: secret } });
-      const result = await cli.done;
-      expect(result.stdout + result.stderr).not.toContain('CONTEXT_ERROR');
-      expect(model.summaryRequests).toHaveLength(1);
-      expect(model.requests).toHaveLength(1);
-      expect(JSON.stringify(model.summaryRequests[0])).toContain('OLD_MARKER');
-      expect(JSON.stringify(model.summaryRequests[0])).not.toContain('USER_NOTE_MARKER');
-      expect(userMessages(model.requests[0]!)).toEqual([note, 'CURRENT']);
-      const { record } = await sessionRecord(userDir, 'ordinary');
-      expect(JSON.stringify(record.transcript)).toContain('OLD_MARKER');
-      expect(JSON.stringify(record.effectiveHistory)).not.toContain('OLD_MARKER');
-    } finally {
-      await model.close();
-    }
+  it('旧历史中以 Skill: 开头的普通多行用户消息不被识别为注入', () => {
+    const alpha: SkillRecord = {
+      type: 'prompt', name: 'alpha', displayName: 'alpha', aliases: [], description: '阿尔法说明',
+      getPromptForCommand: () => 'ALPHA_BODY_MARKER',
+    };
+    const catalogue = [alpha];
+    // 普通用户消息即使以展示标头开头，只要名称未精确命中注册 Skill 就不视为注入。
+    const ordinary: ModelMessage = { role: 'user', content: 'Skill: 这是用户普通说明\nUSER_NOTE_MARKER' };
+    expect(isSkillInjectionMessage(ordinary, catalogue)).toBe(false);
+    expect(isSkillInjectionMessage({ role: 'user', content: 'Skill: unknown\nX' }, catalogue)).toBe(false);
+    expect(isSkillInjectionMessage({ role: 'user', content: 'Skill: alpha 额外说明\nX' }, catalogue)).toBe(false);
+    // 持久标记始终视为注入；旧记录回退为标头名称精确匹配已注册 Skill。
+    expect(isSkillInjectionMessage({
+      role: 'user', content: 'Skill: alpha\nALPHA_BODY_MARKER', providerOptions: { qhy: { skillInjection: true } },
+    }, catalogue)).toBe(true);
+    expect(isSkillInjectionMessage({ role: 'user', content: 'Skill: alpha\nALPHA_BODY_MARKER' }, catalogue)).toBe(true);
   });
 
-  it.each([false, true])('跨进程后真实 Skill 注入仍属于原用户轮次（旧记录：%s）', async (legacy) => {
+  it.each([false, true])('跨进程后真实 Skill 注入正文仍在全历史压缩后恢复（旧记录：%s）', async (legacy) => {
     const cwd = await directory('skill-boundary-resume-cwd');
     const userDir = await directory('skill-boundary-resume-user');
     const model = await startLocalOpenAIModel((_request, index) => {
@@ -192,7 +181,7 @@ describe('Skill 正文注入', () => {
     });
     try {
       await configure(cwd, model.baseURL, {
-        capacityTokens: 20000, answerReserveTokens: 2000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 1,
+        capacityTokens: 28400, answerReserveTokens: 2000, maxOutputTokens: 1000, triggerRatio: 0.8, targetRatio: 0.7, keepRecentTurns: 1,
       });
       await writeSkill(join(userDir, '.qhy-coding-agents', 'skills'), 'alpha',
         'name: alpha\ndescription: 阿尔法说明', 'ALPHA_BODY_MARKER');
@@ -216,10 +205,11 @@ describe('Skill 正文注入', () => {
       const result = await resumed.done;
       expect(result.stdout + result.stderr).not.toContain('CONTEXT_ERROR');
       expect(model.summaryRequests).toHaveLength(1);
-      expect(JSON.stringify(model.summaryRequests[0])).not.toContain('LOAD_ROUND_MARKER');
+      // 全历史压缩把原加载轮次一并摘要；工具往返不再保留，但正文按最近加载记录恢复。
+      expect(JSON.stringify(model.summaryRequests[0])).toContain('LOAD_ROUND_MARKER');
       const request = model.requests.at(-1)!;
-      expect(JSON.stringify(request)).toContain('LOAD_ROUND_MARKER');
-      expect(request.messages.some(({ role }) => role === 'tool')).toBe(true);
+      expect(JSON.stringify(request)).not.toContain('LOAD_ROUND_MARKER');
+      expect(request.messages.some(({ role }) => role === 'tool')).toBe(false);
       expect(JSON.stringify(request)).toContain('ALPHA_BODY_MARKER');
     } finally {
       await model.close();
@@ -234,7 +224,7 @@ describe('Skill 正文注入', () => {
       : { content: '完成后答复。' });
     try {
       await configure(cwd, model.baseURL, {
-        capacityTokens: 8000, answerReserveTokens: 1000, triggerRatio: 0.75, targetRatio: 0.5, keepRecentTurns: 0,
+        capacityTokens: 19250, answerReserveTokens: 1000, maxOutputTokens: 1000, triggerRatio: 0.75, targetRatio: 0.5, keepRecentTurns: 0,
       });
       await writeSkill(join(userDir, '.qhy-coding-agents', 'skills'), 'alpha',
         'name: alpha\ndescription: 阿尔法说明', 'ALPHA_BODY_MARKER');
