@@ -1,6 +1,6 @@
 import { chmod, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { analyzeBashCommand, matchesCommandPattern } from '../../tools/BashTool/bash-policy.js';
 import type { SandboxConfig } from '../settings/config.js';
 
@@ -166,7 +166,9 @@ export async function createSandboxPlan(options: CreateSandboxPlanOptions): Prom
       canonicalTempDir,
       ...config.writePaths.map((path) => resolveConfiguredPath(options.workspace, home, path)),
     ]);
-    const writeDeny = await canonicalPaths([
+    // 写拒绝与允许不同：尚未创建的防篡改文件必须仍被拒绝，否则沙箱可以先创建
+    // settings.local.json 之类路径，再借下一次加载提权。
+    const writeDeny = await canonicalPathsIncludingMissing([
       ...BUILT_IN_WRITE_DENY_PATHS.map((path) => resolve(options.workspace, stripGlobSuffix(path))),
       ...config.writeDenyPaths.map((path) => resolveConfiguredPath(options.workspace, home, path)),
     ]);
@@ -253,6 +255,33 @@ async function canonicalPaths(paths: readonly string[]): Promise<string[]> {
     if (canonical !== undefined && !result.includes(canonical)) result.push(canonical);
   }
   return result;
+}
+
+/**
+ * 写拒绝目标可以尚不存在：先用最近一个已存在祖先的真实路径，再拼回不存在的尾部。
+ * 只对拒绝规则保留缺失路径；允许规则仍跳过缺失路径，避免为将来创建授予超出真实目录的权限。
+ */
+async function canonicalPathsIncludingMissing(paths: readonly string[]): Promise<string[]> {
+  const result: string[] = [];
+  for (const path of paths) {
+    const canonical = await canonicalPathIncludingMissing(path);
+    if (!result.includes(canonical)) result.push(canonical);
+  }
+  return result;
+}
+
+async function canonicalPathIncludingMissing(path: string): Promise<string> {
+  const missing: string[] = [];
+  let current = resolve(path);
+  for (;;) {
+    const canonical = await existingRealPath(current);
+    if (canonical !== undefined) return missing.length === 0 ? canonical : join(canonical, ...missing.reverse());
+    const parent = dirname(current);
+    // 文件系统根一定存在；此分支只防御异常输入，避免无限上溯。
+    if (parent === current) return resolve(path);
+    missing.push(basename(current));
+    current = parent;
+  }
 }
 
 function buildEnvironment(

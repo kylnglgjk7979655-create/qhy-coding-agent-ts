@@ -241,6 +241,61 @@ describe('sandbox profile', () => {
     await cleanupSandboxPlan(plan);
   });
 
+  it('内置写拒绝覆盖尚不存在的防篡改目标，不能靠先创建再写入绕过', async () => {
+    // .agent/settings.local.json、.claude/settings.local.json、.agents/skills 在计划生成时都不存在；
+    // 只有保留这些规则，沙箱内才不能先创建配置文件再借配置提权。
+    const plan = await createSandboxPlan(options({
+      config: sandbox({ writePaths: [join(workspace, '.agent', 'settings.local.json')] }),
+    }));
+    const lines = await profileLines(plan);
+    const writeAllow = lines.findIndex((line) => line.startsWith('(allow file-write*'));
+    const writeDeny = lines.find((line, index) => index > writeAllow && line.startsWith('(deny file-write*'));
+    expect(writeDeny).toContain(join(workspace, '.agent', 'settings.local.json'));
+    expect(writeDeny).toContain(join(workspace, '.claude', 'settings.local.json'));
+    expect(writeDeny).toContain(join(workspace, '.agents', 'skills'));
+    await cleanupSandboxPlan(plan);
+  });
+
+  it('不存在的写拒绝目标按最近已存在祖先解析真实路径', async () => {
+    const realTarget = join(home, 'write-extra');
+    const link = join(workspace, 'extra-link');
+    await symlink(realTarget, link);
+    const plan = await createSandboxPlan(options({
+      config: sandbox({ writeDenyPaths: [join(link, 'later.txt')] }),
+    }));
+    const text = (await profileLines(plan)).join('\n');
+    expect(text).toContain(join(realTarget, 'later.txt'));
+    expect(text).not.toContain(join(link, 'later.txt'));
+    await cleanupSandboxPlan(plan);
+  });
+
+  it('每次调用创建不同的临时目录，清理后不残留且跨调用不共享数据', async () => {
+    const first = await createSandboxPlan(options());
+    const second = await createSandboxPlan(options());
+    if (first.mode !== 'sandbox' || second.mode !== 'sandbox') throw new Error('expected sandboxed plans');
+    expect(second.tempDir).not.toBe(first.tempDir);
+    await writeFile(join(first.tempDir, 'marker'), 'first-call');
+    await expect(readdir(second.tempDir)).resolves.toEqual([]);
+
+    await cleanupSandboxPlan(first);
+    await expect(stat(first.tempDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    await cleanupSandboxPlan(second);
+    expect(await readdir(calls)).toEqual([]);
+  });
+
+  it('读拒绝同样按真实路径匹配，符号链接不能换成未解析路径', async () => {
+    const link = join(root, 'ssh-link');
+    await symlink(join(home, '.ssh'), link);
+    const plan = await createSandboxPlan(options({
+      config: sandbox({ readDenyPaths: [link] }),
+    }));
+    const lines = await profileLines(plan);
+    const readDeny = lines.find((line) => line.startsWith('(deny file-read*'));
+    expect(readDeny).toContain(join(home, '.ssh'));
+    expect(readDeny).not.toContain(link);
+    await cleanupSandboxPlan(plan);
+  });
+
   it('代理关闭时不生成本机放行规则，也不注入代理变量', async () => {
     const plan = await createSandboxPlan(options());
     const lines = await profileLines(plan);
