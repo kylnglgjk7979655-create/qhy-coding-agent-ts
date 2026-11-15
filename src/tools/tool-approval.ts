@@ -10,6 +10,7 @@ import { homedir } from 'node:os';
 import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isWithinWorkspace } from './workspace-files.js';
+import { matchesCommandPattern } from './BashTool/bash-policy.js';
 
 export type ApprovalControl = (call: ToolApprovalRequest, signal: AbortSignal) => Promise<'approve' | 'deny'>;
 
@@ -228,12 +229,7 @@ function bashPermissionActions(config: ResolvedConfig, call: ToolApprovalRequest
 function matchesBashRule(rule: string, command: string): boolean {
   const match = /^Bash\((.+)\)$/u.exec(rule);
   if (!match) return false;
-  const pattern = match[1]!.trim();
-  if (pattern.endsWith(':*')) {
-    const prefix = pattern.slice(0, -2).trimEnd();
-    return command === prefix || command.startsWith(`${prefix} `);
-  }
-  return command === pattern;
+  return matchesCommandPattern(match[1]!.trim(), command);
 }
 
 function mcpPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest): 'allow' | 'ask' | 'deny' | undefined {

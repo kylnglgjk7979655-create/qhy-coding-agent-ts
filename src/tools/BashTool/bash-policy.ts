@@ -3,6 +3,15 @@ export interface BashCommandAnalysis {
   requiresApproval: boolean;
 }
 
+/** 命令排除/允许规则沿用整串精确匹配与 `:*` 前缀匹配两种语义。 */
+export function matchesCommandPattern(pattern: string, command: string): boolean {
+  if (pattern.endsWith(':*')) {
+    const prefix = pattern.slice(0, -2).trimEnd();
+    return command === prefix || command.startsWith(`${prefix} `);
+  }
+  return command === pattern;
+}
+
 /** 只接受能逐条识别简单命令的 Bash 语法；不认识的复合语法按参数错误拒绝。 */
 export function analyzeBashCommand(source: string): BashCommandAnalysis {
   const commands: string[] = [];
