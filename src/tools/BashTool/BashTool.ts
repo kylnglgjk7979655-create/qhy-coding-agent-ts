@@ -3,6 +3,7 @@ import { DEFAULT_SANDBOX } from '../../services/settings/config.js';
 import { cleanupSandboxPlan, createSandboxPlan } from '../../services/sandbox/sandbox-plan.js';
 import type { SandboxPlan } from '../../services/sandbox/sandbox-plan.js';
 import { probeSandboxPlatform } from '../../services/sandbox/sandbox-platform.js';
+import { startSandboxNetwork } from '../../services/sandbox/sandbox-network.js';
 import { prepareBashInput, verifyBashWorkingDirectory } from './host-bash.js';
 import { runPlannedBash } from './sandbox-bash.js';
 import type { BuiltInToolContext } from '../register-built-in-tools.js';
@@ -22,31 +23,53 @@ export function registerBashTool(registry: ToolRegistry, { config, bashOperation
     prepare: async (input) => {
       const prepared = await prepareBashInput(config.workspace, input);
       const sandbox = config.permissions?.sandbox ?? DEFAULT_SANDBOX;
-      const plan = await createSandboxPlan({
-        config: sandbox,
-        workspace: config.workspace,
-        input: {
-          command: prepared.input.command,
-          ...(prepared.input.disableSandbox === undefined ? {} : { disableSandbox: prepared.input.disableSandbox }),
-        },
-        // 关闭沙箱时无需启动探测子进程；计划首先返回 disabled。
-        platform: sandbox.enabled ? await probeSandboxPlatform() : { seatbelt: false },
-        env: process.env,
-      });
-      return {
-        input: { ...prepared.input, plan },
-        details: {
-          ...prepared.details,
-          ...sandboxApprovalDetails(plan),
-          ...(plan.notice === undefined ? {} : { sandboxNotice: plan.notice }),
-        },
-        // 审批拒绝或执行前失败时由 registry 回收本次调用的临时目录。
-        cleanup: () => cleanupSandboxPlan(plan),
-      };
+      // 关闭沙箱时无需启动探测子进程；计划首先返回 disabled。
+      const platform = sandbox.enabled ? await probeSandboxPlatform() : { seatbelt: false };
+      // 代理只在沙箱可能真正生效且白名单非空时启动；启动失败由 undefined 表示，计划将拒绝全部网络。
+      let network = platform.seatbelt ? await startSandboxNetwork(sandbox) : undefined;
+      try {
+        const plan = await createSandboxPlan({
+          config: sandbox,
+          workspace: config.workspace,
+          input: {
+            command: prepared.input.command,
+            ...(prepared.input.disableSandbox === undefined ? {} : { disableSandbox: prepared.input.disableSandbox }),
+          },
+          platform,
+          env: process.env,
+          ...(network === undefined ? {} : { proxyPort: network.port }),
+        });
+        // 沙箱外执行不经过代理，立即释放监听；豁免路径按宿主方式直连网络。
+        if (plan.mode !== 'sandbox') {
+          await network?.close();
+          network = undefined;
+        }
+        return {
+          input: { ...prepared.input, plan, ...(network === undefined ? {} : { network }) },
+          details: {
+            ...prepared.details,
+            ...sandboxApprovalDetails(plan),
+            ...(plan.notice === undefined ? {} : { sandboxNotice: plan.notice }),
+          },
+          // 审批拒绝或执行前失败时由 registry 回收本次调用的代理与临时目录；执行层已关闭时重复调用无副作用。
+          cleanup: async () => {
+            try {
+              await network?.close();
+            } finally {
+              await cleanupSandboxPlan(plan);
+            }
+          },
+        };
+      } catch (error) {
+        await network?.close();
+        throw error;
+      }
     },
-    execute: async ({ command, cwd, requestedCwd, approvedCwd, plan }, execution) => {
+    execute: async ({ command, cwd, requestedCwd, approvedCwd, plan, network }, execution) => {
       await verifyBashWorkingDirectory(config.workspace, requestedCwd, approvedCwd);
-      const operation = runPlannedBash(plan, command, cwd ?? config.workspace, execution.abortSignal, config.bash?.timeoutMs);
+      const operation = runPlannedBash(
+        plan, command, cwd ?? config.workspace, execution.abortSignal, config.bash?.timeoutMs, network,
+      );
       bashOperations.add(operation);
       void operation.finally(() => bashOperations.delete(operation)).catch(() => undefined);
       return operation;
