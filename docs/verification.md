@@ -1,5 +1,18 @@
 # 基础 CLI 验收记录
 
+## Issue #146 沙箱文档、ADR 与 QA 同步
+
+日期：2026-11-15。分支 `agent/parent-136`，父需求 #136 的子任务。本轮同步 README、`GLOSSARY.md`、新增 [ADR 0005](adr/0005-bash-sandbox.md)，并在[本地 QA 指南](qa-tool-capabilities.md)加入 macOS Bash 沙箱人工验收清单；没有修改运行时代码或测试。
+
+| 检查 | 结果 |
+| --- | --- |
+| `pnpm check` | 通过：TypeScript 严格类型检查、ESM 构建；Vitest 44 个测试文件通过、1 个跳过，548 项测试通过、16 项跳过（最终测试运行 100.80 秒） |
+| `pnpm demo:test` | 通过：3 项演示回归测试，0 失败 |
+| `git diff --check` | 通过：文档补丁无空白错误 |
+| macOS 沙箱人工 QA（SBX-01–SBX-27） | 待执行；本轮运行在 Linux，未运行真实 Seatbelt，自动化跳过项不等于真实沙箱通过 |
+
+文档按 `src/services/settings/config.ts`、`src/services/sandbox/`、`src/tools/BashTool/` 和既有测试核对配置字段、默认值、执行模式、读写规则、代理策略、豁免与 fail-open/closed 行为。完整自动检查包含沙箱计划、不可用路径、假 `sandbox-exec` 执行层、代理策略和模型可见说明的回归；真实 Seatbelt 用例在非 macOS 跳过。人工验收步骤、记录字段与待执行状态见[本地 QA 指南](qa-tool-capabilities.md)“macOS Bash 沙箱人工验收”。本次没有运行真实模型服务，也没有执行该人工清单。
+
 ## Issue #101 权限策略文档同步与回归验收
 
 日期：2026-11-10。分支 `agent/parent-92`，基于前序子任务提交 `f4d5a6b`。本 Issue 同步 README、术语表、文件权限 ADR 和本地 QA 指南；没有修改运行时代码或测试。

@@ -101,15 +101,133 @@ cd "$QA_ROOT"
 
 分别在人工等待期间和 Bash 已启动期间按 Ctrl+C，另用其他终端对 CLI PID 发送 SIGTERM。应取消并退出，退出码 130，无后续工具或模型请求，不保存失败轮；已有副作用保留。非交互管道与输入关闭时人工审批直接拒绝，人工超时只拒绝当前调用；用 `mixed` 可逐次检查编号、无效输入和迟到答复不会批准其他调用。固定允许与拒绝仍优先于人工审批。人工界面是展示完整参数的特例，普通进度和日志继续保持最小信息。
 
-Bash 使用宿主当前用户权限；cwd 仅约束启动目录，不提供文件系统、网络或操作系统隔离。只在可丢弃的 QA 工作区执行受控命令。
+本组命令未启用沙箱，Bash 以宿主当前用户权限执行；cwd 仅约束启动目录，本组验证不覆盖文件系统、网络或操作系统隔离。只在可丢弃的 QA 工作区执行受控命令。需要验证隔离时按下一节启用沙箱。
+
+## macOS Bash 沙箱人工验收
+
+本节只适用于 macOS，必须在真实 `sandbox-exec` 环境执行。Linux 自动测试只覆盖计划生成、不可用路径、代理策略和假执行层，不能证明真实 Seatbelt 读写边界、网络代理或豁免行为。**本节全部项目当前处于待执行状态；在逐项记录版本、环境和结果之前，不得把沙箱人工 QA 标记为完成。** 自动化测试和代码审查不能代替本节人工验收。
+
+### 准备与记录
+
+使用项目锁定的 Node.js 24.22.2、pnpm 9.12.3，先确认 `pnpm check` 通过。准备可丢弃的验收目录，并让 CLI 的 `HOME` 指向独立目录，使内置敏感路径落在可清理位置；不要把真实密钥或真实 `~/.ssh` 内容用于验收：
+
+```sh
+REPO=/绝对路径/qhy-coding-agent-ts
+CLI_NODE="$(cd "$REPO" && pnpm exec node -p process.execPath)"
+QA_ROOT="$(mktemp -d)"
+mkdir -p "$QA_ROOT/work/.agent" "$QA_ROOT/qa-home/.ssh" "$QA_ROOT/qa-home/private" \
+  "$QA_ROOT/qa-home/scratch" "$QA_ROOT/outside" "$QA_ROOT/limited-bin"
+printf 'inside-read' > "$QA_ROOT/work/note.txt"
+printf 'outside-read' > "$QA_ROOT/outside/read.txt"
+printf 'private-key' > "$QA_ROOT/qa-home/.ssh/authorized_keys"
+printf 'blocked' > "$QA_ROOT/qa-home/private/blocked.txt"
+printf 'readable' > "$QA_ROOT/qa-home/private/readable.txt"
+ln -s "$QA_ROOT/qa-home/.ssh/authorized_keys" "$QA_ROOT/work/key-link"
+ln -s /bin/bash "$QA_ROOT/limited-bin/bash"
+sandbox-exec -p '(version 1) (allow default)' /usr/bin/true && echo SEATBELT_READY
+```
+
+在现有可用的模型 settings 中追加以下沙箱配置（模型、地址和凭据沿用原配置；`127.0.0.1` 只用于验证代理危险地址拒绝，验收后移除）：
+
+```json
+{
+  "approval": { "mode": "default" },
+  "permissions": {
+    "sandbox": {
+      "enabled": true,
+      "onUnavailable": "closed",
+      "writePaths": ["~/scratch"],
+      "writeDenyPaths": ["~/scratch/protected"],
+      "readDenyPaths": ["~/private"],
+      "readAllowPaths": ["~/private/readable.txt"],
+      "networkAllow": ["example.com", "127.0.0.1"],
+      "networkPorts": [443],
+      "envPassthrough": ["QA_PASSTHROUGH"],
+      "bypassAllowedCommands": ["printenv QA_HOST_ONLY"]
+    }
+  }
+}
+```
+
+记录 macOS 版本与架构、`sandbox-exec` 探测结果、提交号、Node/pnpm 版本、实际 settings（隐去凭据）和每项结果。启动 CLI 时设置两个测试变量，并保留审批模式为人工，逐次核对审批界面展示的执行模式和完整命令：
+
+```sh
+cd "$QA_ROOT"
+export QA_HOST_ONLY=host-only
+export QA_PASSTHROUGH=visible
+HOME="$QA_ROOT/qa-home" "$CLI_NODE" "$REPO/dist/cli.js" --workspace "$QA_ROOT/work"
+```
+
+向 Agent 提出下列操作时，以人工审批界面展示的实际 `command`、`cwd`、`sandboxExecution`、`sandboxBypass` 和 `sandboxNotice` 为准；模型改写命令或参数时重新提出，不能把未按预期执行的结果记为通过。每次 Bash 调用按当前编号输入 `approve`。
+
+### 启用与读写边界
+
+- [ ] **SBX-01 基础隔离**：执行 `printf ok`；审批显示“沙箱内执行”，工具结果 `sandboxed: true`，命令正常返回 `ok`。
+- [ ] **SBX-02 最小环境**：执行 `printf '%s|%s' "${QA_PASSTHROUGH-unset}" "${QA_HOST_ONLY-unset}"`；输出 `visible|unset`，证明只传入了 `envPassthrough`。
+- [ ] **SBX-03 工作区读**：读取 `$QA_ROOT/work/note.txt`；内容 `inside-read` 进入工具结果，命令成功。
+- [ ] **SBX-04 工作区外读默认允许**：读取 `$QA_ROOT/outside/read.txt`；内容 `outside-read` 返回。该结果说明读取边界宽于工作区，不等于可写。
+- [ ] **SBX-05 内置敏感路径拒读**：读取 `$HOME/.ssh/authorized_keys`；命令失败，错误说明沙箱策略拦截且不泄露 `private-key`。
+- [ ] **SBX-06 readDenyPaths 与 readAllowPaths**：读取 `$HOME/private/blocked.txt` 失败；读取 `$HOME/private/readable.txt` 成功；`ls $HOME/private` 仍失败，确认放行只针对精确文件而非整个目录。
+- [ ] **SBX-07 符号链接不能绕过读拒绝**：读取 `$QA_ROOT/work/key-link`；失败且不返回 `private-key`。
+- [ ] **SBX-08 工作区写**：执行 `printf inside > $QA_ROOT/work/marker.txt`；文件内容为 `inside`，结果 `sandboxed: true`。
+- [ ] **SBX-09 工作区外写拒绝**：执行 `printf outside > $QA_ROOT/outside/marker.txt`；命令失败，`$QA_ROOT/outside/marker.txt` 不存在。
+- [ ] **SBX-10 TMPDIR 可写**：执行 `printf tmp > "$TMPDIR/sandbox-tmp.txt"`；文件存在，输出成功。
+- [ ] **SBX-11 writePaths 与 writeDenyPaths**：执行 `printf scratch > $HOME/scratch/ok.txt` 成功；执行 `printf protected > $HOME/scratch/protected` 失败，即使父目录在 `writePaths` 中也不创建文件。
+- [ ] **SBX-12 内置防篡改路径**：分别尝试写入工作区 `.agent/settings.local.json`、`.claude/skills/evil.md`、`.agents/skills/evil.md`、`.git/hooks/pre-commit` 和 `.github/workflows/evil.yml`；对尚不存在的子树先用 `mkdir -p` 再写入（例如 `mkdir -p .claude/skills && printf evil > .claude/skills/evil.md`），全部失败且文件/目录不存在。
+- [ ] **SBX-13 调用临时目录清理**：检查 `$TMPDIR` 中没有遗留本次 `qhy-sandbox-*` 目录；失败、超时或取消后同样不残留 profile 或临时目录。
+
+### 网络代理
+
+- [ ] **SBX-14 代理变量**：执行 `printf '%s' "$HTTPS_PROXY"`；输出为 `http://localhost:<随机端口>`，且 `$HTTP_PROXY`、`$ALL_PROXY` 使用同一端口。
+- [ ] **SBX-15 白名单目标**：执行 `curl -sS -o /dev/null -w '%{http_code}' https://example.com`；在可联网环境返回非错误状态码。若验收环境无法访问公网，记录为“受环境阻塞”，不得标记通过。
+- [ ] **SBX-16 域名拒绝**：执行 `curl -sS https://denied.example`；命令失败，`stderr` 出现 `<sandbox_violations>` 和 `host-not-allowed`，不产生对其他目标的直连。
+- [ ] **SBX-17 端口拒绝**：执行 `curl -sS https://example.com:8443`；命令失败，违规汇总包含 `port-not-allowed`。
+- [ ] **SBX-18 危险地址拒绝**：执行 `curl -k -sS https://127.0.0.1`；命令失败，违规汇总包含 `dangerous-address`，代理不建立到回环地址的隧道。
+- [ ] **SBX-19 未配置网络**：把 `networkAllow` 改为 `[]` 并重启；执行 `printf '%s' "${HTTPS_PROXY-unset}"` 输出 `unset`，`curl` 无法访问网络。完成后恢复验收配置。
+- [ ] **SBX-20 代理启动失败**：该项无法通过产品配置稳定制造；以 `tests/sandbox-execution.test.ts` 的自动化覆盖为准，人工记录“未人工覆盖”，不得据此声称代理启动失败路径已人工验收。
+
+### 豁免与权限
+
+- [ ] **SBX-21 豁免获准**：要求 Agent 调用 Bash，参数为 `command: "printenv QA_HOST_ONLY"`、`disableSandbox: true`；审批显示“沙箱外执行”“获准”，结果 `sandboxed: false`、`notice` 含“豁免获准”，输出 `host-only`。
+- [ ] **SBX-22 豁免未获准**：要求 Agent 调用 Bash，参数为 `command: "printenv QA_HOST_ONLY; printf x > $QA_ROOT/outside/bypass-denied.txt"`、`disableSandbox: true`；审批显示“沙箱内执行”“未获准”，结果 `sandboxed: true`、`notice` 含“豁免未获准”，外部文件未创建，`QA_HOST_ONLY` 不出现。
+- [ ] **SBX-23 豁免不绕过权限**：在 `permissions.deny` 中加入 `Bash(printf denied-by-policy)`，把相同命令加入 `bypassAllowedCommands`，再以 `disableSandbox: true` 请求；结果为 `PERMISSION_DENIED`，命令未执行，也不进入人工审批。
+- [ ] **SBX-24 关闭沙箱时忽略豁免**：把 `enabled` 改为 `false` 并重启，继续以 `disableSandbox: true` 请求；审批显示“已忽略（沙箱未启用）”，结果 `sandboxed: false` 且不宣称隔离。
+
+### fail-open 与 fail-closed
+
+用缺少 `sandbox-exec` 的受限 `PATH` 模拟沙箱不可用。受限目录只放 `bash`，命令使用 shell 内建 `printf`，避免依赖其他外部程序：
+
+```sh
+cd "$QA_ROOT"
+PATH="$QA_ROOT/limited-bin" HOME="$QA_ROOT/qa-home" \
+  "$CLI_NODE" "$REPO/dist/cli.js" --workspace "$QA_ROOT/work"
+```
+
+- [ ] **SBX-25 fail-closed 拒绝**：保持 `onUnavailable: "closed"`，执行 `printf x > should-not-execute.txt`；审批显示沙箱不可用与“拒绝执行”，结果为 `TOOL_EXECUTION_ERROR`，文件未创建，未启动命令进程。
+- [ ] **SBX-26 fail-open 未隔离**：把 `onUnavailable` 改为 `"open"` 并重启，执行同一命令；审批显示“沙箱外执行”和未隔离说明，结果 `sandboxed: false`、`notice` 含“未隔离”，文件创建。该项只验证 fail-open 会实际失去隔离，不能视为安全通过。
+- [ ] **SBX-27 恢复真实环境**：移除受限 `PATH`，确认正常启动后重新探测 `sandbox-exec`，基础命令再次得到 `sandboxed: true`；若未恢复，记录环境缺陷而不是改动产品结论。
+
+### 记录与判定
+
+至少记录以下字段，并附命令、审批截图或文本、工具结果和文件状态等证据；某项失败时记录缺陷编号与复现步骤，不将其他项的成功视为该项通过。执行记录追加到 [verification.md](verification.md)。
+
+| 记录项 | 内容 |
+| --- | --- |
+| 版本与环境 | 提交号、macOS 版本与架构、Node.js、pnpm、`sandbox-exec` 探测结果 |
+| 配置 | 使用的 settings 层级与实际沙箱字段（隐去凭据） |
+| 逐项结果 | SBX-01–SBX-27 的通过/失败/阻塞/未覆盖及证据 |
+| 缺陷 | 现象、实际命令与参数、预期、日志或文件状态、修复状态 |
+| 人工 QA 状态 | 仍在执行时保持“待执行”；全部适用项通过后才可标记完成，受环境阻塞和未人工覆盖项须单独列出 |
 
 ## 权限规则回归与人工 QA
 
 自动化回归覆盖分层 settings 合并与校验、实际文件目标读取/写入、Glob/Grep 路径过滤与审批、Bash 命令拆分及规则匹配、MCP 默认审批、模型审批会话上下文、Explore/子 Agent 委派和会话恢复。运行项目完整检查后，可单独用以下测试文件定位失败：
 
 ```sh
-pnpm exec vitest run tests/config.test.ts tests/agent-execution.test.ts tests/search-tools.test.ts tests/bash.test.ts tests/mcp.test.ts tests/tool-approval.test.ts tests/explore-delegation.test.ts tests/conversations.test.ts tests/cli-process.test.ts
+pnpm exec vitest run tests/config.test.ts tests/agent-execution.test.ts tests/search-tools.test.ts tests/bash.test.ts tests/mcp.test.ts tests/tool-approval.test.ts tests/explore-delegation.test.ts tests/conversations.test.ts tests/cli-process.test.ts tests/sandbox-plan.test.ts tests/sandbox-platform.test.ts tests/sandbox-execution.test.ts tests/sandbox-bypass.test.ts tests/sandbox-unavailable.test.ts tests/sandbox-seatbelt.test.ts tests/sandbox-network.test.ts tests/network-proxy.test.ts tests/sandbox-guidance.test.ts
 ```
+
+沙箱测试在非 macOS 平台跳过真实 Seatbelt 用例，只验证不可用路径、计划生成、假 `sandbox-exec` 执行层和代理策略；跳过不等于真实沙箱通过。
 
 自动测试不等于人工 QA 已完成。人工验收需在本地夹具与可丢弃工作区中逐项确认：
 
@@ -134,6 +252,10 @@ pnpm exec vitest run tests/config.test.ts tests/agent-execution.test.ts tests/se
 | `approval.timeoutMs`、`approval.humanTimeoutMs` | 30000ms、300000ms；人工等待不扣整轮执行预算，不重置此前已消耗时间 |
 | `approval.model` | 可选 `{provider, model, baseURL, apiKeyEnv}`，默认复用主模型；独立审查携带受控上下文，不提供工具 |
 | `permissions.allow`、`permissions.ask`、`permissions.deny` | 分别按文件路径、Bash 命令、MCP 服务/工具及 Agent/RuntimeInfo 能力配置；权限规则各层合并去重，`deny` 优先 |
+| `permissions.sandbox.enabled`、`permissions.sandbox.onUnavailable` | `false`、`open`；启用后 v1 仅在 macOS 探测成功时隔离；不可用时 `open` 以宿主方式执行并标注未隔离，`closed` 在启动命令前拒绝 |
+| `permissions.sandbox.writePaths`、`writeDenyPaths`、`readDenyPaths`、`readAllowPaths` | 默认空数组；跨 settings 层取并集去重；相对路径从工作区解析，`~`/`~/` 从家目录解析。写入只额外允许 `writePaths`，读拒绝后的 `readAllowPaths` 按真实路径精确放行 |
+| `permissions.sandbox.networkAllow`、`networkPorts` | 默认 `[]`、`[443]`；白名单为空时不启动代理且没有网络；域名精确或 `*.` 子域匹配，端口按 TCP 端口校验 |
+| `permissions.sandbox.envPassthrough`、`bypassAllowedCommands` | 默认空数组；前者追加传入沙箱的环境变量名，后者仅用于按整条命令的全部简单命令审批 `disableSandbox` 豁免 |
 | `bash.timeoutMs` | 30000ms；单命令上限，不能延长整轮预算 |
 | `mcp.servers` | 每项 `{name, url, headers}`；请求头值仅用 `{env: "变量名"}` 引用 |
 | `mcp.connectTimeoutMs`、`mcp.discoveryTimeoutMs`、`mcp.callTimeoutMs` | 10000ms、10000ms、30000ms；接入共用时限与取消入口，不代表延期专项边界已验收 |
@@ -149,4 +271,4 @@ pnpm check
 pnpm demo:test
 ```
 
-组合测试检查真实 CLI 请求、调用 ID、文件、磁盘历史和进程状态。其余现有回归覆盖文件边界、严格参数、模型步骤上限、流故障与配对、事件通知故障、旧历史、摘要预算及本地工具冒烟。`demo:bug` 故意失败，真实模型 `smoke` 会调用在线服务，均不纳入本轮常规验证。
+组合测试检查真实 CLI 请求、调用 ID、文件、磁盘历史和进程状态。其余现有回归覆盖文件边界、严格参数、模型步骤上限、流故障与配对、事件通知故障、旧历史、摘要预算、沙箱计划与不可用路径、代理策略、宿主/沙箱执行、豁免及本地工具冒烟。`demo:bug` 故意失败，真实模型 `smoke` 会调用在线服务，均不纳入本轮常规验证。
