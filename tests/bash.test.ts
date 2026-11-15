@@ -56,7 +56,7 @@ function results() {
   const messages = fixture.requests.at(-1)!.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ tool_call_id: string; content: string }>;
   return messages.map(({ tool_call_id, content }) => ({ id: tool_call_id, ...JSON.parse(content) })) as Array<{
     id: string; is_error: boolean; error?: { code: string; message: string };
-    output?: { stdout: string; stderr: string; exitCode: number | null; signal: string | null; truncated: boolean };
+    output?: { stdout: string; stderr: string; exitCode: number | null; signal: string | null; truncated: boolean; sandboxed: boolean };
   }>;
 }
 
@@ -82,7 +82,7 @@ it('Bash 默认独立审批，批准前无启动或副作用，批准后返回�
   const result = await running.done;
   expect(result.code, result.stderr).toBe(0);
   expect(results()).toEqual([{ id: 'approved', is_error: false, output: {
-    stdout: 'private-command-output', stderr: 'private-error-output', exitCode: 0, signal: null, truncated: false,
+    stdout: 'private-command-output', stderr: 'private-error-output', exitCode: 0, signal: null, truncated: false, sandboxed: false,
   } }]);
   expect(await readFile(join(cwd, 'kept.txt'), 'utf8')).toBe('kept');
   expect(result.stdout + result.stderr).not.toMatch(/private-command-output|private-error-output|fake-bash-key/);
