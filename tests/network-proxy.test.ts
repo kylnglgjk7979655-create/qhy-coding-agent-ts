@@ -1,5 +1,6 @@
 import { once } from 'node:events';
 import { createServer as createNetServer, connect as connectNet } from 'node:net';
+import { PassThrough } from 'node:stream';
 import type { AddressInfo, Socket } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startNetworkProxy } from '../src/services/sandbox/network-proxy.js';
@@ -157,11 +158,26 @@ describe('目标校验顺序', () => {
     socket.destroy();
   });
 
+  it('显式 :80 端口不会被 WHATWG 默认端口归一化误判为非法目标', async () => {
+    // http scheme 会把显式 :80 归一化为空端口，代理必须从原始 authority 取端口，否则 networkPorts: [80] 永不生效。
+    const proxy = await startProxy({
+      allowedPorts: [80],
+      openTunnel: async () => new PassThrough(),
+    });
+    const { socket, text } = await sendRaw(proxy, connectRequest('registry.npmjs.org:80'));
+    expect(statusLine(text)).toContain('200');
+    expect(proxy.violations).toEqual([]);
+    socket.destroy();
+  });
+
   it.each([
     ['127.0.0.1'],
     ['127.255.255.254'],
     ['::1'],
     ['::'],
+    ['::127.0.0.1'],
+    ['::7f00:1'],
+    ['::a00:1'],
     ['10.0.0.1'],
     ['172.16.0.1'],
     ['172.31.255.255'],

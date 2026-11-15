@@ -1,5 +1,17 @@
 # 基础 CLI 验收记录
 
+## PR #147 整体审查补强
+
+日期：2026-11-15。在父需求 #136 共享 PR 的整体审查中修复：CONNECT 显式 `:80` 被 WHATWG URL 默认端口归一化误判为非法目标、失败命令的结果丢失“未隔离执行/豁免未获准”通知、豁免获准路径短暂启动本机代理；并补充 IPv4-compatible 危险地址判定与相关测试，修正 QA 清单 SBX-12 的预期描述。
+
+| 检查 | 结果 |
+| --- | --- |
+| `pnpm check` | 通过：TypeScript 严格类型检查、ESM 构建；Vitest 44 个测试文件通过、1 个跳过，555 项测试通过、16 项跳过（最终测试运行 94.95 秒） |
+| `git diff --check` | 通过：补丁无空白错误 |
+| macOS 沙箱人工 QA（SBX-01–SBX-27） | 待执行；本轮运行在 Linux，未运行真实 Seatbelt，自动化跳过项不等于真实沙箱通过 |
+
+新增用例覆盖显式 `:80` 的 CONNECT 隧道、IPv4-compatible 危险地址、fail-open 失败结果的未隔离通知、豁免未获准失败通知，以及代理只在沙箱分支启动。真实 Seatbelt 读写边界、代理与豁免仍需按本地 QA 指南在 macOS 人工执行。
+
 ## Issue #146 沙箱文档、ADR 与 QA 同步
 
 日期：2026-11-15。分支 `agent/parent-136`，父需求 #136 的子任务。本轮同步 README、`GLOSSARY.md`、新增 [ADR 0005](adr/0005-bash-sandbox.md)，并在[本地 QA 指南](qa-tool-capabilities.md)加入 macOS Bash 沙箱人工验收清单；没有修改运行时代码或测试。

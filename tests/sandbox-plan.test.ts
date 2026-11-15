@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SANDBOX } from '../src/services/settings/config.js';
 import type { SandboxConfig } from '../src/services/settings/config.js';
 import { cleanupSandboxPlan, createSandboxPlan } from '../src/services/sandbox/sandbox-plan.js';
@@ -46,7 +46,7 @@ interface Options {
   command?: string;
   disableSandbox?: boolean;
   seatbelt?: boolean;
-  proxyPort?: number;
+  proxyPort?: number | (() => Promise<number | undefined>);
   env?: NodeJS.ProcessEnv;
 }
 
@@ -153,6 +153,36 @@ describe('sandbox plan decision table', () => {
     expect(second.profile.replace(second.tempDir, '<call>')).toBe(first.profile.replace(first.tempDir, '<call>'));
     await cleanupSandboxPlan(first);
     await cleanupSandboxPlan(second);
+  });
+
+  it('仅在进入沙箱分支时启动代理，宿主与拒绝分支不创建监听', async () => {
+    const startProxy = vi.fn(async () => 4567);
+    const networkConfig = { networkAllow: ['registry.npmjs.org'] };
+
+    // 豁免获准按完全宿主方式执行，不应启动代理。
+    const bypassed = await createSandboxPlan(options({
+      config: sandbox({ ...networkConfig, bypassAllowedCommands: ['echo ok'] }),
+      disableSandbox: true,
+      proxyPort: startProxy,
+    }));
+    expect(bypassed).toMatchObject({ mode: 'host', reason: 'bypass-approved' });
+
+    // 沙箱不可用的 open 分支同样不启动代理。
+    const unavailable = await createSandboxPlan({
+      ...options({ config: sandbox({ ...networkConfig, onUnavailable: 'open' }), proxyPort: startProxy }),
+      platform: { seatbelt: false },
+    });
+    expect(unavailable).toMatchObject({ mode: 'host', reason: 'unavailable' });
+    expect(startProxy).not.toHaveBeenCalled();
+
+    const sandboxed = await createSandboxPlan(options({
+      config: sandbox(networkConfig),
+      proxyPort: startProxy,
+    }));
+    if (sandboxed.mode !== 'sandbox') throw new Error('expected sandboxed plan');
+    expect(startProxy).toHaveBeenCalledOnce();
+    expect(sandboxed.proxy?.port).toBe(4567);
+    await cleanupSandboxPlan(sandboxed);
   });
 });
 

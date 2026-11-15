@@ -48,8 +48,8 @@ export async function runPlannedBash(
     );
     return withViolations(withNotice(result, plan.notice), network);
   } catch (error) {
-    // 失败、超时与取消都通过 ToolExecutionError 携带已收集输出；违规原因同样要进入模型可见结果。
-    throw withViolationOutput(error, network);
+    // 失败、超时与取消都通过 ToolExecutionError 携带已收集输出；未隔离/豁免说明与违规原因同样要进入模型可见结果。
+    throw withResultMetadata(error, plan.notice, network);
   } finally {
     try {
       await network?.close();
@@ -72,10 +72,10 @@ function withViolations(result: BashRunResult, network: SandboxNetwork | undefin
   return { ...result, stderr: `${result.stderr}${separator}${summary}` };
 }
 
-/** 命令失败时保留原错误类型与输出，同时把违规汇总附加到已收集的 stderr。 */
-function withViolationOutput(error: unknown, network: SandboxNetwork | undefined): unknown {
+/** 失败时保留原错误类型与输出，同时补上计划说明，并把违规汇总附加到已收集的 stderr。 */
+function withResultMetadata(error: unknown, notice: string | undefined, network: SandboxNetwork | undefined): unknown {
   if (!(error instanceof ToolExecutionError) || !isBashRunResult(error.output)) return error;
-  return new ToolExecutionError(error.message, withViolations(error.output, network));
+  return new ToolExecutionError(error.message, withViolations(withNotice(error.output, notice), network));
 }
 
 function isBashRunResult(value: unknown): value is BashRunResult {

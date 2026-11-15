@@ -22,8 +22,8 @@ export interface CreateSandboxPlanOptions {
   input: SandboxBashInput;
   platform: SandboxPlatformProbe;
   env: NodeJS.ProcessEnv;
-  /** 已启动代理的本地端口；缺省表示代理不可用，本次沙箱调用没有网络。 */
-  proxyPort?: number;
+  /** 已启动代理的本地端口；也可传入惰性来源，仅在进入沙箱分支时才启动代理。 */
+  proxyPort?: number | (() => Promise<number | undefined>);
   /** 解析 `~` 时使用的家目录，默认取 env.HOME。 */
   home?: string;
   /** 本次调用临时目录的父目录，默认取系统临时目录。 */
@@ -149,9 +149,13 @@ export async function createSandboxPlan(options: CreateSandboxPlanOptions): Prom
   }
 
   const home = options.home ?? options.env.HOME ?? homedir();
-  const proxy = resolveProxy(config, options.proxyPort);
   const tempDir = await createTempDir(options.tempRoot);
   try {
+    // 代理端口可来自惰性来源：只有实际进入沙箱分支时才启动代理，宿主与拒绝分支不创建监听。
+    const proxyPort = config.networkAllow.length === 0
+      ? undefined
+      : typeof options.proxyPort === 'function' ? await options.proxyPort() : options.proxyPort;
+    const proxy = resolveProxy(config, proxyPort);
     const canonicalTempDir = await existingRealPath(tempDir) ?? tempDir;
     const readDeny = await canonicalPaths([
       ...BUILT_IN_READ_DENY_PATHS.map((path) => resolve(join(home, path.slice(2)))),

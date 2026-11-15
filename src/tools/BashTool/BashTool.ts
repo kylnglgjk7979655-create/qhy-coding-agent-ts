@@ -4,6 +4,7 @@ import { cleanupSandboxPlan, createSandboxPlan } from '../../services/sandbox/sa
 import type { SandboxPlan } from '../../services/sandbox/sandbox-plan.js';
 import { probeSandboxPlatform } from '../../services/sandbox/sandbox-platform.js';
 import { startSandboxNetwork } from '../../services/sandbox/sandbox-network.js';
+import type { SandboxNetwork } from '../../services/sandbox/sandbox-network.js';
 import { prepareBashInput, verifyBashWorkingDirectory } from './host-bash.js';
 import { bashSandboxGuidance } from './sandbox-guidance.js';
 import { runPlannedBash } from './sandbox-bash.js';
@@ -26,8 +27,7 @@ export function registerBashTool(registry: ToolRegistry, { config, bashOperation
       const prepared = await prepareBashInput(config.workspace, input);
       // 关闭沙箱时无需启动探测子进程；计划首先返回 disabled。
       const platform = sandbox.enabled ? await probeSandboxPlatform() : { seatbelt: false };
-      // 代理只在沙箱可能真正生效且白名单非空时启动；启动失败由 undefined 表示，计划将拒绝全部网络。
-      let network = platform.seatbelt ? await startSandboxNetwork(sandbox) : undefined;
+      let network: SandboxNetwork | undefined;
       try {
         const plan = await createSandboxPlan({
           config: sandbox,
@@ -38,13 +38,13 @@ export function registerBashTool(registry: ToolRegistry, { config, bashOperation
           },
           platform,
           env: process.env,
-          ...(network === undefined ? {} : { proxyPort: network.port }),
+          // 惰性启动代理：只有计划实际进入沙箱时才创建本机监听；豁免获准等宿主分支不启动代理。
+          // 启动失败返回 undefined，计划将拒绝全部网络，不退回直连。
+          proxyPort: async () => {
+            network = await startSandboxNetwork(sandbox);
+            return network?.port;
+          },
         });
-        // 沙箱外执行不经过代理，立即释放监听；豁免路径按宿主方式直连网络。
-        if (plan.mode !== 'sandbox') {
-          await network?.close();
-          network = undefined;
-        }
         return {
           input: { ...prepared.input, plan, ...(network === undefined ? {} : { network }) },
           details: {

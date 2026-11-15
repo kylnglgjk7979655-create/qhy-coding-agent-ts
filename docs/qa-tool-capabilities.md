@@ -173,7 +173,7 @@ HOME="$QA_ROOT/qa-home" "$CLI_NODE" "$REPO/dist/cli.js" --workspace "$QA_ROOT/wo
 - [ ] **SBX-09 工作区外写拒绝**：执行 `printf outside > $QA_ROOT/outside/marker.txt`；命令失败，`$QA_ROOT/outside/marker.txt` 不存在。
 - [ ] **SBX-10 TMPDIR 可写**：执行 `printf tmp > "$TMPDIR/sandbox-tmp.txt"`；文件存在，输出成功。
 - [ ] **SBX-11 writePaths 与 writeDenyPaths**：执行 `printf scratch > $HOME/scratch/ok.txt` 成功；执行 `printf protected > $HOME/scratch/protected` 失败，即使父目录在 `writePaths` 中也不创建文件。
-- [ ] **SBX-12 内置防篡改路径**：分别尝试写入工作区 `.agent/settings.local.json`、`.claude/skills/evil.md`、`.agents/skills/evil.md`、`.git/hooks/pre-commit` 和 `.github/workflows/evil.yml`；对尚不存在的子树先用 `mkdir -p` 再写入（例如 `mkdir -p .claude/skills && printf evil > .claude/skills/evil.md`），全部失败且文件/目录不存在。
+- [ ] **SBX-12 内置防篡改路径**：分别尝试写入工作区 `.agent/settings.local.json`、`.claude/skills/evil.md`、`.agents/skills/evil.md`、`.git/hooks/pre-commit` 和 `.github/workflows/evil.yml`；对尚不存在的子树先用 `mkdir -p` 再写入（例如 `mkdir -p .claude/skills && printf evil > .claude/skills/evil.md`）。每次写目标文件都失败且未创建；`mkdir -p` 可能已创建允许的父目录（如 `.claude`），这不影响判定，但受保护的文件或子目录不得存在。
 - [ ] **SBX-13 调用临时目录清理**：检查 `$TMPDIR` 中没有遗留本次 `qhy-sandbox-*` 目录；失败、超时或取消后同样不残留 profile 或临时目录。
 
 ### 网络代理

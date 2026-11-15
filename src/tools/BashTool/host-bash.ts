@@ -52,7 +52,6 @@ export async function verifyBashWorkingDirectory(workspace: string, requestedCwd
 
 /** 宿主 Bash 沿用当前用户环境启动独立 shell；结果显式标记未隔离。 */
 export async function runHostBash(command: string, cwd: string, signal?: AbortSignal, timeoutMs = 30_000): Promise<BashRunResult> {
-  if (process.platform === 'win32') throw new Error('宿主 Bash 需要支持 POSIX 进程组的系统。');
   return runBashProcess('bash', ['--noprofile', '--norc', '-c', command], {
     cwd,
     sandboxed: false,

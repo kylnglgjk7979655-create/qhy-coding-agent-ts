@@ -45,6 +45,7 @@ function sandbox(overrides: Partial<SandboxConfig> = {}): SandboxConfig {
 
 interface PlanOptions {
   command?: string;
+  disableSandbox?: boolean;
   config?: SandboxConfig;
   envPassthrough?: string[];
   env?: NodeJS.ProcessEnv;
@@ -55,7 +56,10 @@ function planOptions(settings: PlanOptions = {}): Parameters<typeof createSandbo
   return {
     config: settings.config ?? sandbox({ envPassthrough: settings.envPassthrough ?? [] }),
     workspace,
-    input: { command: settings.command ?? 'echo ok' },
+    input: {
+      command: settings.command ?? 'echo ok',
+      ...(settings.disableSandbox === undefined ? {} : { disableSandbox: settings.disableSandbox }),
+    },
     platform: { seatbelt: true },
     env: settings.env ?? {
       HOME: home, TMPDIR: tmp, PATH: `${bin}:${process.env.PATH ?? '/usr/bin:/bin'}`,
@@ -169,6 +173,39 @@ describe('sandboxed Bash execution', () => {
     expect(result).toMatchObject({
       stdout: 'host-open', stderr: '', exitCode: 0, signal: null, truncated: false, sandboxed: false,
       notice: expect.stringContaining('未隔离'),
+    });
+    expect(await readdir(calls)).toEqual([]);
+  });
+
+  it('fail-open 命令失败时仍把未隔离通知写入错误结果', async () => {
+    const unavailable = await createSandboxPlan({
+      ...planOptions({ config: sandbox({ onUnavailable: 'open' }) }),
+      platform: { seatbelt: false },
+    });
+
+    await expect(runPlannedBash(unavailable, 'printf problem >&2; exit 3', workspace)).rejects.toMatchObject({
+      message: 'Bash 命令执行失败。',
+      output: {
+        stdout: '', stderr: 'problem', exitCode: 3, sandboxed: false,
+        notice: expect.stringContaining('未隔离'),
+      },
+    });
+  });
+
+  it('豁免未获准的失败结果仍说明命令在沙箱内执行', async () => {
+    const plan = await sandboxPlan(planOptions({
+      config: sandbox({ bypassAllowedCommands: ['printf allowed'] }),
+      command: 'printf blocked',
+      disableSandbox: true,
+    }));
+    expect(plan).toMatchObject({ mode: 'sandbox', reason: 'bypass-denied' });
+
+    await expect(runPlannedBash(plan, 'printf problem >&2; exit 3', workspace)).rejects.toMatchObject({
+      message: 'Bash 命令执行失败。',
+      output: {
+        stdout: '', stderr: 'problem', exitCode: 3, sandboxed: true,
+        notice: expect.stringContaining('豁免未获准'),
+      },
     });
     expect(await readdir(calls)).toEqual([]);
   });

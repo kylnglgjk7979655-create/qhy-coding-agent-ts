@@ -198,8 +198,11 @@ function parseConnectTarget(raw: string): { host: string; port: number } | undef
   if (url.username !== '' || url.password !== '' || url.pathname !== '/' || url.search !== '' || url.hash !== '') {
     return undefined;
   }
-  if (url.port === '') return undefined;
-  const port = Number(url.port);
+  // `http` 是特殊 scheme：显式 :80 会被 WHATWG URL 归一化为空端口，不能据此判断端口缺失。
+  // CONNECT 的目标是 authority-form，因此从原始 target 末尾取端口；IPv6 无端口时以 `]` 结尾，不会误匹配。
+  const portText = url.port === '' ? /:(\d+)$/u.exec(raw)?.[1] : url.port;
+  if (portText === undefined) return undefined;
+  const port = Number(portText);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) return undefined;
   // URL.hostname 对 IPv6 保留方括号，连接前去掉。
   const host = url.hostname.replace(/^\[(.*)\]$/u, '$1');
@@ -276,6 +279,10 @@ function isDangerousIpv6(address: string): boolean {
   if (bytes.slice(0, 15).every((byte) => byte === 0) && bytes[15] === 1) return true;
   // IPv4-mapped（::ffff:a.b.c.d）按内嵌 IPv4 判定。
   if (bytes.slice(0, 10).every((byte) => byte === 0) && bytes[10] === 0xff && bytes[11] === 0xff) {
+    return isDangerousIpv4(bytes.slice(12).join('.'));
+  }
+  // IPv4-compatible（::a.b.c.d）已被废弃，但仍可能由解析器返回；同样按内嵌 IPv4 判定。
+  if (bytes.slice(0, 12).every((byte) => byte === 0)) {
     return isDangerousIpv4(bytes.slice(12).join('.'));
   }
   // fc00::/7 唯一本地地址与 fe80::/10 链路本地地址。

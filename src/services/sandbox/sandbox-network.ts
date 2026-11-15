@@ -10,13 +10,7 @@ import type {
 import type { SandboxConfig } from '../settings/config.js';
 
 /** 一次沙箱调用独有的代理会话；执行层只读取违规并在调用结束时关闭。 */
-export interface SandboxNetwork {
-  /** 本机随机监听端口；计划用它作为唯一允许的出站目标。 */
-  readonly port: number;
-  readonly violations: readonly ProxyViolation[];
-  /** 关闭监听并终止活动隧道；可重复调用。 */
-  close: () => Promise<void>;
-}
+export type SandboxNetwork = NetworkProxy;
 
 /** 代理实现与解析、连接依赖可注入，便于用本地假上游验证公开契约。 */
 export interface SandboxNetworkDependencies {
