@@ -105,7 +105,12 @@ export class ToolRegistry {
     inputSchema: FlexibleSchema<Input>;
     concurrency?: 'parallel' | 'exclusive';
     approvalDetails?: Record<string, string>;
-    prepare?: (input: Input) => Promise<{ input: PreparedInput; details?: Record<string, string> }>;
+    prepare?: (input: Input) => Promise<{
+      input: PreparedInput;
+      details?: Record<string, string>;
+      /** 准备阶段占用资源时释放；审批拒绝或执行结束都会调用。 */
+      cleanup?: () => Promise<void> | void;
+    }>;
     execute: (input: PreparedInput, options: ToolExecutionOptions<unknown>) => Promise<Output> | Output;
   }): void {
     const { name, description, inputSchema, execute, prepare, concurrency = 'exclusive', approvalDetails } = definition;
@@ -121,7 +126,7 @@ export class ToolRegistry {
           ? { description: input.description }
           : {};
         execution.abortSignal?.throwIfAborted();
-        let prepared: { input: PreparedInput; details?: Record<string, string> };
+        let prepared: { input: PreparedInput; details?: Record<string, string>; cleanup?: () => Promise<void> | void };
         try {
           prepared = prepare ? await prepare(input) : { input: input as unknown as PreparedInput };
         } catch {
@@ -129,26 +134,35 @@ export class ToolRegistry {
           this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'rejected', errorCode: 'INVALID_TOOL_ARGUMENTS' });
           return { is_error: true as const, error: { code: 'INVALID_TOOL_ARGUMENTS' as const, message: '工具参数无效：操作目标不可用或越出工作区。' } };
         }
-        execution.abortSignal?.throwIfAborted();
-        await this.options.beforeTool?.({ callId: execution.toolCallId, toolName: name, input });
-        execution.abortSignal?.throwIfAborted();
-        const details = { ...approvalDetails, ...prepared.details };
-        if (this.options.approve && !await this.options.approve({ callId: execution.toolCallId, toolName: name, input, ...(Object.keys(details).length > 0 ? { details } : {}) }, execution.abortSignal)) {
-          this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'rejected', errorCode: 'PERMISSION_DENIED' });
-          return { is_error: true as const, error: { code: 'PERMISSION_DENIED' as const, message: '本次工具调用未获权限批准。' } };
-        }
-        execution.abortSignal?.throwIfAborted();
-        this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'started' });
+        // 准备阶段的资源无论审批结果或执行成败都由 registry 释放；执行层内部清理可重复调用。
         try {
-          const output = await execute(prepared.input, execution);
-          this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'succeeded' });
-          return { is_error: false as const, output };
-        } catch (error) {
           execution.abortSignal?.throwIfAborted();
-          const message = error instanceof Error ? error.message : '工具执行失败。';
-          this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'failed', errorCode: 'TOOL_EXECUTION_ERROR' });
-          return { is_error: true as const, error: { code: 'TOOL_EXECUTION_ERROR' as const, message },
-            ...(error instanceof ToolExecutionError ? { output: error.output } : {}) };
+          await this.options.beforeTool?.({ callId: execution.toolCallId, toolName: name, input });
+          execution.abortSignal?.throwIfAborted();
+          const details = { ...approvalDetails, ...prepared.details };
+          if (this.options.approve && !await this.options.approve({ callId: execution.toolCallId, toolName: name, input, ...(Object.keys(details).length > 0 ? { details } : {}) }, execution.abortSignal)) {
+            this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'rejected', errorCode: 'PERMISSION_DENIED' });
+            return { is_error: true as const, error: { code: 'PERMISSION_DENIED' as const, message: '本次工具调用未获权限批准。' } };
+          }
+          execution.abortSignal?.throwIfAborted();
+          this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'started' });
+          try {
+            const output = await execute(prepared.input, execution);
+            this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'succeeded' });
+            return { is_error: false as const, output };
+          } catch (error) {
+            execution.abortSignal?.throwIfAborted();
+            const message = error instanceof Error ? error.message : '工具执行失败。';
+            this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'failed', errorCode: 'TOOL_EXECUTION_ERROR' });
+            return { is_error: true as const, error: { code: 'TOOL_EXECUTION_ERROR' as const, message },
+              ...(error instanceof ToolExecutionError ? { output: error.output } : {}) };
+          }
+        } finally {
+          try {
+            await prepared.cleanup?.();
+          } catch {
+            // 清理失败不影响工具结果，也不能掩盖执行阶段的错误。
+          }
         }
       }),
     }));

@@ -108,6 +108,28 @@ it.skipIf(process.platform === 'win32')('人工审批 Bash 展示完整参数与
   await expect(readFile(join(cwd, 'denied.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
+it.skipIf(process.platform === 'win32' || process.platform === 'darwin')('沙箱不可用且 fail-open 时人工审批显示未隔离执行，批准后照常运行', async () => {
+  const command = 'printf human-open > marker.txt';
+  await setup((_request, index) => index === 1
+    ? { calls: [{ id: 'bash-unavailable', type: 'function', function: { name: 'Bash', arguments: JSON.stringify({ command }) } }] }
+    : { content: '沙箱不可用路径完成' }, {
+    permissions: { allow: [], ask: [], deny: [], sandbox: { enabled: true, onUnavailable: 'open' } },
+  });
+  const running = run();
+  await running.waitFor('> ');
+  running.child.stdin.write('执行命令\n');
+  await running.waitFor('approve 1');
+  expect(running.output()).toContain('沙箱状态：');
+  expect(running.output()).toContain('未隔离');
+  await expect(readFile(join(cwd, 'marker.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+  running.child.stdin.write('approve 1\n');
+  await running.waitFor('沙箱不可用路径完成');
+  running.child.stdin.end('/exit\n');
+  const result = await running.done;
+  expect(result.code, result.stdout + result.stderr).toBe(0);
+  expect(await readFile(join(cwd, 'marker.txt'), 'utf8')).toBe('human-open');
+});
+
 it.skipIf(process.platform === 'win32')('人工审批工作区外 Bash cwd 展示实际目录并在批准前等待', async () => {
   let outside = '';
   await setup((_request, index) => index === 1 ? { calls: [

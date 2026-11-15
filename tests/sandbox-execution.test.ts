@@ -145,16 +145,45 @@ describe('sandboxed Bash execution', () => {
     await expect(readFile(join(bin, 'sandbox-exec.profile'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('fail-closed 计划拒绝执行且不退回宿主路径', async () => {
+  it('fail-open 时照常执行，结果标记 sandboxed=false 并携带未隔离通知', async () => {
+    const unavailable = await createSandboxPlan({
+      ...planOptions({ config: sandbox({ onUnavailable: 'open' }) }),
+      platform: { seatbelt: false },
+    });
+    expect(unavailable).toMatchObject({ mode: 'host', sandboxed: false, reason: 'unavailable' });
+
+    const result = await runPlannedBash(unavailable, 'printf host-open', workspace);
+
+    expect(result).toMatchObject({
+      stdout: 'host-open', stderr: '', exitCode: 0, signal: null, truncated: false, sandboxed: false,
+      notice: expect.stringContaining('未隔离'),
+    });
+    expect(await readdir(calls)).toEqual([]);
+  });
+
+  it('fail-closed 计划拒绝执行、给出原因且不启动命令进程', async () => {
+    // 用同名 bash 替身记录任何命令进程启动；fail-closed 必须在 spawn 前拒绝。
+    const spawned = join(root, 'spawned');
+    const fakeBash = join(bin, 'bash');
+    await writeFile(fakeBash, `#!/bin/sh\nprintf spawned > ${JSON.stringify(spawned)}\nexec /bin/bash "$@"\n`);
+    await chmod(fakeBash, 0o755);
     const unavailable = await createSandboxPlan({
       ...planOptions({ command: 'printf must-not-run > executed.txt', config: sandbox({ onUnavailable: 'closed' }) }),
       platform: { seatbelt: false },
     });
     expect(unavailable).toMatchObject({ mode: 'reject' });
 
-    await expect(runPlannedBash(unavailable, 'printf must-not-run > executed.txt', workspace)).rejects.toMatchObject({
-      output: { sandboxed: false },
-    });
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${bin}:${originalPath ?? ''}`;
+    try {
+      await expect(runPlannedBash(unavailable, 'printf must-not-run > executed.txt', workspace)).rejects.toMatchObject({
+        message: expect.stringContaining('closed'),
+        output: { sandboxed: false, notice: expect.stringContaining('closed') },
+      });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+    await expect(readFile(spawned, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(join(workspace, 'executed.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await readdir(calls)).toEqual([]);
   });

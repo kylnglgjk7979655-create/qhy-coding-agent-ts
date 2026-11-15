@@ -23,15 +23,15 @@ export async function runPlannedBash(
 ): Promise<BashRunResult> {
   try {
     if (plan.mode === 'reject') {
-      // fail-closed 不退回宿主执行；结果仍保留统一的 sandboxed 元信息。
-      throw new ToolExecutionError(plan.notice ?? '沙箱不可用，已拒绝执行。', REJECTED_RESULT);
+      // fail-closed 不退回宿主执行；结果仍保留统一的 sandboxed 元信息与失败原因。
+      throw new ToolExecutionError(plan.notice ?? '沙箱不可用，已拒绝执行。', withNotice(REJECTED_RESULT, plan.notice));
     }
-    if (plan.mode === 'host') return await runHostBash(command, cwd, signal, timeoutMs);
+    if (plan.mode === 'host') return withNotice(await runHostBash(command, cwd, signal, timeoutMs), plan.notice);
 
     // profile 只放在本次调用的 0700 目录内，避免暴露给其他用户或混入工作区。
     const profilePath = join(plan.tempDir, 'profile.sb');
     await writeFile(profilePath, plan.profile, { encoding: 'utf8', mode: 0o600 });
-    return await runBashProcess(
+    const result = await runBashProcess(
       'sandbox-exec',
       ['-f', profilePath, 'bash', '--noprofile', '--norc', '-c', command],
       {
@@ -41,7 +41,13 @@ export async function runPlannedBash(
         startFailureMessage: '无法启动沙箱 Bash 命令。',
       },
     );
+    return withNotice(result, plan.notice);
   } finally {
     await cleanupSandboxPlan(plan);
   }
+}
+
+/** 计划中的说明随结果返回给模型；未隔离或豁免结果不能被静默忽略。 */
+function withNotice(result: BashRunResult, notice: string | undefined): BashRunResult {
+  return notice === undefined ? result : { ...result, notice };
 }

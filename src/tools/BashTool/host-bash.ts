@@ -13,6 +13,8 @@ export interface BashRunResult {
   truncated: boolean;
   /** 本次调用是否在操作系统沙箱内执行；沙箱关闭或不可用时为 false。 */
   sandboxed: boolean;
+  /** 需要向模型说明的执行状态；例如沙箱不可用时明确标注“未隔离执行”。 */
+  notice?: string;
 }
 
 export interface BashProcessOptions {
