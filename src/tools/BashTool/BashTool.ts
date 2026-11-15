@@ -5,14 +5,16 @@ import type { SandboxPlan } from '../../services/sandbox/sandbox-plan.js';
 import { probeSandboxPlatform } from '../../services/sandbox/sandbox-platform.js';
 import { startSandboxNetwork } from '../../services/sandbox/sandbox-network.js';
 import { prepareBashInput, verifyBashWorkingDirectory } from './host-bash.js';
+import { bashSandboxGuidance } from './sandbox-guidance.js';
 import { runPlannedBash } from './sandbox-bash.js';
 import type { BuiltInToolContext } from '../register-built-in-tools.js';
 import type { ToolRegistry } from '../tool-registry.js';
 
 export function registerBashTool(registry: ToolRegistry, { config, bashOperations }: BuiltInToolContext): void {
+  const sandbox = config.permissions?.sandbox ?? DEFAULT_SANDBOX;
   registry.register({
     name: 'Bash',
-    description: '使用独立宿主 Bash 执行命令，继承 CLI 环境；cwd 仅约束启动目录，不提供操作系统隔离。',
+    description: `使用独立 shell 运行命令和项目测试；cwd 仅约束启动目录。${bashSandboxGuidance(sandbox)}`,
     inputSchema: z.strictObject({
       command: z.string().refine((value) => value.trim().length > 0),
       cwd: z.string().min(1).optional(),
@@ -22,7 +24,6 @@ export function registerBashTool(registry: ToolRegistry, { config, bashOperation
     // 计划在审批前生成，使人工审批与模型审批都能看到执行模式与不可用说明；执行层只消费同一份计划。
     prepare: async (input) => {
       const prepared = await prepareBashInput(config.workspace, input);
-      const sandbox = config.permissions?.sandbox ?? DEFAULT_SANDBOX;
       // 关闭沙箱时无需启动探测子进程；计划首先返回 disabled。
       const platform = sandbox.enabled ? await probeSandboxPlatform() : { seatbelt: false };
       // 代理只在沙箱可能真正生效且白名单非空时启动；启动失败由 undefined 表示，计划将拒绝全部网络。
