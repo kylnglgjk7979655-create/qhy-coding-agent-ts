@@ -12,6 +12,8 @@ export interface ControlledProcessOptions {
   stderrLimitBytes?: number;
   /** 可选合计上限，跨 stdout 与 stderr 共享；省略时两流只受各自上限约束。 */
   combinedLimitBytes?: number;
+  /** stdout 一旦超过自身上限就终止整个进程组；用于需要以资源超限判定失败的调用方。 */
+  terminateOnStdoutLimit?: boolean;
 }
 
 export interface ControlledProcessResult {
@@ -85,7 +87,10 @@ export async function runControlledProcess(
     const budget = { remaining: limits.combined };
     const stdout = new StreamCollector(limits.stdout, budget);
     const stderr = new StreamCollector(limits.stderr, budget);
-    child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk));
+    child.stdout?.on('data', (chunk: Buffer) => {
+      const exceeded = stdout.push(chunk);
+      if (exceeded && options.terminateOnStdoutLimit) terminate();
+    });
     child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
     if (stdin !== undefined) {
       // 子进程可能提前退出导致 EPIPE；stdin 错误不应变成未处理的进程错误。
@@ -134,14 +139,18 @@ class StreamCollector {
     private readonly budget: SharedBudget,
   ) {}
 
-  push(chunk: Buffer): void {
-    const remaining = Math.max(0, Math.min(this.limitBytes - this.saved, this.budget.remaining));
+  /** 返回是否超过自身上限；调用方可据此终止进程，而不是只依赖共享合计上限。 */
+  push(chunk: Buffer): boolean {
+    const ownRemaining = Math.max(0, this.limitBytes - this.saved);
+    const exceeded = chunk.length > ownRemaining;
+    const remaining = Math.max(0, Math.min(ownRemaining, this.budget.remaining));
     if (chunk.length > remaining) this.truncated = true;
-    if (remaining === 0) return;
+    if (remaining === 0) return exceeded;
     const kept = chunk.subarray(0, remaining);
     this.chunks.push(Buffer.from(kept));
     this.saved += kept.length;
     this.budget.remaining -= kept.length;
+    return exceeded;
   }
 
   text(): string {

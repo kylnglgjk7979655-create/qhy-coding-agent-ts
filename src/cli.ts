@@ -22,7 +22,9 @@ import { acquireSessionLock } from './services/session/session-lock.js';
 import { generateSummary } from './services/compact/context-summary.js';
 import { RecentFileTracker } from './services/compact/recent-files.js';
 import { formatHookCommandList, hasHookCommands, isHooksConfigTrusted, trustHooksConfig } from './services/hooks/hook-trust.js';
-import type { HooksConfig } from './services/hooks/hooks-config.js';
+import type { HooksConfig, SessionStartSource } from './services/hooks/hooks-config.js';
+import { HookInjectionTracker, describeHookRun, runHookEvent, sessionStartContextMessages } from './services/hooks/hook-engine.js';
+import type { SessionStartHookInput } from './services/hooks/hook-runner.js';
 import type { LoadedConfig } from './services/settings/config.js';
 
 const help = `用法：node dist/cli.js [选项]
@@ -158,6 +160,8 @@ async function main(): Promise<void> {
     let config: Awaited<ReturnType<typeof loadConfig>>;
     let session: Awaited<ReturnType<typeof loadSession>> | undefined;
     let legacyHistory: ModelMessage[] | undefined;
+    // 只有本次进程新建的对话运行 SessionStart(startup)；恢复既有会话留给 resume 来源。
+    let sessionStartedFresh = false;
     if (!smokeTool && args.values['conversation-id'] !== undefined) {
       try {
         session = await loadSession(userHome, conversationId);
@@ -173,12 +177,14 @@ async function main(): Promise<void> {
           config: persistableSessionConfig(config),
           ...(legacyHistory === undefined ? {} : { transcript: legacyHistory, effectiveHistory: legacyHistory }),
         });
+        sessionStartedFresh = true;
       }
     } else {
       config = await loadCurrentConfig();
       if (smokeTool) session = undefined;
       else {
         session = await createSession(userHome, { id: conversationId, workspace: config.workspace, config: persistableSessionConfig(config) });
+        sessionStartedFresh = true;
       }
     }
     if (!smokeTool) {
@@ -204,6 +210,54 @@ async function main(): Promise<void> {
     }
     // 非 smoke 路径在配置加载后已建立输入消费者；此处显式收窄供后续闭包使用。
     if (!input) throw new AgentError('CONFIG_ERROR', '交互输入未初始化。');
+
+    const hookInjectionTracker = new HookInjectionTracker();
+    /**
+     * 新建对话的 SessionStart(startup) 在任何用户提交之前完成。
+     * 匹配 Hook 并行执行，附加上下文按配置顺序放到历史首部；故障只提示，不阻止启动。
+     */
+    const sessionStartContext = async (source: SessionStartSource, sessionId: string, signal: AbortSignal): Promise<ModelMessage[]> => {
+      if (config.hooks === undefined || config.disableAllHooks) return [];
+      const hookInput: SessionStartHookInput = {
+        session_id: sessionId,
+        transcript_path: sessionRecordPath(userHome, sessionId),
+        cwd: config.workspace,
+        approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
+        hook_event_name: 'SessionStart',
+        source,
+      };
+      let result: Awaited<ReturnType<typeof runHookEvent>>;
+      try {
+        result = await runHookEvent(config.hooks, 'SessionStart', hookInput, {
+          cwd: config.workspace,
+          env: process.env,
+          signal,
+        });
+      } catch {
+        process.stderr.write('[hook] SessionStart: 执行失败（已忽略，不影响对话）\n');
+        return [];
+      }
+      for (const run of result.runs) {
+        const message = describeHookRun(run);
+        if (message !== undefined) process.stderr.write(`${message}\n`);
+      }
+      return sessionStartContextMessages(result, hookInjectionTracker);
+    };
+    /** 启动 Hook 期间登记为活动轮次，使 Ctrl-C 能取消；取消后按既有路径关闭输入退出。 */
+    const runSessionStart = async (source: SessionStartSource, sessionId: string): Promise<ModelMessage[]> => {
+      const controller = new AbortController();
+      activeRound = controller;
+      try {
+        const injected = await sessionStartContext(source, sessionId, AbortSignal.any([cancellation.signal, controller.signal]));
+        if (controller.signal.aborted) input?.close();
+        return injected;
+      } finally {
+        activeRound = undefined;
+      }
+    };
+    if (sessionStartedFresh && session) {
+      history = [...await runSessionStart('startup', conversationId), ...history];
+    }
 
     // 启动时注册一次 Skill；会话切换工作区后重新加载，本轮内来源文件变化不影响已注册内容。
     let skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
@@ -279,6 +333,8 @@ async function main(): Promise<void> {
         recoveredRoundIds = [];
         recentFiles.clear();
         bindBackgroundNotifications(id);
+        // /clear 等同新建对话，先完成 SessionStart(startup) 再接受下一条用户提交。
+        history = await runSessionStart('startup', id);
         process.stdout.write(`已新建会话：${id}\n`);
       },
     });
