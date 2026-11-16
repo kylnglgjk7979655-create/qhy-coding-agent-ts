@@ -416,7 +416,7 @@ Hook 从 stdin 收到恰好一个 JSON 对象。所有事件共有：
 | `UserPromptSubmit` | `prompt`：真实用户提交的原始文本 |
 | `PreToolUse` | `tool_name`、`tool_input`（`prepare` 后、即将审批和执行的输入）、`tool_use_id` |
 | `PostToolUse` | `tool_name`、`tool_input`、`tool_response`（`{ is_error: false, output }`）、`tool_use_id` |
-| `PostToolUseFailure` | `tool_name`、`tool_input`、`error`（字符串）、`error_code`、`tool_use_id` |
+| `PostToolUseFailure` | `tool_name`、`tool_input`、`error`（字符串）、`error_code`（取 `INVALID_TOOL_ARGUMENTS`、`UNKNOWN_TOOL`、`TOOL_EXECUTION_ERROR`、`PERMISSION_DENIED` 之一，v1 通常为 `TOOL_EXECUTION_ERROR`）、`tool_use_id` |
 | `Stop` | `stop_hook_active`（本次是否由 Stop 阻止后的续跑触发）、`last_assistant_message` |
 
 `tool_input` 不是模型原始参数，而是工具 `prepare` 之后的输入；`tool_use_id` 用于关联同一工具调用的三个事件。协议版本 `HOOK_PROTOCOL_VERSION = 1` 是代码常量，不写入 stdin。

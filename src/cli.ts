@@ -24,7 +24,11 @@ import { generateSummary } from './services/compact/context-summary.js';
 import { RecentFileTracker } from './services/compact/recent-files.js';
 import { formatHookCommandList, hasHookCommands, isHooksConfigTrusted, trustHooksConfig } from './services/hooks/hook-trust.js';
 import type { HooksConfig, SessionStartSource } from './services/hooks/hooks-config.js';
-import { HookInjectionTracker, describeHookRun, hookLogFields, runHookEvent, sessionStartContextMessages, stopContinuation, stopFeedbackMessages, userPromptSubmitContextMessages, userPromptSubmitStop } from './services/hooks/hook-engine.js';
+import {
+  HookInjectionTracker, describeHookRun, hookInputBase, hookLogFields, runHookEvent,
+  sessionStartContextMessages, stopContinuation, stopFeedbackMessages, userPromptSubmitContextMessages,
+  userPromptSubmitStop,
+} from './services/hooks/hook-engine.js';
 import type { HookEventNotification, UserPromptSubmitStop } from './services/hooks/hook-engine.js';
 import type { SessionStartHookInput, StopHookInput, UserPromptSubmitHookInput } from './services/hooks/hook-runner.js';
 import type { LoadedConfig } from './services/settings/config.js';
@@ -247,11 +251,7 @@ async function main(): Promise<void> {
     const sessionStartContext = async (source: SessionStartSource, sessionId: string, signal: AbortSignal): Promise<ModelMessage[]> => {
       if (config.hooks === undefined || config.disableAllHooks) return [];
       const hookInput: SessionStartHookInput = {
-        session_id: sessionId,
-        transcript_path: sessionRecordPath(userHome, sessionId),
-        cwd: config.workspace,
-        approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
-        hook_event_name: 'SessionStart',
+        ...hookInputBase('SessionStart', sessionId, sessionRecordPath(userHome, sessionId), config),
         source,
       };
       let result: Awaited<ReturnType<typeof runHookEvent>>;
@@ -301,11 +301,7 @@ async function main(): Promise<void> {
     }> => {
       if (config.hooks === undefined || config.disableAllHooks) return { context: [] };
       const hookInput: UserPromptSubmitHookInput = {
-        session_id: conversationId,
-        transcript_path: sessionRecordPath(userHome, conversationId),
-        cwd: config.workspace,
-        approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
-        hook_event_name: 'UserPromptSubmit',
+        ...hookInputBase('UserPromptSubmit', conversationId, sessionRecordPath(userHome, conversationId), config),
         prompt,
       };
       let result: Awaited<ReturnType<typeof runHookEvent>>;
@@ -721,11 +717,7 @@ async function runStopHook(
   // 最终回答之后、Hook 启动之前的取消仍属于取消路径，不运行 Stop。
   signal.throwIfAborted();
   const hookInput: StopHookInput = {
-    session_id: conversationId,
-    transcript_path: sessionRecordPath(userHome, conversationId),
-    cwd: config.workspace,
-    approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
-    hook_event_name: 'Stop',
+    ...hookInputBase('Stop', conversationId, sessionRecordPath(userHome, conversationId), config),
     stop_hook_active: stopHookActive,
     last_assistant_message: text,
   };

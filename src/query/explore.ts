@@ -14,7 +14,10 @@ import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.
 import { readWorkspaceFile } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
 import type { ApprovalControl } from '../tools/tool-approval.js';
-import { HookInjectionTracker, describeHookRun, evaluatePreToolUse, runHookEvent, takeToolFeedbackMessages } from '../services/hooks/hook-engine.js';
+import {
+  HookInjectionTracker, describeHookRun, evaluatePreToolUse, hookInputBase, runHookEvent,
+  takeToolFeedbackMessages, toolPreToolUseDecision,
+} from '../services/hooks/hook-engine.js';
 import type { HookCommandRun, HookEventResult } from '../services/hooks/hook-engine.js';
 import type { SubagentHookScope } from '../services/hooks/hook-scope.js';
 import type { PostToolUseFailureHookInput, PostToolUseHookInput, PreToolUseHookInput } from '../services/hooks/hook-runner.js';
@@ -55,7 +58,6 @@ export async function runExplore(
   const hookInjectionTracker = hookScope?.hookInjectionTracker ?? new HookInjectionTracker();
   const onHookEvent = hookScope?.onHookEvent;
   const pendingToolFeedback = new Map<string, HookEventResult>();
-  const hookSignal = signal ?? new AbortController().signal;
   const runExploreToolHook = async (
     event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure',
     input: PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput,
@@ -66,7 +68,7 @@ export async function runExplore(
       return await runHookEvent(hooksConfig, event, input, {
         cwd: config.workspace,
         env: process.env,
-        signal: toolSignal ?? hookSignal,
+        signal: toolSignal ?? approvalSignal,
         ...(onHookEvent === undefined ? {} : { onHookEvent }),
       });
     } catch {
@@ -85,11 +87,7 @@ export async function runExplore(
     preToolUse: async (call, toolSignal) => {
       if (activeHookScope === undefined) return undefined;
       const hookInput: PreToolUseHookInput = {
-        session_id: activeHookScope.sessionId,
-        transcript_path: activeHookScope.transcriptPath,
-        cwd: config.workspace,
-        approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
-        hook_event_name: 'PreToolUse',
+        ...hookInputBase('PreToolUse', activeHookScope.sessionId, activeHookScope.transcriptPath, config),
         agent_id: activeHookScope.agentId,
         agent_type: activeHookScope.agentType,
         tool_name: call.toolName,
@@ -101,26 +99,12 @@ export async function runExplore(
       // 改写候选按工具注册的 inputSchema 校验，与主 Agent 使用同一套聚合规则。
       const evaluation = await evaluatePreToolUse(result, call.validateInput);
       reportHookRuns(evaluation.runs);
-      return evaluation.decision === undefined && evaluation.updatedInput === undefined
-        ? undefined
-        : {
-          ...(evaluation.decision === undefined
-            ? {}
-            : {
-              decision: evaluation.decision.decision,
-              ...(evaluation.decision.reason === undefined ? {} : { reason: evaluation.decision.reason }),
-            }),
-          ...(evaluation.updatedInput === undefined ? {} : { updatedInput: evaluation.updatedInput }),
-        };
+      return toolPreToolUseDecision(evaluation);
     },
     postToolUse: async (call, toolSignal) => {
       if (activeHookScope === undefined) return;
       const hookInput: PostToolUseHookInput = {
-        session_id: activeHookScope.sessionId,
-        transcript_path: activeHookScope.transcriptPath,
-        cwd: config.workspace,
-        approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
-        hook_event_name: 'PostToolUse',
+        ...hookInputBase('PostToolUse', activeHookScope.sessionId, activeHookScope.transcriptPath, config),
         agent_id: activeHookScope.agentId,
         agent_type: activeHookScope.agentType,
         tool_name: call.toolName,
@@ -136,11 +120,7 @@ export async function runExplore(
     postToolUseFailure: async (call, toolSignal) => {
       if (activeHookScope === undefined) return;
       const hookInput: PostToolUseFailureHookInput = {
-        session_id: activeHookScope.sessionId,
-        transcript_path: activeHookScope.transcriptPath,
-        cwd: config.workspace,
-        approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
-        hook_event_name: 'PostToolUseFailure',
+        ...hookInputBase('PostToolUseFailure', activeHookScope.sessionId, activeHookScope.transcriptPath, config),
         agent_id: activeHookScope.agentId,
         agent_type: activeHookScope.agentType,
         tool_name: call.toolName,

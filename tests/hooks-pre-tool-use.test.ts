@@ -226,6 +226,31 @@ it('ask 即使权限规则原本 allow 也强制审批，并把理由作为审�
   expect(await readFile(join(workspace, 'out.txt'), 'utf8')).toBe('需确认内容');
 });
 
+it('Hook allow 不能跳过工作区外读取这类范围审批', async () => {
+  const outsideDirectory = await realpath(await mkdtemp(join(tmpdir(), 'qhy-hooks-outside-')));
+  workspaces.push(outsideDirectory);
+  const outsidePath = join(outsideDirectory, 'outside.txt');
+  await writeFile(outsidePath, '工作区外内容');
+  const { workspace, home, fixture } = await setup({
+    approval: { mode: 'auto' },
+    hooks: {
+      PreToolUse: [{ matcher: 'read_file', hooks: [decisionHook('allow', 'Hook 允许读取')] }],
+    },
+  }, (_request, index) => index === 1 ? { calls: [
+    call('outside-read', 'read_file', { path: outsidePath }),
+  ] } : { content: '完成' });
+
+  const result = await run({ workspace, home, conversationId: 'pre-tool-allow-outside' });
+
+  expect(result.code, result.stdout + result.stderr).toBe(0);
+  // allow 只跳过规则未要求的默认审批；工作区外读取仍必须经过审批。
+  expect(fixture.approvalRequests).toHaveLength(1);
+  expect(JSON.parse(results(fixture)[0]!.content)).toMatchObject({
+    is_error: false,
+    output: { content: '工作区外内容' },
+  });
+});
+
 it('Hook 故障与无效 JSON 只提示，不改变工具错误码，工具仍按原审批路径执行', async () => {
   const { workspace, home, fixture } = await setup({
     approval: { mode: 'auto' },

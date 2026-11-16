@@ -12,8 +12,6 @@ export const MAX_HOOK_STDOUT_BYTES = 1024 * 1024;
 export const MAX_HOOK_STDERR_BYTES = 64 * 1024;
 /** 所有进入模型上下文的 Hook 文本统一按该字符数截断。 */
 export const MAX_HOOK_INJECT_CHARS = 8_000;
-/** 旧版通用默认超时；现在按事件取 defaultHookTimeoutMs，保留该常量避免影响既有调用方。 */
-export const DEFAULT_HOOK_TIMEOUT_MS = 60_000;
 
 export type HookOutcome = 'success' | 'blocking' | 'non_blocking_error' | 'cancelled';
 export type HookFailureKind = 'timeout' | 'spawn_error' | 'invalid_json' | 'output_limit' | 'exit_code' | 'invalid_updated_input';

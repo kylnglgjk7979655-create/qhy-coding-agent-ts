@@ -1,10 +1,33 @@
 import { randomUUID } from 'node:crypto';
 import type { ModelMessage } from 'ai';
+import type { ToolPreToolUseDecision } from '../../tools/tool-registry.js';
 import { hookQueryField, matchesHookMatcher, type HookCommand, type HookEvent, type HooksConfig } from './hooks-config.js';
-import { runCommandHook, truncateHookText, type HookInput, type HookResult, type HookRunOptions } from './hook-runner.js';
+import {
+  runCommandHook, truncateHookText,
+  type HookInput, type HookInputBase, type HookResult, type HookRunOptions,
+} from './hook-runner.js';
 
 /** UI 行最多展示的字符数，避免 Hook 的 systemMessage 刷屏。 */
 export const MAX_HOOK_UI_LINE_CHARS = 500;
+
+/**
+ * 所有事件共用的 stdin 基础字段。
+ * 集中 approval_mode 映射，避免各调用点分别拼装时出现不一致。
+ */
+export function hookInputBase<Event extends HookEvent>(
+  event: Event,
+  sessionId: string,
+  transcriptPath: string,
+  config: { workspace: string; approval: { mode: 'auto' | 'default' } },
+): HookInputBase & { hook_event_name: Event } {
+  return {
+    session_id: sessionId,
+    transcript_path: transcriptPath,
+    cwd: config.workspace,
+    approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
+    hook_event_name: event,
+  };
+}
 
 export interface SelectedHook {
   event: HookEvent;
@@ -275,6 +298,22 @@ export async function evaluatePreToolUse(
     ...(selected === undefined ? {} : { decision: selected }),
     ...(updatedInput === undefined ? {} : { updatedInput }),
     runs,
+  };
+}
+
+/** 把 PreToolUse 聚合结果转成 registry 使用的结论；deny 由调用方在审批前短路。 */
+export function toolPreToolUseDecision(
+  evaluation: PreToolUseEvaluation,
+): ToolPreToolUseDecision | undefined {
+  if (evaluation.decision === undefined && evaluation.updatedInput === undefined) return undefined;
+  return {
+    ...(evaluation.decision === undefined
+      ? {}
+      : {
+        decision: evaluation.decision.decision,
+        ...(evaluation.decision.reason === undefined ? {} : { reason: evaluation.decision.reason }),
+      }),
+    ...(evaluation.updatedInput === undefined ? {} : { updatedInput: evaluation.updatedInput }),
   };
 }
 

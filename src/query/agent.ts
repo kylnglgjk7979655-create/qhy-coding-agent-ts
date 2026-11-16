@@ -21,7 +21,10 @@ import { appendRecentSkillLoads, collectSkillInjections, insertSkillInjections }
 import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import type { SkillInjection } from '../services/skills/skill-injection.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
-import { HookInjectionTracker, describeHookRun, evaluatePreToolUse, runHookEvent, takeToolFeedbackMessages } from '../services/hooks/hook-engine.js';
+import {
+  HookInjectionTracker, describeHookRun, evaluatePreToolUse, hookInputBase, runHookEvent,
+  takeToolFeedbackMessages, toolPreToolUseDecision,
+} from '../services/hooks/hook-engine.js';
 import type { HookEventNotification, HookEventResult } from '../services/hooks/hook-engine.js';
 import type { ParentHookScope, SubagentHookScope } from '../services/hooks/hook-scope.js';
 import type { PostToolUseFailureHookInput, PostToolUseHookInput, PreToolUseHookInput } from '../services/hooks/hook-runner.js';
@@ -199,11 +202,7 @@ export async function runAgent(
       try {
         pauseDeadline();
         const hookInput: PreToolUseHookInput = {
-          session_id: hookSessionId,
-          transcript_path: hookTranscriptPath,
-          cwd: config.workspace,
-          approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
-          hook_event_name: 'PreToolUse',
+          ...hookInputBase('PreToolUse', hookSessionId, hookTranscriptPath, config),
           ...subagentHookFields,
           tool_name: call.toolName,
           tool_input: call.input,
@@ -227,17 +226,7 @@ export async function runAgent(
           const message = describeHookRun(run);
           if (message !== undefined) process.stderr.write(`${message}\n`);
         }
-        return evaluation.decision === undefined && evaluation.updatedInput === undefined
-          ? undefined
-          : {
-            ...(evaluation.decision === undefined
-              ? {}
-              : {
-                decision: evaluation.decision.decision,
-                ...(evaluation.decision.reason === undefined ? {} : { reason: evaluation.decision.reason }),
-              }),
-            ...(evaluation.updatedInput === undefined ? {} : { updatedInput: evaluation.updatedInput }),
-          };
+        return toolPreToolUseDecision(evaluation);
       } finally {
         resumeDeadline();
       }
@@ -249,11 +238,7 @@ export async function runAgent(
       try {
         pauseDeadline();
         const hookInput: PostToolUseHookInput = {
-          session_id: hookSessionId,
-          transcript_path: hookTranscriptPath,
-          cwd: config.workspace,
-          approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
-          hook_event_name: 'PostToolUse',
+          ...hookInputBase('PostToolUse', hookSessionId, hookTranscriptPath, config),
           ...subagentHookFields,
           tool_name: call.toolName,
           tool_input: call.input,
@@ -288,11 +273,7 @@ export async function runAgent(
       try {
         pauseDeadline();
         const hookInput: PostToolUseFailureHookInput = {
-          session_id: hookSessionId,
-          transcript_path: hookTranscriptPath,
-          cwd: config.workspace,
-          approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
-          hook_event_name: 'PostToolUseFailure',
+          ...hookInputBase('PostToolUseFailure', hookSessionId, hookTranscriptPath, config),
           ...subagentHookFields,
           tool_name: call.toolName,
           tool_input: call.input,

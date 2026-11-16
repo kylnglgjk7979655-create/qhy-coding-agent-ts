@@ -60,12 +60,11 @@ export async function approveToolCall(
     || bashActions.includes('ask') || bashRequiresApproval;
   const hookAsk = call.hookPermission?.decision === 'ask';
   const hookAllow = call.hookPermission?.decision === 'allow';
-  // 只有权限规则本身没有 deny/ask 时，Hook 的 allow 才能跳过其余审批。
-  const ruleRequiresApproval = permissionAction === 'ask' || searchAsks || bashActions.includes('ask');
   if (permissionAction === 'deny' || bashDenied) return false;
   // ask 强制审批，即使权限规则原本允许；allow 不能绕过规则里的 deny/ask。
   if (!hookAsk) {
-    if (hookAllow && !ruleRequiresApproval) return true;
+    // Hook allow 只跳过“规则未要求审批”的默认审批；工作区外读取/搜索、需审批 Bash 等范围审批仍然生效。
+    if (hookAllow && !permissionRequiresApproval) return true;
     if (call.toolName === 'Bash' && bashAllowed && !permissionRequiresApproval) return true;
     // 范围要求审批时，不能被另一条宽泛 allow 跳过。
     if (!permissionRequiresApproval && permissionAction === 'allow') return true;
