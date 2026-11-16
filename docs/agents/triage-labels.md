@@ -29,3 +29,5 @@
 `agent:explore` 与 `agent:implement-spec` 入口已移除，本地仍可用 `implement-spec` skill 在单次会话里并行实现。
 
 标签触发、`AGENT_PAT` 配置和失败恢复见 [GitHub Actions](github-actions.md)。正文的依赖文字不代替原生依赖，关闭前置必须为 completed。QA 入口（`agent:qa`、`agent:qa-only`）暂未接入 workflow，`qa-only` skill 保留供本地验证。
+
+`source:architecture-review` 标记定期架构巡检生成的 PRD；它表示来源，不触发拆票或实现。详情见 [GitHub Actions](github-actions.md)。

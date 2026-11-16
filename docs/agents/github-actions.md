@@ -59,6 +59,12 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 
 `ready-for-agent` 只表示准备完成。QA 暂不接入 workflow：`agent:qa` / `agent:qa-only` 入口已移除。`agent:explore` 与 `agent:implement-spec` 入口同样已移除，本地仍可用对应 skill。
 
+## 定期架构巡检
+
+`Architecture Review` 每天北京时间 22:10（UTC 14:10）运行，也可在 Actions 手动触发。GitHub 的定时运行可能延迟，且定时任务只有合入默认分支后才会生效。巡检沿用上述模型认证，以只读权限探索仓库和最近最多 1000 条 `source:architecture-review` 历史提案，避免重复；每次最多发布一个中文 PRD Issue。如果没有合适的新机会则记录跳过原因，未关闭的巡检提案达到 10 个时暂停本次运行。
+
+巡检 Agent 不修改代码，独立的发布 job 负责创建 Issue 和来源标签。维护者评估 PRD 后可添加 `agent:to-issues` 拆票；不会自动实现。查看 Actions 的运行摘要可找到提案、候选项或跳过原因。
+
 ## 从 Spec 到交付
 
 1. 将 Spec 放在 GitHub 父 Issue 正文，补充要求写在评论。
