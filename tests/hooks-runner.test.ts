@@ -48,6 +48,8 @@ function commandHook(command: string, timeoutMs?: number): HookCommand {
 /** Hook 命令先写 shell 与后台孙进程 PID，再保持运行；便于断言整棵进程树被终止。 */
 function treeCommand(prefix: string, wait: boolean): string {
   return [
+    // 不等待的用例会立即退出；先消费 stdin，避免 shell 先于 runner 写入退出而把 EPIPE 误判为启动失败。
+    ...(wait ? [] : ['cat > /dev/null']),
     `echo $$ > ${prefix}-shell.pid`,
     `sleep 30 & echo $! > ${prefix}-child.pid`,
     ...(wait ? ['wait'] : []),
