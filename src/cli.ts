@@ -157,7 +157,15 @@ async function main(): Promise<void> {
     }
 
     // 启动时注册一次 Skill；会话切换工作区后重新加载，本轮内来源文件变化不影响已注册内容。
-    let skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
+    const loadSkills = async (): Promise<SkillCatalogue> => {
+      const catalogue = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
+      // 诊断写入 stderr，不中断启动；有效 Skill 仍按原规则注册。
+      for (const { path, reason } of catalogue.diagnostics) {
+        process.stderr.write(`[skill] 已跳过 ${path}：${reason}\n`);
+      }
+      return catalogue;
+    };
+    let skills = await loadSkills();
 
     input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
     const fileBaselinesBySession = new Map<string, Map<string, WorkspaceFileSnapshot>>();
@@ -194,7 +202,7 @@ async function main(): Promise<void> {
       config = resumed.config;
       conversationId = id;
       recentFiles.replace(resumed.recentFiles);
-      skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
+      skills = await loadSkills();
       bindBackgroundNotifications(id);
       process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
       return resumed;
