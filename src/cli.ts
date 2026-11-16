@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
 import { runAgent } from './query/agent.js';
 import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession, type BackgroundTaskStatusEntry } from './tools/AgentTool/background-agent-tasks.js';
-import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
+import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, persistableSessionConfig, restoreSessionConfig } from './services/settings/config.js';
 import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, saveManualCompaction, sessionRecordPath, sessionTaskOutputDirectory, startSessionRound } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
 import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './services/session/file-checkpoints.js';
@@ -122,11 +122,10 @@ async function main(): Promise<void> {
         config = await loadCurrentConfig();
         const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
         legacyHistory = await loadLegacyConversation(legacyDirectory, conversationId);
-        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, migrationWarnings: _migrationWarnings, ...persistedConfig } = config;
         session = await createSession(userHome, {
           id: conversationId,
           workspace: config.workspace,
-          config: persistedConfig,
+          config: persistableSessionConfig(config),
           ...(legacyHistory === undefined ? {} : { transcript: legacyHistory, effectiveHistory: legacyHistory }),
         });
       }
@@ -134,8 +133,7 @@ async function main(): Promise<void> {
       config = await loadCurrentConfig();
       if (smokeTool) session = undefined;
       else {
-        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, migrationWarnings: _migrationWarnings, ...persistedConfig } = config;
-        session = await createSession(userHome, { id: conversationId, workspace: config.workspace, config: persistedConfig });
+        session = await createSession(userHome, { id: conversationId, workspace: config.workspace, config: persistableSessionConfig(config) });
       }
     }
     if (session) releaseSession = await acquireSessionLock(userHome, conversationId);
@@ -219,8 +217,7 @@ async function main(): Promise<void> {
       type: 'local',
       execute: async () => {
         const id = newConversationId();
-        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
-        await createSession(userHome, { id, workspace: config.workspace, config: persistedConfig });
+        await createSession(userHome, { id, workspace: config.workspace, config: persistableSessionConfig(config) });
         const nextRelease = await acquireSessionLock(userHome, id);
         await releaseSession?.();
         releaseSession = nextRelease;
@@ -539,8 +536,7 @@ async function runTurn(
   });
   try {
     if (!smokeTool) {
-      const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, migrationWarnings: _migrationWarnings, ...persistedConfig } = config;
-      roundId = await startSessionRound(userHome, conversationId, prompt, persistedConfig, () => {
+      roundId = await startSessionRound(userHome, conversationId, prompt, persistableSessionConfig(config), () => {
         reportCheckpointWarning('checkpoint.snapshot_failed', '消息检查点文件快照失败，本轮继续处理。', { conversationId });
       });
       const current = await loadSession(userHome, conversationId);
