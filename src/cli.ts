@@ -17,13 +17,14 @@ import { CliInput } from './cli/cli-input.js';
 import { CommandRegistry } from './cli/commands.js';
 import { loadSkillCatalogue } from './services/skills/skill-registry.js';
 import type { SkillCatalogue } from './services/skills/skill-registry.js';
+import { appendRecentSkillLoads } from './services/skills/skill-injection.js';
 import type { ApprovalControl } from './tools/tool-approval.js';
 import { acquireSessionLock } from './services/session/session-lock.js';
 import { generateSummary } from './services/compact/context-summary.js';
 import { RecentFileTracker } from './services/compact/recent-files.js';
 import { formatHookCommandList, hasHookCommands, isHooksConfigTrusted, trustHooksConfig } from './services/hooks/hook-trust.js';
 import type { HooksConfig, SessionStartSource } from './services/hooks/hooks-config.js';
-import { HookInjectionTracker, describeHookRun, runHookEvent, sessionStartContextMessages, stopFeedbackMessages, userPromptSubmitContextMessages, userPromptSubmitStop } from './services/hooks/hook-engine.js';
+import { HookInjectionTracker, describeHookRun, runHookEvent, sessionStartContextMessages, stopContinuation, stopFeedbackMessages, userPromptSubmitContextMessages, userPromptSubmitStop } from './services/hooks/hook-engine.js';
 import type { UserPromptSubmitStop } from './services/hooks/hook-engine.js';
 import type { SessionStartHookInput, StopHookInput, UserPromptSubmitHookInput } from './services/hooks/hook-runner.js';
 import type { LoadedConfig } from './services/settings/config.js';
@@ -669,9 +670,16 @@ async function compactIdleHistory(
   }
 }
 
+/** Stop 的反馈与续跑结论；第二次运行只观察日志，不使用其中的反馈。 */
+interface StopHookOutcome {
+  feedback: ModelMessage[];
+  continuation: boolean;
+}
+
 /**
  * Stop 在 runAgent 成功返回后、finishSessionRound 之前运行。
  * 该事件没有 matcher query，默认超时 60 秒；block 或 exit 2 的理由追加到有效历史末端。
+ * stopHookActive 标记本次运行是否由上一次 Stop 阻止后的续跑触发。
  */
 async function runStopHook(
   config: Awaited<ReturnType<typeof loadConfig>>,
@@ -680,8 +688,9 @@ async function runStopHook(
   text: string,
   signal: AbortSignal,
   tracker: HookInjectionTracker,
-): Promise<ModelMessage[]> {
-  if (config.hooks === undefined || config.disableAllHooks) return [];
+  stopHookActive: boolean,
+): Promise<StopHookOutcome> {
+  if (config.hooks === undefined || config.disableAllHooks) return { feedback: [], continuation: false };
   // 最终回答之后、Hook 启动之前的取消仍属于取消路径，不运行 Stop。
   signal.throwIfAborted();
   const hookInput: StopHookInput = {
@@ -690,8 +699,7 @@ async function runStopHook(
     cwd: config.workspace,
     approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
     hook_event_name: 'Stop',
-    // 本切片不实现续跑；将来续跑请求需在第二次 Stop 时传 true 避免无限循环。
-    stop_hook_active: false,
+    stop_hook_active: stopHookActive,
     last_assistant_message: text,
   };
   let result: Awaited<ReturnType<typeof runHookEvent>>;
@@ -703,7 +711,7 @@ async function runStopHook(
     });
   } catch {
     process.stderr.write('[hook] Stop: 执行失败（已忽略，不影响本轮）\n');
-    return [];
+    return { feedback: [], continuation: false };
   }
   for (const run of result.runs) {
     const message = describeHookRun(run);
@@ -711,7 +719,10 @@ async function runStopHook(
   }
   // 用户在 Hook 执行期间取消时不把本轮记为成功，也不保存反馈。
   signal.throwIfAborted();
-  return stopFeedbackMessages(result, tracker);
+  return {
+    feedback: stopFeedbackMessages(result, tracker),
+    continuation: stopContinuation(result),
+  };
 }
 
 async function runTurn(
@@ -758,14 +769,26 @@ async function runTurn(
       recentSkillLoads = current.skillLoads ?? [];
       skillBodies = current.skillBodies ?? {};
     }
-    const result = await runAgent(config, prompt, {
+    const runAgentTurn = (
+      agentPrompt: string | undefined,
+      agentHistory: ModelMessage[],
+      turnOptions: {
+        promptContext: ModelMessage[];
+        maxSteps?: number;
+        summaryCoverageBase?: number;
+        summaryRestoredBase?: number;
+        recentSkillLoads?: readonly string[];
+        skillBodies?: Readonly<Record<string, string>>;
+      },
+    ) => runAgent(config, agentPrompt, {
       smokeTool,
-      history,
-      promptContext,
-      summaryCoverageBase,
-      summaryRestoredBase,
-      recentSkillLoads,
-      skillBodies,
+      history: agentHistory,
+      promptContext: turnOptions.promptContext,
+      summaryCoverageBase: turnOptions.summaryCoverageBase ?? summaryCoverageBase,
+      summaryRestoredBase: turnOptions.summaryRestoredBase ?? summaryRestoredBase,
+      recentSkillLoads: turnOptions.recentSkillLoads ?? recentSkillLoads,
+      skillBodies: turnOptions.skillBodies ?? skillBodies,
+      ...(turnOptions.maxSteps === undefined ? {} : { maxSteps: turnOptions.maxSteps }),
       fileBaselines,
       ...(skills === undefined ? {} : { skills }),
       ...(!smokeTool ? { backgroundTasks: backgroundAgentTasksForSession(
@@ -838,21 +861,64 @@ async function runTurn(
       } } : {}),
       ...(config.approval.mode === 'default' && approvalControl ? { approvalControl } : {}),
     });
+
+    const firstResult = await runAgentTurn(prompt, history, { promptContext });
     signal.throwIfAborted();
+    const tracker = hookInjectionTracker ?? new HookInjectionTracker();
     // Stop 只在最终回答产生后、轮次结束前运行；取消与异常终止都在调用前抛错。
-    const stopFeedback = smokeTool
-      ? []
-      : await runStopHook(
-        config, conversationId, userHome, result.text, signal,
-        hookInjectionTracker ?? new HookInjectionTracker(),
-      );
-    const nextHistory = smokeTool ? history : [...result.effectiveHistory, ...stopFeedback];
+    const stop = smokeTool
+      ? { feedback: [] as ModelMessage[], continuation: false }
+      : await runStopHook(config, conversationId, userHome, firstResult.text, signal, tracker, false);
+    const stopFeedback = stop.feedback;
+    let finalResult = firstResult;
+    let roundMessages = firstResult.roundMessages;
+    let summaries = [...firstResult.summaries];
+    let skillLoads = [...firstResult.skillLoads];
+    let mergedSkillBodies = { ...firstResult.skillBodies };
+    let totalSteps = firstResult.steps;
+    let totalToolCalls = firstResult.toolCalls;
+    let totalUsage = firstResult.usage;
+    let nextHistory = smokeTool ? history : [...firstResult.effectiveHistory, ...stopFeedback];
+    if (!smokeTool && stop.continuation) {
+      // 续跑复用整轮剩余步数，而不是重新获得完整额度。
+      const remainingSteps = config.maxSteps - firstResult.steps;
+      if (remainingSteps <= 0) {
+        process.stderr.write('[hook] Stop: 已达到本轮步数上限，不再续跑\n');
+      } else {
+        // 第一次运行可能已写压缩检查点；续跑从磁盘读取最新摘要边界与 Skill 状态。
+        const current = await loadSession(userHome, conversationId);
+        const lastSummary = current.summaries.at(-1);
+        const resumed = await runAgentTurn(undefined, [...firstResult.effectiveHistory, ...stopFeedback], {
+          promptContext: [],
+          maxSteps: remainingSteps,
+          summaryCoverageBase: lastSummary?.coversThrough ?? 0,
+          summaryRestoredBase: lastSummary?.restoredMessages ?? 0,
+          recentSkillLoads: appendRecentSkillLoads(current.skillLoads ?? [], firstResult.skillLoads),
+          skillBodies: { ...current.skillBodies, ...firstResult.skillBodies },
+        });
+        signal.throwIfAborted();
+        // 第二次 Stop 只记录日志：再次 block 也不续跑，也不向历史注入新的反馈。
+        await runStopHook(config, conversationId, userHome, resumed.text, signal, tracker, true);
+        finalResult = resumed;
+        roundMessages = [...roundMessages, ...stopFeedback, ...resumed.roundMessages];
+        summaries = [...summaries, ...resumed.summaries];
+        skillLoads = appendRecentSkillLoads(skillLoads, resumed.skillLoads);
+        mergedSkillBodies = { ...mergedSkillBodies, ...resumed.skillBodies };
+        nextHistory = resumed.effectiveHistory;
+        totalSteps += resumed.steps;
+        totalToolCalls += resumed.toolCalls;
+        totalUsage = {
+          inputTokens: sumTokens(firstResult.usage.inputTokens, resumed.usage.inputTokens),
+          outputTokens: sumTokens(firstResult.usage.outputTokens, resumed.usage.outputTokens),
+        };
+      }
+    }
     if (!smokeTool) {
       if (!roundId) throw new AgentError('PROVIDER_ERROR', '当前轮次未能建立持久化记录。');
       await finishSessionRound(userHome, conversationId, roundId, {
-        status: 'succeeded', response: result.roundMessages, effectiveHistory: nextHistory,
-        summaries: result.summaries, recoveredRoundIds, recentFiles: recentFiles.list(),
-        skillLoads: result.skillLoads, skillBodies: result.skillBodies,
+        status: 'succeeded', response: roundMessages, effectiveHistory: nextHistory,
+        summaries, recoveredRoundIds, recentFiles: recentFiles.list(),
+        skillLoads, skillBodies: mergedSkillBodies,
       });
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }
@@ -861,9 +927,9 @@ async function runTurn(
     log({
       event: 'run.finished', runId: lastRunId, status: 'succeeded',
       durationMs: Math.round(performance.now() - lastRunStartedAt),
-      steps: result.steps, toolCalls: result.toolCalls,
-      finishReason: result.finishReason, usage: result.usage,
-      toolSmokePassed: result.toolSmokePassed,
+      steps: totalSteps, toolCalls: totalToolCalls,
+      finishReason: finalResult.finishReason, usage: totalUsage,
+      toolSmokePassed: finalResult.toolSmokePassed,
       ...(smokeTool ? {} : { conversationId }),
     });
     return nextHistory;
@@ -893,6 +959,12 @@ async function runTurn(
     }
     throw error;
   }
+}
+
+/** 合并两次运行的 token 用量；两边都未提供时保持未知，而不是伪造为 0。 */
+function sumTokens(first: number | undefined, second: number | undefined): number | undefined {
+  if (first === undefined && second === undefined) return undefined;
+  return (first ?? 0) + (second ?? 0);
 }
 
 function parseCliArgs() {

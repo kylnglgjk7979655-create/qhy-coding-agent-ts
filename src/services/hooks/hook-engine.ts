@@ -271,6 +271,27 @@ function toolEventFeedback(result: HookResult): string | undefined {
 }
 
 /**
+ * Stop 是否请求在同一轮次内续跑：exit 2 或 decision block 请求续跑。
+ * 任一 Hook 返回 continue:false 或 preventContinuation:true 都直接结束，不再续跑；
+ * 没有阻止结论时也不续跑。
+ */
+export function stopContinuation(result: HookEventResult): boolean {
+  let requested = false;
+  for (const run of result.runs) {
+    const hookResult = run.result;
+    if (hookResult.outcome === 'success'
+      && (hookResult.continue === false || hookResult.preventContinuation === true)) {
+      return false;
+    }
+    if (hookResult.outcome === 'blocking'
+      || (hookResult.outcome === 'success' && hookResult.decision === 'block')) {
+      requested = true;
+    }
+  }
+  return requested;
+}
+
+/**
  * Stop 的隐藏反馈：只有 exit 2 与 decision block 的理由进入有效历史。
  * 该事件没有 matcher query；反馈排在最终回答之后，供后续请求可见。
  */

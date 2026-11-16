@@ -83,12 +83,18 @@ function takeToolFeedbackMessages(
   return feedback;
 }
 
+/**
+ * prompt 省略时只以 history 发起请求，供 Stop 阻止后的续跑复用同一轮有效历史，
+ * 不再追加新的用户消息。
+ */
 export async function runAgent(
   config: ResolvedConfig,
-  prompt: string,
+  prompt: string | undefined,
   options: {
     smokeTool: boolean;
     history?: ModelMessage[];
+    /** 覆盖本次运行的步数上限；Stop 续跑传入整轮剩余步数。 */
+    maxSteps?: number;
     /** 用户消息之后的 Hook 附加上下文；只进入第一次模型请求并随有效历史持久化。 */
     promptContext?: readonly ModelMessage[];
     onText?: (chunk: string) => Promise<void> | void;
@@ -135,7 +141,8 @@ export async function runAgent(
     skillBodies?: Readonly<Record<string, string>>;
   },
 ): Promise<RunResult> {
-  if (options.smokeTool && config.maxSteps < 2) {
+  const stepLimit = options.maxSteps ?? config.maxSteps;
+  if (options.smokeTool && stepLimit < 2) {
     throw new AgentError('CONFIG_ERROR', '工具冒烟需要 maxSteps >= 2，以完成工具调用及后续回答。');
   }
 
@@ -400,7 +407,7 @@ export async function runAgent(
       tools,
       // SDK 的工作池负责并发上限；registry 按声明执行独占屏障与队首调度。
       toolCallConcurrency: MAX_TOOL_CALL_CONCURRENCY,
-      stopWhen: isStepCount(config.maxSteps),
+      stopWhen: isStepCount(stepLimit),
       onError: ({ error }) => {
         if (InvalidToolInputError.isInstance(error) || NoSuchToolError.isInstance(error)) return;
         frameworkError ??= modelStreamError(error);
@@ -476,12 +483,14 @@ export async function runAgent(
     signal.throwIfAborted();
     const inputMessages: ModelMessage[] = [
       ...(options.smokeTool ? [] : options.history ?? []),
-      {
-        role: 'user',
-        content: options.smokeTool
-          ? `调用 read_file 读取 ${smokeProbePath}，然后在最终回答中逐字写出文件内容。`
-          : prompt,
-      },
+      ...(options.smokeTool
+        ? [{
+          role: 'user' as const,
+          content: `调用 read_file 读取 ${smokeProbePath}，然后在最终回答中逐字写出文件内容。`,
+        }]
+        : prompt === undefined
+          ? []
+          : [{ role: 'user' as const, content: prompt }]),
       // UserPromptSubmit 上下文必须排在用户消息之后，模型才能把它看作对本次提交的补充资料。
       ...(options.smokeTool ? [] : options.promptContext ?? []),
     ];
@@ -547,8 +556,8 @@ export async function runAgent(
     if (options.smokeTool && !toolSmokePassed) {
       throw new AgentError('TOOL_COMPATIBILITY_ERROR', '工具冒烟失败：没有完成工具执行与结果回传，请检查模型和 provider 兼容性。');
     }
-    if (steps.length >= config.maxSteps && steps.at(-1)?.toolCalls.length) {
-      throw new AgentError('STEP_LIMIT', `已达到 ${config.maxSteps} 步上限，任务尚未生成最终回答。`);
+    if (steps.length >= stepLimit && steps.at(-1)?.toolCalls.length) {
+      throw new AgentError('STEP_LIMIT', `已达到 ${stepLimit} 步上限，任务尚未生成最终回答。`);
     }
     if (finishReason !== 'stop' || !text.trim()) {
       throw new AgentError('PROVIDER_ERROR', '模型没有返回完整回答，请检查输出限制、服务策略或模型兼容性。');

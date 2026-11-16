@@ -69,7 +69,7 @@ export interface PostToolUseFailureHookInput extends HookInput {
 
 /**
  * 最终回答产生后的输入；stop_hook_active 表示本次运行是否由 Stop 阻止后的续跑触发。
- * 当前切片尚未实现续跑，调用方固定传 false。
+ * 第一次运行传 false；续跑结束后的第二次运行传 true，便于 Hook 避免重复阻止。
  */
 export interface StopHookInput extends HookInput {
   hook_event_name: 'Stop';
@@ -80,6 +80,8 @@ export interface StopHookInput extends HookInput {
 /** v1 stdout JSON 字段；未知字段忽略，已知字段类型不符按无效 JSON 处理。 */
 const hookOutputSchema = z.object({
   continue: z.boolean().optional(),
+  /** 阻止紧随其后的自动续跑；与 continue:false 一样直接结束本轮。 */
+  preventContinuation: z.boolean().optional(),
   suppressOutput: z.boolean().optional(),
   decision: z.literal('block').optional(),
   reason: z.string().optional(),
