@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createOpenAI } from '@ai-sdk/openai';
-import { APICallError, InvalidToolInputError, isStepCount, NoSuchToolError, ToolChoiceViolationError, ToolLoopAgent, asSchema, wrapLanguageModel } from 'ai';
-import type { ModelMessage, ToolSet } from 'ai';
+import { APICallError, InvalidToolInputError, isStepCount, NoSuchToolError, ToolChoiceViolationError, ToolLoopAgent, wrapLanguageModel } from 'ai';
+import type { ModelMessage } from 'ai';
 import { z } from 'zod';
 import type { ResolvedConfig } from '../services/settings/config.js';
 import { AgentError, publicError } from '../utils/errors.js';
-import { estimateInput } from '../utils/input-estimate.js';
+import { estimateInput, toolDefinitionsForEstimate } from '../utils/input-estimate.js';
 import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
 import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
@@ -104,11 +104,8 @@ export async function estimateContextUsage(
     bashOperations: new Set(),
     ...(skills === undefined ? {} : { skills }),
   });
-  const tools: ToolSet = registry.tools();
-  const definitions = await Promise.all(Object.entries(tools).map(async ([name, definition]) => ({
-    type: 'function',
-    function: { name, description: definition.description, parameters: await asSchema(definition.inputSchema).jsonSchema },
-  })));
+  const tools = registry.tools();
+  const definitions = await toolDefinitionsForEstimate(tools);
   const capacityTokens = (config.context ?? DEFAULT_CONTEXT).capacityTokens;
   const estimatedInputTokens = estimateInput(buildInstructions(config, skills === undefined ? {} : { skills }), history, definitions);
   return { estimatedInputTokens, capacityTokens, usageRatio: estimatedInputTokens / capacityTokens };
