@@ -7,7 +7,7 @@ export function registerEditTool(registry: ToolRegistry, { config, fileWriteCall
   const baselines = fileBaselines ?? new Map();
   registry.register({
     name: 'Edit',
-    description: '在单个文件中把 old_string 替换为 new_string。默认要求 old_string 在文件中唯一匹配；replace_all: true 时替换全部匹配。无匹配或多处匹配且未启用 replace_all 时失败且不修改文件。',
+    description: '在单个文件中把 old_string 替换为 new_string。需先读取目标文件；默认要求 old_string 在文件中唯一匹配；replace_all: true 时替换全部匹配。无匹配或多处匹配且未启用 replace_all 时失败且不修改文件。',
     inputSchema: z.strictObject({
       file_path: z.string().min(1),
       old_string: z.string().min(1),
@@ -32,7 +32,8 @@ export function registerEditTool(registry: ToolRegistry, { config, fileWriteCall
         fileWriteCallbacks.onBeforeWrite,
         fileWriteCallbacks.onCheckpointError,
         target,
-        true,
+        // 与旧 write_file 一致：编辑既有文件必须先读取，才能检测读取后并发变化。
+        false,
       );
       return { success: true as const, file_path, replacements };
     },

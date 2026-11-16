@@ -182,7 +182,7 @@ export function registerWebFetchTool(registry: ToolRegistry): void {
   registry.register({
     name: 'WebFetch',
     concurrency: 'parallel',
-    description: '获取公开 HTTP/HTTPS 网页内容。url 为目标地址，prompt 说明希望从内容中获取的信息。拒绝本机、内网、链路本地和云 metadata 地址。',
+    description: '获取公开 HTTP/HTTPS 网页内容。url 为目标地址，prompt 说明希望从内容中获取的信息；工具返回清洗后的网页文本，由 Agent 按 prompt 分析。拒绝本机、内网、链路本地和云 metadata 地址。',
     inputSchema: z.strictObject({
       url: z.string().min(1),
       prompt: z.string().min(1),

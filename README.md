@@ -120,6 +120,11 @@ pnpm dev --workspace ./demo
 | `explore.model` | 可选；Explore 默认模型，未配置时使用主 Agent 的 `model`。`agent` 单次调用可用 `model` 覆盖；连接地址和凭据沿用主 Agent |
 | `explore.loadRootAgents` | 可选，默认 `false`；设为 `true` 后向 Explore 提供工作区根目录的 `AGENTS.md`，文件缺失时继续调查，不自动加载子目录中的同名文件 |
 | `bash.timeoutMs` | 可选，默认 30,000ms，范围 1–3,600,000ms；单次命令上限，同时受整轮剩余时限约束；`bash` 只接受此字段 |
+| `webSearch.provider` | 可选，当前只接受 `tavily`，默认 `tavily` |
+| `webSearch.apiKeyEnv` | 可选，默认 `TAVILY_API_KEY`；启动时从该环境变量读取凭据，缺失不阻止启动或其他工具 |
+| `webSearch.baseURL` | 可选，默认 `https://api.tavily.com`；必须是无内嵌凭据、查询参数及片段的 HTTP(S) 地址 |
+| `webSearch.timeoutMs` | 可选，默认 30,000ms，范围 1–3,600,000ms；单次搜索超时 |
+| `webSearch.maxResults` | 可选，默认 5，范围 1–20；单次调用的 `max_results` 可覆盖默认值 |
 
 未知字段、无效类型及越界数值会在网络请求前报错。自动重试关闭，避免鉴权失败反复请求。Ctrl+C 会中止当前请求。
 
@@ -165,7 +170,7 @@ pnpm dev --workspace ./demo
 | `read_file` | 接收 `path`，按权限规则读取完整文本文件；保留用于兼容旧调用 |
 | `Write` | 接收 `file_path` 和 `content`，创建或完整重写目标文件；不自动创建父目录 |
 | `write_file` | 接收 `path` 和 `content`，完整替换目标文件；要求先读取既有文件，保留用于兼容旧调用 |
-| `Edit` | 接收 `file_path`、`old_string`、`new_string` 和可选 `replace_all`（默认 `false`）。默认要求 `old_string` 在文件中唯一匹配；无匹配或多处匹配时失败且不修改文件，`replace_all: true` 时替换全部匹配 |
+| `Edit` | 接收 `file_path`、`old_string`、`new_string` 和可选 `replace_all`（默认 `false`）。需先读取目标文件；默认要求 `old_string` 在文件中唯一匹配；无匹配或多处匹配时失败且不修改文件，`replace_all: true` 时替换全部匹配 |
 | `Glob` / `glob` | 接收 `pattern` 和可选 `path`，按 glob 模式查找工作区文件 |
 | `Grep` / `grep` | 接收 `pattern`（正则）、可选 `path` 和 `glob`，返回相对路径、行号和命中文本 |
 | `TodoWrite` | 接收 `todos` 完整列表，每项包含 `content`、`status`（`pending`、`in_progress`、`completed`）和可选 `activeForm`；调用以新列表替换旧状态，最多一个任务处于 `in_progress` |
@@ -174,13 +179,13 @@ pnpm dev --workspace ./demo
 | `runtimeInfo` | 返回工作区绝对路径和本轮运行探针 |
 | `Bash` | 接收 `command`、可选 `cwd` 和 `disableSandbox`，在沙箱可用时从工作区默认目录或经审批的其他目录运行沙箱内独立 shell；沙箱关闭、不可用按 fail-open 回退或豁免获准时以宿主方式执行 |
 
-相对路径从配置的工作区解析。`Read`、`Write` 和 `Edit` 与旧名称工具共用同一套受控写入基线：同一进程内并发写入会检测读取后变化；`Write` 可在目标未被本进程读取时直接创建或重写，旧 `write_file` 仍要求先读取。文件工具可按权限规则或逐次审批访问工作区外的目标；工作区外读取默认需要审批，写入默认进入当前审批策略。符号链接按解析后的实际目标匹配权限。`Glob`/`glob` 和 `Grep`/`grep` 默认搜索工作区，指定工作区外搜索根时需要审批；权限规则可对搜索范围分别允许、要求审批或拒绝。工具权限始终是应用层策略，不能替代隔离：启用沙箱后，Bash 命令的读写与网络限制来自沙箱计划和本机代理；沙箱关闭、不可用按 fail-open 回退或豁免获准时，Bash 以宿主当前用户权限执行，可访问工作区外资源。远程 MCP 不受 Bash 沙箱约束。审批通过不会自动回滚已经发生的副作用。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
+相对路径从配置的工作区解析。`Read`、`Write` 和 `Edit` 与旧名称工具共用同一套受控写入基线：同一进程内并发写入会检测读取后变化；`Write` 可在目标未被本进程读取时直接创建或重写，`Edit` 与旧 `write_file` 一样要求先读取。文件工具可按权限规则或逐次审批访问工作区外的目标；工作区外读取默认需要审批，写入默认进入当前审批策略。符号链接按解析后的实际目标匹配权限。`Glob`/`glob` 和 `Grep`/`grep` 默认搜索工作区，指定工作区外搜索根时需要审批；权限规则可对搜索范围分别允许、要求审批或拒绝。工具权限始终是应用层策略，不能替代隔离：启用沙箱后，Bash 命令的读写与网络限制来自沙箱计划和本机代理；沙箱关闭、不可用按 fail-open 回退或豁免获准时，Bash 以宿主当前用户权限执行，可访问工作区外资源。远程 MCP 不受 Bash 沙箱约束。审批通过不会自动回滚已经发生的副作用。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
 
 终端实时显示 `[工具] Read：开始`、`[工具] Read：成功`、`[工具] Read：失败` 或 `[工具] Write：拒绝` 等执行状态，不直接打印工具参数、文件内容或原始异常。一次调用只显示一个终结状态；普通调用失败后，同批后续调用仍会执行，Agent 会收到各次工具结果并决定如何继续。Agent 的最终回答可以按用户要求引用文件内容。
 
 ## 网络工具
 
-`WebFetch` 只允许公开的 HTTP/HTTPS 地址。执行前会解析主机并在每次重定向时重新校验，拒绝回环、私网、链路本地、云 metadata、保留地址及 `localhost`、`.local`、`.internal` 等名称；不接受带用户名或密码的 URL。读取使用 30 秒独立超时，响应正文最多 5 MiB，返回内容最多 100,000 字符；仅支持文本、JSON、XML 和 JavaScript 等文本类型。地址无效、被拒绝、超时、重定向过多或内容类型不支持时返回明确工具错误，不影响同批其他工具。
+`WebFetch` 只允许公开的 HTTP/HTTPS 地址。执行前会解析主机并在每次重定向时重新校验，拒绝回环、私网、链路本地、云 metadata、保留地址及 `localhost`、`.local`、`.internal` 等名称；不接受带用户名或密码的 URL。读取使用 30 秒独立超时，响应正文最多 5 MiB，返回内容最多 100,000 字符；仅支持文本、JSON、XML 和 JavaScript 等文本类型。地址无效、被拒绝、超时、重定向过多或内容类型不支持时返回明确工具错误，不影响同批其他工具。`prompt` 用于说明希望获取的信息；工具本身不调用模型提炼，返回清洗后的网页文本，由 Agent 按 `prompt` 分析。
 
 `WebSearch` 首期接入 Tavily。未配置 API Key 时调用返回明确错误，启动和其他工具不受影响；额度耗尽、鉴权失败、服务失败、响应无效或超时也分别返回可区分的错误。搜索服务通过 `WebSearchProvider` 接口解耦，后续可增加其他服务实现。
 
@@ -195,7 +200,7 @@ pnpm dev --workspace ./demo
 }
 ```
 
-`provider` 目前只接受 `tavily`；`apiKeyEnv` 指向保存 API Key 的环境变量，默认 `TAVILY_API_KEY`，凭据不会写入工具参数、日志或会话记录。省略 `baseURL` 时使用 `https://api.tavily.com`；如需本地夹具可配置 `https://...` 形式的服务地址。`timeoutMs` 范围为 1–3,600,000 毫秒，`maxResults` 范围为 1–20，单次调用的 `max_results` 可覆盖默认值。`WebFetch` 与 `WebSearch` 未配置权限规则时默认进入当前审批。
+`provider` 目前只接受 `tavily`；`apiKeyEnv` 指向保存 API Key 的环境变量，默认 `TAVILY_API_KEY`，启动时从环境读取，凭据不会写入工具参数、日志或会话记录。省略 `baseURL` 时使用 `https://api.tavily.com`；如需本地夹具可配置 HTTP(S) 形式的服务地址。`timeoutMs` 范围为 1–3,600,000 毫秒，`maxResults` 范围为 1–20，单次调用的 `max_results` 可覆盖默认值。`WebFetch` 与 `WebSearch` 未配置权限规则时默认进入当前审批。
 
 ## Bash 与操作系统沙箱
 
@@ -280,7 +285,7 @@ Bash 在支持 POSIX 进程组的系统（Linux/macOS）上使用 PATH 中的 `b
 }
 ```
 
-`Read`、`Write`、`Edit`、`Glob`、`Grep` 可不带参数以匹配该类全部目标，也可带路径模式；相对路径从工作区解析，支持 `*`、`?`、`**`。`Bash` 必须带命令规则：精确匹配完整命令，末尾 `:*` 匹配该前缀及其后续参数，并要求参数边界相符，例如 `Bash(git push:*)`。复合命令按其中每个简单命令分别检查；可识别的管道、串接和重定向等语法额外要求逐次审批，无法可靠解析的控制结构则作为无效参数拒绝。`MCP` 可匹配所有服务，或用 `服务名/工具名`、`服务名/*` 匹配远端工具。`WebFetch` 可不带参数，或用 `WebFetch(domain:example.com)`、`WebFetch(domain:*.example.com)` 按主机匹配；`WebSearch` 和 `TodoWrite` 不带参数。`Agent`、`RuntimeInfo` 分别控制 Agent 委派与运行信息工具。
+`Read`、`Write`、`Edit`、`Glob`、`Grep` 可不带参数以匹配该类全部目标，也可带路径模式；相对路径从工作区解析，支持 `*`、`?`、`**`。`Edit` 调用同时受 `Edit` 与 `Write` 规则约束，任一规则更严格时按 `deny`、`ask`、`allow` 的优先级生效，单独配置 `Edit(...)` 不会影响 `Write`。`Bash` 必须带命令规则：精确匹配完整命令，末尾 `:*` 匹配该前缀及其后续参数，并要求参数边界相符，例如 `Bash(git push:*)`。复合命令按其中每个简单命令分别检查；可识别的管道、串接和重定向等语法额外要求逐次审批，无法可靠解析的控制结构则作为无效参数拒绝。`MCP` 可匹配所有服务，或用 `服务名/工具名`、`服务名/*` 匹配远端工具。`WebFetch` 可不带参数，或用 `WebFetch(domain:example.com)`、`WebFetch(domain:*.example.com)` 按主机匹配；`WebSearch` 和 `TodoWrite` 不带参数。`Agent`、`RuntimeInfo` 分别控制 Agent 委派与运行信息工具。
 
 权限按工具能力独立生效：例如 `Read(src/**)` 不会授权 `Write(src/**)`，`Bash(pnpm test)` 也不会授权其他命令。匹配规则的动作优先级为 `deny`、`ask`、`allow`；未匹配时，工作区内读取、搜索、`TodoWrite`、`runtimeInfo` 和 Agent 默认允许，写入、Bash、WebFetch、WebSearch、MCP 默认进入当前审批，工作区外读取默认需要审批。显式 `allow` 可免除相应逐次审批，`deny` 不可由审批放行。Glob/Grep 对被拒绝路径予以排除，对需审批路径暂停该次搜索并在人工审批界面展示范围。
 

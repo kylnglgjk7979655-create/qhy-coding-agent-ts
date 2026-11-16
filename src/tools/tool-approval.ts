@@ -40,7 +40,9 @@ export async function approveToolCall(
 ): Promise<boolean> {
   signal.throwIfAborted();
   const readAction = isReadTool(call.toolName) ? readPermissionAction(config, call) : undefined;
-  const writeAction = isWriteTool(call.toolName) ? pathPermissionAction(config, call, 'Write') : undefined;
+  // Edit 同时受 Edit 与 Write 规则约束，避免用户配置的 Edit(...) 规则被静默忽略。
+  const writeAction = isWriteTool(call.toolName)
+    ? pathPermissionAction(config, call, call.toolName === 'Edit' ? ['Edit', 'Write'] : ['Write']) : undefined;
   const searchAction = isSearchTool(call.toolName)
     ? pathPermissionAction(config, call, isGlobTool(call.toolName) ? 'Glob' : 'Grep') : undefined;
   const searchAsks = call.details?.searchAsk !== undefined;
@@ -303,7 +305,10 @@ function readPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest)
   return pathPermissionAction(config, call, 'Read');
 }
 
-function pathPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest, permission: 'Read' | 'Write' | 'Glob' | 'Grep'): 'allow' | 'ask' | 'deny' | undefined {
+type PathPermission = 'Read' | 'Write' | 'Edit' | 'Glob' | 'Grep';
+
+function pathPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest, permissions: PathPermission | readonly PathPermission[]): 'allow' | 'ask' | 'deny' | undefined {
+  const permissionNames = typeof permissions === 'string' ? [permissions] : permissions;
   const inputPath = typeof call.input === 'object' && call.input !== null
     ? ('file_path' in call.input && typeof call.input.file_path === 'string' ? call.input.file_path
       : 'path' in call.input && typeof call.input.path === 'string' ? call.input.path : undefined)
@@ -312,14 +317,14 @@ function pathPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest,
   const target = call.details?.target;
   if (!requestedPath || !target) return undefined;
   const paths = [resolveUserPath(config, requestedPath), target].map(canonicalizePermissionPath);
-  const matches = (rule: string): boolean => {
+  const matches = (rule: string): boolean => permissionNames.some((permission) => {
     const match = new RegExp(`^${permission}(?:\\((.+)\\))?$`, 'u').exec(rule);
     if (!match) return false;
     if (match[1] === undefined) return true;
     const pattern = canonicalizePermissionPath(resolveUserPath(config, match[1]));
     const expression = globExpression(pattern);
     return paths.some((path) => expression.test(path));
-  };
+  });
   for (const action of ['deny', 'ask', 'allow'] as const) {
     if ((config.permissions?.[action] ?? []).some(matches)) return action;
   }

@@ -50,9 +50,9 @@ class TavilyWebSearchProvider implements WebSearchProvider {
     try {
       response = await fetch(`${this.baseURL.replace(/\/$/u, '')}/search`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        // Tavily 现行文档使用 Bearer 鉴权；凭据只出现在请求头，不进入请求正文。
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
         body: JSON.stringify({
-          api_key: this.apiKey,
           query: request.query,
           max_results: request.maxResults,
           search_depth: 'basic',
@@ -108,7 +108,8 @@ export function registerWebSearchTool(registry: ToolRegistry, { config }: BuiltI
     }),
     execute: async ({ query, allowed_domains, blocked_domains, max_results }, execution) => {
       const envName = config.webSearch?.apiKeyEnv ?? 'TAVILY_API_KEY';
-      const apiKey = config.webSearchApiKey ?? process.env[envName]?.trim();
+      // 凭据只在 loadConfig 时从注入的 env 读取，工具不再直接访问 process.env。
+      const apiKey = config.webSearchApiKey;
       if (!apiKey) {
         throw new Error(`WebSearch 未配置 Tavily API Key：请设置环境变量 ${envName}。`);
       }
