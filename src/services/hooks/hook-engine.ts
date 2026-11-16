@@ -270,6 +270,35 @@ function toolEventFeedback(result: HookResult): string | undefined {
   return parts.length === 0 ? undefined : parts.join('\n');
 }
 
+/**
+ * Stop 的隐藏反馈：只有 exit 2 与 decision block 的理由进入有效历史。
+ * 该事件没有 matcher query；反馈排在最终回答之后，供后续请求可见。
+ */
+export function stopFeedbackMessages(
+  result: HookEventResult,
+  tracker: HookInjectionTracker,
+): ModelMessage[] {
+  const messages: ModelMessage[] = [];
+  for (const run of result.runs) {
+    if (!tracker.claim(run.runId)) continue;
+    const reason = stopFeedback(run.result);
+    if (reason === undefined || reason.trim().length === 0) continue;
+    messages.push({
+      role: 'user',
+      content: `<hook-feedback event="Stop" hook="Stop:${run.order}">\n${truncateHookText(reason)}\n</hook-feedback>`,
+    });
+  }
+  return messages;
+}
+
+function stopFeedback(result: HookResult): string | undefined {
+  if (result.outcome === 'blocking') return result.reason ?? 'Hook 请求阻止结束本轮。';
+  if (result.outcome === 'success' && result.decision === 'block') {
+    return result.reason ?? 'Hook 请求阻止结束本轮。';
+  }
+  return undefined;
+}
+
 /** 面向用户的提示文本；Hook 故障只提示不阻止，普通成功不产生噪声。 */
 export function describeHookRun(run: HookCommandRun): string | undefined {
   switch (run.result.outcome) {

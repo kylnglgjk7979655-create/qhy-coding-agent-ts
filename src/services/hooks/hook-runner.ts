@@ -67,6 +67,16 @@ export interface PostToolUseFailureHookInput extends HookInput {
   tool_use_id: string;
 }
 
+/**
+ * 最终回答产生后的输入；stop_hook_active 表示本次运行是否由 Stop 阻止后的续跑触发。
+ * 当前切片尚未实现续跑，调用方固定传 false。
+ */
+export interface StopHookInput extends HookInput {
+  hook_event_name: 'Stop';
+  stop_hook_active: boolean;
+  last_assistant_message: string;
+}
+
 /** v1 stdout JSON 字段；未知字段忽略，已知字段类型不符按无效 JSON 处理。 */
 const hookOutputSchema = z.object({
   continue: z.boolean().optional(),

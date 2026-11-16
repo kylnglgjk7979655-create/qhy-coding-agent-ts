@@ -23,9 +23,9 @@ import { generateSummary } from './services/compact/context-summary.js';
 import { RecentFileTracker } from './services/compact/recent-files.js';
 import { formatHookCommandList, hasHookCommands, isHooksConfigTrusted, trustHooksConfig } from './services/hooks/hook-trust.js';
 import type { HooksConfig, SessionStartSource } from './services/hooks/hooks-config.js';
-import { HookInjectionTracker, describeHookRun, runHookEvent, sessionStartContextMessages, userPromptSubmitContextMessages, userPromptSubmitStop } from './services/hooks/hook-engine.js';
+import { HookInjectionTracker, describeHookRun, runHookEvent, sessionStartContextMessages, stopFeedbackMessages, userPromptSubmitContextMessages, userPromptSubmitStop } from './services/hooks/hook-engine.js';
 import type { UserPromptSubmitStop } from './services/hooks/hook-engine.js';
-import type { SessionStartHookInput, UserPromptSubmitHookInput } from './services/hooks/hook-runner.js';
+import type { SessionStartHookInput, StopHookInput, UserPromptSubmitHookInput } from './services/hooks/hook-runner.js';
 import type { LoadedConfig } from './services/settings/config.js';
 
 const help = `用法：node dist/cli.js [选项]
@@ -669,6 +669,51 @@ async function compactIdleHistory(
   }
 }
 
+/**
+ * Stop 在 runAgent 成功返回后、finishSessionRound 之前运行。
+ * 该事件没有 matcher query，默认超时 60 秒；block 或 exit 2 的理由追加到有效历史末端。
+ */
+async function runStopHook(
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  conversationId: string,
+  userHome: string,
+  text: string,
+  signal: AbortSignal,
+  tracker: HookInjectionTracker,
+): Promise<ModelMessage[]> {
+  if (config.hooks === undefined || config.disableAllHooks) return [];
+  // 最终回答之后、Hook 启动之前的取消仍属于取消路径，不运行 Stop。
+  signal.throwIfAborted();
+  const hookInput: StopHookInput = {
+    session_id: conversationId,
+    transcript_path: sessionRecordPath(userHome, conversationId),
+    cwd: config.workspace,
+    approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
+    hook_event_name: 'Stop',
+    // 本切片不实现续跑；将来续跑请求需在第二次 Stop 时传 true 避免无限循环。
+    stop_hook_active: false,
+    last_assistant_message: text,
+  };
+  let result: Awaited<ReturnType<typeof runHookEvent>>;
+  try {
+    result = await runHookEvent(config.hooks, 'Stop', hookInput, {
+      cwd: config.workspace,
+      env: process.env,
+      signal,
+    });
+  } catch {
+    process.stderr.write('[hook] Stop: 执行失败（已忽略，不影响本轮）\n');
+    return [];
+  }
+  for (const run of result.runs) {
+    const message = describeHookRun(run);
+    if (message !== undefined) process.stderr.write(`${message}\n`);
+  }
+  // 用户在 Hook 执行期间取消时不把本轮记为成功，也不保存反馈。
+  signal.throwIfAborted();
+  return stopFeedbackMessages(result, tracker);
+}
+
 async function runTurn(
   prompt: string,
   config: Awaited<ReturnType<typeof loadConfig>>,
@@ -794,7 +839,14 @@ async function runTurn(
       ...(config.approval.mode === 'default' && approvalControl ? { approvalControl } : {}),
     });
     signal.throwIfAborted();
-    const nextHistory = smokeTool ? history : result.effectiveHistory;
+    // Stop 只在最终回答产生后、轮次结束前运行；取消与异常终止都在调用前抛错。
+    const stopFeedback = smokeTool
+      ? []
+      : await runStopHook(
+        config, conversationId, userHome, result.text, signal,
+        hookInjectionTracker ?? new HookInjectionTracker(),
+      );
+    const nextHistory = smokeTool ? history : [...result.effectiveHistory, ...stopFeedback];
     if (!smokeTool) {
       if (!roundId) throw new AgentError('PROVIDER_ERROR', '当前轮次未能建立持久化记录。');
       await finishSessionRound(userHome, conversationId, roundId, {
