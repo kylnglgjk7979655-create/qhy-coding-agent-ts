@@ -5,12 +5,13 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { APICallError, InvalidToolInputError, isStepCount, NoSuchToolError, ToolChoiceViolationError, ToolLoopAgent, wrapLanguageModel } from 'ai';
 import type { ModelMessage } from 'ai';
 import { z } from 'zod';
-import type { ResolvedConfig } from '../services/settings/config.js';
+import type { ApprovalMode, ResolvedConfig } from '../services/settings/config.js';
 import { AgentError, publicError } from '../utils/errors.js';
 import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
 import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
 import type { ApprovalControl } from '../tools/tool-approval.js';
+import { configWithApprovalMode, selectApprovalControl } from '../tools/approval-mode.js';
 import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.js';
 import { registerBuiltInTools } from '../tools/register-built-in-tools.js';
 import { bashSandboxGuidance } from '../tools/BashTool/sandbox-guidance.js';
@@ -68,6 +69,10 @@ export async function runAgent(
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
+    /** CLI 人工审批控制；仅在当前模式为 default 时使用。 */
+    humanApprovalControl?: ApprovalControl;
+    /** 当前进程的审批模式；省略时沿用配置模式。每次工具调用进入审批前读取。 */
+    approvalMode?: () => ApprovalMode;
     /** 摘要成功后立即持久化压缩检查点；保存失败按停止本轮处理，不报告压缩成功。 */
     onCompaction?: (checkpoint: {
       effectiveHistory: ModelMessage[];
@@ -148,8 +153,11 @@ export async function runAgent(
     ...(options.onToolCallStart ? { beforeTool: options.onToolCallStart } : {}),
     approve: async (call) => {
       signal.throwIfAborted();
+      // 每个调用进入审批前读取当前模式；切换前已开始的等待继续使用其原有路径。
+      const mode = options.approvalMode?.() ?? config.approval.mode;
+      const control = selectApprovalControl(mode, options.approvalControl, options.humanApprovalControl);
       try {
-        return await approveToolCall(config, call, signal, options.approvalControl, { pause: pauseDeadline, resume: resumeDeadline }, preparedHistory);
+        return await approveToolCall(configWithApprovalMode(config, mode), call, signal, control, { pause: pauseDeadline, resume: resumeDeadline }, preparedHistory);
       } catch (error) {
         if (!signal.aborted) {
           frameworkError = error instanceof AgentError ? error : new AgentError('APPROVAL_ERROR', '工具审批故障，已停止本轮。');
@@ -165,6 +173,8 @@ export async function runAgent(
     probe,
     allowAgent: !options.generalPurposeSubagent,
     ...(options.approvalControl === undefined ? {} : { approvalControl: options.approvalControl }),
+    ...(options.humanApprovalControl === undefined ? {} : { humanApprovalControl: options.humanApprovalControl }),
+    ...(options.approvalMode === undefined ? {} : { approvalMode: options.approvalMode }),
     ...(options.backgroundTasks === undefined ? {} : { backgroundTasks: options.backgroundTasks }),
     fileWriteCallbacks: {
       ...(options.onBeforeWrite === undefined ? {} : { onBeforeWrite: options.onBeforeWrite }),

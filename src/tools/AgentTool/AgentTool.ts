@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ResolvedConfig } from '../../services/settings/config.js';
+import type { ApprovalMode, ResolvedConfig } from '../../services/settings/config.js';
 import { runAgent } from '../../query/agent.js';
 import { runExplore } from '../../query/explore.js';
 import { ToolExecutionError } from '../tool-registry.js';
@@ -9,17 +9,22 @@ import type { BackgroundAgentTasks } from './background-agent-tasks.js';
 import type { WorkspaceFileSnapshot } from '../workspace-files.js';
 import type { SkillCatalogue } from '../../services/skills/skill-registry.js';
 
-export function registerAgentTool(
-  registry: ToolRegistry,
-  config: ResolvedConfig,
-  approvalControl?: ApprovalControl,
-  backgroundTasks?: BackgroundAgentTasks,
+export interface AgentToolContext {
+  config: ResolvedConfig;
+  approvalControl?: ApprovalControl;
+  /** CLI 人工审批控制；子 Agent 仅在当前模式为 default 时使用。 */
+  humanApprovalControl?: ApprovalControl;
+  approvalMode?: () => ApprovalMode;
+  backgroundTasks?: BackgroundAgentTasks;
   fileWriteCallbacks: {
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;
-  } = {},
-  skills?: SkillCatalogue,
-): void {
+  };
+  skills?: SkillCatalogue;
+}
+
+export function registerAgentTool(registry: ToolRegistry, context: AgentToolContext): void {
+  const { config, approvalControl, humanApprovalControl, approvalMode, backgroundTasks, fileWriteCallbacks, skills } = context;
   registry.register({
     name: 'agent',
     concurrency: 'parallel',
@@ -56,6 +61,8 @@ export function registerAgentTool(
               ...(fileWriteCallbacks.onBeforeWrite === undefined ? {} : { onBeforeWrite: fileWriteCallbacks.onBeforeWrite }),
               ...(fileWriteCallbacks.onCheckpointError === undefined ? {} : { onCheckpointError: fileWriteCallbacks.onCheckpointError }),
               ...(approvalControl === undefined ? {} : { approvalControl }),
+              ...(humanApprovalControl === undefined ? {} : { humanApprovalControl }),
+              ...(approvalMode === undefined ? {} : { approvalMode }),
               ...(model === undefined ? {} : { modelOverride: model }),
               ...(skills === undefined ? {} : { skills }),
             });
@@ -73,6 +80,8 @@ export function registerAgentTool(
           ...(fileWriteCallbacks.onBeforeWrite === undefined ? {} : { onBeforeWrite: fileWriteCallbacks.onBeforeWrite }),
           ...(fileWriteCallbacks.onCheckpointError === undefined ? {} : { onCheckpointError: fileWriteCallbacks.onCheckpointError }),
           ...(approvalControl === undefined ? {} : { approvalControl }),
+          ...(humanApprovalControl === undefined ? {} : { humanApprovalControl }),
+          ...(approvalMode === undefined ? {} : { approvalMode }),
           ...(model === undefined ? {} : { modelOverride: model }),
           ...(execution.abortSignal === undefined ? {} : { signal: execution.abortSignal }),
           ...(skills === undefined ? {} : { skills }),
@@ -81,7 +90,14 @@ export function registerAgentTool(
       }
       if (background === true) throw new ToolExecutionError('Explore 暂不支持后台模式。', undefined);
       if (type !== 'explore') throw new ToolExecutionError(`未知子智能体类型“${subagent_type}”；可用类型：general-purpose、Explore。`, undefined);
-      const report = await runExplore(config, description, prompt, model, execution.abortSignal, approvalControl, skills);
+      const report = await runExplore(config, description, prompt, {
+        ...(model === undefined ? {} : { modelOverride: model }),
+        ...(execution.abortSignal === undefined ? {} : { signal: execution.abortSignal }),
+        ...(approvalControl === undefined ? {} : { approvalControl }),
+        ...(humanApprovalControl === undefined ? {} : { humanApprovalControl }),
+        ...(approvalMode === undefined ? {} : { approvalMode }),
+        ...(skills === undefined ? {} : { skills }),
+      });
       return { report };
     },
   });
