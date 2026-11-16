@@ -13,8 +13,8 @@ export interface TokenUsage {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
-  /** 仅当调用方明确拿到供应商费用时填写；单位与 Langfuse 项目一致。 */
-  totalCostUsd?: number;
+  /** 仅当调用方明确拿到供应商费用时填写；单位为 Langfuse 项目设定的费用单位。 */
+  totalCost?: number;
 }
 
 export type ObservationStatus = 'succeeded' | 'failed' | 'cancelled' | 'rejected';
@@ -145,6 +145,7 @@ export class LangfuseTracer implements Tracer {
 
   startTrace(options: TraceStart): TraceHandle {
     const id = randomUUID();
+    const metadata = metadataOf(options.metadata);
     const event: IngestionEvent = {
       id: randomUUID(),
       type: 'trace-create',
@@ -155,7 +156,7 @@ export class LangfuseTracer implements Tracer {
         sessionId: this.options.sessionId,
         timestamp: nowIso(this.now),
         ...(options.input === undefined ? {} : { input: serializable(options.input) }),
-        ...(metadataOf(options.metadata) === undefined ? {} : { metadata: metadataOf(options.metadata) }),
+        ...(metadata === undefined ? {} : { metadata }),
         ...(options.tags === undefined || options.tags.length === 0 ? {} : { tags: options.tags }),
       },
     };
@@ -197,7 +198,8 @@ export class LangfuseTracer implements Tracer {
   }
 
   flush(): Promise<void> {
-    this.chain = this.chain.then(() => this.sendPending());
+    // 串行化批次；无论此前或本次上报出现何种故障，flush 本身都不应拒绝。
+    this.chain = this.chain.catch(() => undefined).then(() => this.sendPending()).catch(() => undefined);
     return this.chain;
   }
 
@@ -214,6 +216,7 @@ export class LangfuseTracer implements Tracer {
           if (ended) return;
           ended = true;
           const status = result.status ?? 'succeeded';
+          const metadata = metadataOf(startMetadata, result.metadata, { status });
           const body: Record<string, unknown> = {
             id,
             traceId: options.traceId,
@@ -225,9 +228,7 @@ export class LangfuseTracer implements Tracer {
             ...(options.parentObservationId === undefined ? {} : { parentObservationId: options.parentObservationId }),
             ...(options.input === undefined ? {} : { input: serializable(options.input) }),
             ...(result.output === undefined ? {} : { output: serializable(result.output) }),
-            ...(metadataOf(startMetadata, result.metadata, { status }) === undefined
-              ? {}
-              : { metadata: metadataOf(startMetadata, result.metadata, { status }) }),
+            ...(metadata === undefined ? {} : { metadata }),
           };
           if (type === 'generation') {
             body.model = options.model;
@@ -238,7 +239,7 @@ export class LangfuseTracer implements Tracer {
             if (result.usage?.totalTokens !== undefined) usageDetails.total = result.usage.totalTokens;
             if (Object.keys(usageDetails).length > 0) body.usageDetails = usageDetails;
             // 费用仅在调用方明确提供时上报；不从模型名称或价格表推算。
-            if (result.usage?.totalCostUsd !== undefined) body.costDetails = { total: result.usage.totalCostUsd };
+            if (result.usage?.totalCost !== undefined) body.costDetails = { total: result.usage.totalCost };
           }
           this.events.push({
             id: randomUUID(),

@@ -8,12 +8,12 @@ import type { ApprovalControl } from '../tool-approval.js';
 import type { BackgroundAgentTasks } from './background-agent-tasks.js';
 import type { WorkspaceFileSnapshot } from '../workspace-files.js';
 import type { SkillCatalogue } from '../../services/skills/skill-registry.js';
-import { AgentError } from '../../utils/errors.js';
+import { isCancellationError } from '../../utils/errors.js';
 import { childScope, childSpan } from '../../services/observability/langfuse.js';
 import type { ObservationHandle, ObservationStatus, TracingScope } from '../../services/observability/langfuse.js';
 
 function failureStatus(error: unknown): ObservationStatus {
-  return error instanceof AgentError && error.code === 'CANCELLED' ? 'cancelled' : 'failed';
+  return isCancellationError(error) ? 'cancelled' : 'failed';
 }
 
 function subagentTracing(

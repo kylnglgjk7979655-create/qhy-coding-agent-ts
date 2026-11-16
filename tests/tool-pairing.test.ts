@@ -256,7 +256,7 @@ describe('工具批次顺序与新增往返配对', () => {
       ? { frames: [
         { delta: { content: '实时前缀' } },
         { delta: { content: '后续内容' }, finish_reason: 'stop' },
-      ], endDelayMs: 1200 }
+      ], endDelayMs: 3000 }
       : { content: '后续请求。' });
     let sawPrefix!: () => void;
     const prefix = new Promise<void>((resolve) => { sawPrefix = resolve; });
@@ -265,7 +265,8 @@ describe('工具批次顺序与新增往返配对', () => {
     });
     const arrivedEarly = await Promise.race([
       prefix.then(() => true),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500)),
+      // 放宽到 1.5 秒仍早于 3 秒的响应结束延迟，避免满载 CI 上进程启动耗时造成假失败。
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1500)),
     ]);
     expect(arrivedEarly).toBe(true);
     const result = await resultPromise;

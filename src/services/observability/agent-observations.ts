@@ -1,5 +1,6 @@
 import type { LanguageModelCallEndEvent, LanguageModelCallStartEvent, ToolExecutionEndEvent, ToolExecutionStartEvent } from 'ai';
 import type { ToolApprovalRequest } from '../../tools/tool-registry.js';
+import { isCancellationError } from '../../utils/errors.js';
 import { childGeneration, childScope, childSpan } from './langfuse.js';
 import type { ObservationHandle, ObservationStatus, TracingScope } from './langfuse.js';
 
@@ -81,16 +82,18 @@ export class AgentObservations {
     const handle = this.generations.get(callId);
     if (handle === undefined) return;
     this.generations.delete(callId);
-    const cancelled = error instanceof Error && (error.name === 'AbortError' || (error as { code?: unknown }).code === 'ABORT_ERR');
+    const cancelled = isCancellationError(error);
     handle.end({
       status: cancelled ? 'cancelled' : 'failed',
       ...(cancelled ? {} : { error: { code: 'MODEL_ERROR', message: errorMessage(error) } }),
     });
   }
 
+  /** 中止时不会再有结束事件，未完成的观察在这里统一收尾，避免成功/失败状态缺失。 */
   abortPending(): void {
-    for (const handle of this.generations.values()) handle.end({ status: 'cancelled' });
+    for (const handle of [...this.generations.values(), ...this.tools.values()]) handle.end({ status: 'cancelled' });
     this.generations.clear();
+    this.tools.clear();
   }
 
   startTool(event: ToolExecutionStartEvent): void {
@@ -105,7 +108,10 @@ export class AgentObservations {
     if (handle === undefined) return;
     this.tools.delete(toolCallId);
     const output = event.toolOutput as { type?: unknown; output?: unknown; error?: unknown };
-    const status = output.type === 'tool-result' ? toolOutputStatus(output.output) : 'failed';
+    const cancelled = output.type === 'tool-error' && isCancellationError(output.error);
+    const status: ObservationStatus = cancelled
+      ? 'cancelled'
+      : output.type === 'tool-result' ? toolOutputStatus(output.output) : 'failed';
     handle.end({
       output: output.type === 'tool-result' ? output.output : output.error,
       status,
@@ -138,7 +144,9 @@ export class AgentObservations {
       span?.end({ output: approved ? 'approve' : 'deny', status: approved ? 'succeeded' : 'rejected' });
       return approved;
     } catch (error) {
-      span?.end({ status: 'failed', error: { code: 'APPROVAL_ERROR', message: errorMessage(error) } });
+      span?.end(isCancellationError(error)
+        ? { status: 'cancelled' }
+        : { status: 'failed', error: { code: 'APPROVAL_ERROR', message: errorMessage(error) } });
       throw error;
     }
   }
@@ -155,7 +163,9 @@ export class AgentObservations {
       span?.end({ output: output(result), status: 'succeeded' });
       return result;
     } catch (error) {
-      span?.end({ status: 'failed', error: { code: 'SUMMARY_ERROR', message: errorMessage(error) } });
+      span?.end(isCancellationError(error)
+        ? { status: 'cancelled' }
+        : { status: 'failed', error: { code: 'SUMMARY_ERROR', message: errorMessage(error) } });
       throw error;
     }
   }

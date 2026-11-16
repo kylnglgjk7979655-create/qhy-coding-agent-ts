@@ -482,16 +482,19 @@ async function compactIdleHistory(
   }
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new AgentError('TIMEOUT', `请求超过 ${config.timeoutMs}ms，已终止。`)), config.timeoutMs);
-  const langfuseTracer = createLangfuseTracer({ config, env: process.env, sessionId: conversationId });
-  const langfuseTrace = langfuseTracer?.startTrace({
-    name: 'conversation.compact',
-    metadata: { conversationId, model: config.model, messageCount: history.length },
-  });
-  const tracing = langfuseTracer === undefined || langfuseTrace === undefined
-    ? undefined
-    : { tracer: langfuseTracer, traceId: langfuseTrace.id };
-  const observations = new AgentObservations(tracing);
+  let langfuseTracer: LangfuseTracer | undefined;
+  let langfuseTrace: TraceHandle | undefined;
   try {
+    // 跟踪器构造失败也走正常错误路径，避免遗留未清理的执行时限定时器。
+    langfuseTracer = createLangfuseTracer({ config, env: process.env, sessionId: conversationId });
+    langfuseTrace = langfuseTracer?.startTrace({
+      name: 'conversation.compact',
+      metadata: { conversationId, model: config.model, messageCount: history.length },
+    });
+    const tracing = langfuseTracer === undefined || langfuseTrace === undefined
+      ? undefined
+      : { tracer: langfuseTracer, traceId: langfuseTrace.id };
+    const observations = new AgentObservations(tracing);
     // 空闲压缩与自动压缩共用 Skill 恢复路径，按会话记录中的最近加载顺序补回被摘要移除的正文。
     const current = await loadSession(userHome, conversationId);
     const restore = skills === undefined
@@ -532,7 +535,8 @@ async function compactIdleHistory(
     throw error;
   } finally {
     clearTimeout(timer);
-    await langfuseTracer?.flush();
+    // 上报在后台完成：Langfuse 不可达或超时不能延迟返回输入提示符。
+    void langfuseTracer?.flush();
   }
 }
 
@@ -691,10 +695,6 @@ async function runTurn(
     langfuseTrace?.end({
       output: result.text,
       status: 'succeeded',
-      usage: {
-        ...(result.usage.inputTokens === undefined ? {} : { inputTokens: result.usage.inputTokens }),
-        ...(result.usage.outputTokens === undefined ? {} : { outputTokens: result.usage.outputTokens }),
-      },
       metadata: {
         steps: result.steps,
         toolCalls: result.toolCalls,
@@ -702,7 +702,8 @@ async function runTurn(
         toolSmokePassed: result.toolSmokePassed,
       },
     });
-    await langfuseTracer?.flush();
+    // 上报在后台完成：不延迟下一轮输入提示符；待发送请求由事件循环保持到结束。
+    void langfuseTracer?.flush();
     process.stdout.write('\n');
     log({
       event: 'run.finished', runId: lastRunId, status: 'succeeded',
@@ -722,7 +723,7 @@ async function runTurn(
       }).catch(() => undefined);
       process.stdout.write('\n用户中断：Interrupt by user\n');
       langfuseTrace?.end({ status: 'cancelled', error: { code: 'CANCELLED', message: 'Interrupt by user' } });
-      await langfuseTracer?.flush();
+      void langfuseTracer?.flush();
       log({ event: 'run.finished', runId: lastRunId, status: 'cancelled', durationMs: Math.round(performance.now() - lastRunStartedAt), conversationId });
       return history;
     }
@@ -743,7 +744,7 @@ async function runTurn(
       status: failure.code === 'CANCELLED' ? 'cancelled' : 'failed',
       error: { code: failure.code, message: failure.message },
     });
-    await langfuseTracer?.flush();
+    void langfuseTracer?.flush();
     throw error;
   }
 }

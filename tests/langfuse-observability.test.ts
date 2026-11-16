@@ -1,9 +1,11 @@
-import { mkdir, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
+import type { LanguageModelCallStartEvent, ToolExecutionEndEvent, ToolExecutionStartEvent } from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runAgent } from '../src/query/agent.js';
 import { prepareConversation } from '../src/services/compact/context-summary.js';
+import { AgentObservations } from '../src/services/observability/agent-observations.js';
 import { LangfuseTracer, createLangfuseTracer } from '../src/services/observability/langfuse.js';
 import { configSchema, DEFAULT_SANDBOX, loadConfig, loggableConfig } from '../src/services/settings/config.js';
 import type { ResolvedConfig } from '../src/services/settings/config.js';
@@ -46,6 +48,14 @@ function eventsOf(requests: RecordedRequest[]): IngestionEvent[] {
   });
 }
 
+async function waitFor(predicate: () => boolean, describe: () => string): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`等待超时：${describe()}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 function newTracer(fetchImpl: typeof fetch, sessionId = 'conversation-fixture'): LangfuseTracer {
   return new LangfuseTracer({
     baseURL: 'https://langfuse.example',
@@ -57,7 +67,6 @@ function newTracer(fetchImpl: typeof fetch, sessionId = 'conversation-fixture'):
   });
 }
 
-const traces: LangfuseTracer[] = [];
 const extraRoots: string[] = [];
 const serverClosers: Array<() => Promise<void>> = [];
 let workspace: string | undefined;
@@ -70,7 +79,6 @@ afterEach(async () => {
   workspace = undefined;
   await Promise.all(serverClosers.splice(0).map((close) => close()));
   await Promise.all(extraRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-  traces.length = 0;
 });
 
 async function startFakeLangfuse(status = 200): Promise<{
@@ -155,7 +163,7 @@ describe('Langfuse 跟踪协议', () => {
     const failed = tracer.startGeneration({ traceId: trace.id, name: 'model.request', model: 'fixture' });
     failed.end({ status: 'failed', error: { code: 'PROVIDER_ERROR', message: '模型响应流无效' }, usage: { inputTokens: 3 } });
     const fallback = tracer.startGeneration({ traceId: trace.id, name: 'model.request', model: 'fixture' });
-    fallback.end({ status: 'succeeded', usage: { inputTokens: 4, outputTokens: 2, totalCostUsd: 0.0012 } });
+    fallback.end({ status: 'succeeded', usage: { inputTokens: 4, outputTokens: 2, totalCost: 0.0012 } });
     trace.end({ status: 'failed', error: { code: 'PROVIDER_ERROR', message: '模型响应流无效' } });
     await tracer.flush();
 
@@ -176,6 +184,56 @@ describe('Langfuse 跟踪协议', () => {
     }).not.toThrow();
     await expect(tracer.flush()).resolves.toBeUndefined();
     expect(requests).toHaveLength(1);
+  });
+
+  it('中止时把未完成的模型请求与工具调用标记为 cancelled', async () => {
+    const { fetchImpl, requests } = recordingFetch();
+    const tracer = newTracer(fetchImpl);
+    const trace = tracer.startTrace({ name: 'agent.round' });
+    const observations = new AgentObservations({ tracer, traceId: trace.id });
+    observations.startModelCall({
+      callId: 'call-1', provider: 'openai', modelId: 'fixture', instructions: 'system', messages: [],
+    } as unknown as LanguageModelCallStartEvent);
+    observations.startTool({
+      toolCall: { toolCallId: 'tool-1', toolName: 'Bash', input: { command: 'sleep 10' } },
+    } as unknown as ToolExecutionStartEvent);
+    observations.abortPending();
+    trace.end({ status: 'cancelled' });
+    await tracer.flush();
+
+    const events = eventsOf(requests);
+    expect(events.find(({ type, body }) => type === 'generation-create' && body.name === 'model.request')?.body)
+      .toMatchObject({ level: 'WARNING', metadata: { status: 'cancelled' } });
+    expect(events.find(({ type, body }) => type === 'span-create' && body.name === 'tool.Bash')?.body)
+      .toMatchObject({ level: 'WARNING', metadata: { status: 'cancelled' } });
+  });
+
+  it('工具结果区分权限拒绝与执行失败', async () => {
+    const { fetchImpl, requests } = recordingFetch();
+    const tracer = newTracer(fetchImpl);
+    const trace = tracer.startTrace({ name: 'agent.round' });
+    const observations = new AgentObservations({ tracer, traceId: trace.id });
+    const startEvent = (toolCallId: string, toolName: string) => ({
+      toolCall: { toolCallId, toolName, input: {} },
+    } as unknown as ToolExecutionStartEvent);
+    const endEvent = (toolCallId: string, toolName: string, output: unknown) => ({
+      toolCall: { toolCallId, toolName, input: {} }, toolOutput: { type: 'tool-result', output }, toolExecutionMs: 12,
+    } as unknown as ToolExecutionEndEvent);
+
+    observations.startTool(startEvent('call-denied', 'write_file'));
+    observations.endTool(endEvent('call-denied', 'write_file',
+      { is_error: true, error: { code: 'PERMISSION_DENIED', message: '本次工具调用未获权限批准。' } }));
+    observations.startTool(startEvent('call-failed', 'Bash'));
+    observations.endTool(endEvent('call-failed', 'Bash',
+      { is_error: true, error: { code: 'TOOL_EXECUTION_ERROR', message: '命令执行失败。' } }));
+    trace.end({ status: 'succeeded' });
+    await tracer.flush();
+
+    const events = eventsOf(requests);
+    expect(events.find(({ type, body }) => type === 'span-create' && body.name === 'tool.write_file')?.body)
+      .toMatchObject({ level: 'WARNING', output: { error: { code: 'PERMISSION_DENIED' } }, metadata: { status: 'rejected' } });
+    expect(events.find(({ type, body }) => type === 'span-create' && body.name === 'tool.Bash')?.body)
+      .toMatchObject({ level: 'ERROR', output: { error: { code: 'TOOL_EXECUTION_ERROR' } }, metadata: { status: 'failed' } });
   });
 
   it('默认关闭时不创建跟踪器，显式启用时从环境变量读取凭据', async () => {
@@ -272,7 +330,6 @@ describe('Agent 运行路径的 Langfuse 跟踪', () => {
     closeFixture = fixture.close;
     const { fetchImpl, requests } = recordingFetch();
     const tracer = newTracer(fetchImpl);
-    traces.push(tracer);
     const trace = tracer.startTrace({ name: 'agent.round', input: '运行命令' });
     const config = await fixtureConfig(fixture.baseURL);
 
@@ -308,7 +365,6 @@ describe('Agent 运行路径的 Langfuse 跟踪', () => {
     closeFixture = fixture.close;
     const { fetchImpl, requests } = recordingFetch();
     const tracer = newTracer(fetchImpl);
-    traces.push(tracer);
     const trace = tracer.startTrace({ name: 'agent.round', input: '失败请求' });
     const config = await fixtureConfig(fixture.baseURL);
 
@@ -340,7 +396,6 @@ describe('Agent 运行路径的 Langfuse 跟踪', () => {
     closeFixture = fixture.close;
     const { fetchImpl, requests } = recordingFetch();
     const tracer = newTracer(fetchImpl);
-    traces.push(tracer);
     const trace = tracer.startTrace({ name: 'agent.round', input: '委派调查' });
     const config = await fixtureConfig(fixture.baseURL);
 
@@ -368,7 +423,6 @@ describe('Agent 运行路径的 Langfuse 跟踪', () => {
     closeFixture = fixture.close;
     const { fetchImpl, requests } = recordingFetch();
     const tracer = newTracer(fetchImpl);
-    traces.push(tracer);
     const trace = tracer.startTrace({ name: 'agent.round', input: '长历史' });
     const config = await fixtureConfig(fixture.baseURL, {
       context: { capacityTokens: 20_000, answerReserveTokens: 100, maxOutputTokens: 1000 },
@@ -432,6 +486,10 @@ describe('CLI Langfuse 接线', () => {
     expect(batch.some(({ type, body }) => type === 'generation-create' && body.name === 'model.request')).toBe(true);
     expect(enabledLangfuse.requests[0]!.headers.authorization)
       .toBe(`Basic ${Buffer.from('pk-cli:sk-cli').toString('base64')}`);
+    // 会话记录只保存环境变量名，不落盘凭据值。
+    const record = await readFile(join(userDir, '.qhy-coding-agents', 'sessions', conversationId!, 'record.json'), 'utf8');
+    expect(record).not.toContain('pk-cli');
+    expect(record).not.toContain('sk-cli');
 
     const disabledLangfuse = await startFakeLangfuse();
     await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
@@ -441,5 +499,51 @@ describe('CLI Langfuse 接线', () => {
     const disabled = startCLI({ cwd, userDir, input: '继续\n/exit\n', env });
     expect((await disabled.done).code).toBe(0);
     expect(disabledLangfuse.requests).toHaveLength(0);
+  });
+
+  it('空闲 /compact 生成独立 trace，摘要 span 与模型请求保持父子关联', async () => {
+    const cwd = await tempDir('qhy-langfuse-compact-');
+    const userDir = await tempDir('qhy-langfuse-compact-user-');
+    extraRoots.push(cwd, userDir);
+    await mkdir(join(cwd, '.agent'), { recursive: true });
+    const fixture = await startLocalOpenAIModel(
+      () => ({ content: '空闲答复' }),
+      undefined,
+      () => ({ content: '压缩摘要。' }),
+    );
+    closeFixture = fixture.close;
+    const langfuse = await startFakeLangfuse();
+    await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
+      model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: fixture.baseURL,
+      timeoutMs: 5000,
+      context: { capacityTokens: 100_000, answerReserveTokens: 700, maxOutputTokens: 1_000 },
+      observability: { langfuse: { enabled: true, baseURL: langfuse.baseURL } },
+    }));
+    let output = '';
+    const cli = startCLI({
+      cwd,
+      userDir,
+      conversationId: 'compact-trace',
+      env: { TEST_MODEL_API_KEY: 'model-key', LANGFUSE_PUBLIC_KEY: 'pk-cli', LANGFUSE_SECRET_KEY: 'sk-cli' },
+    }, (value) => { output = value; });
+    cli.send('需要压缩的历史\n');
+    await waitFor(() => output.includes('空闲答复'), () => output);
+    cli.send('/compact\n');
+    await waitFor(() => output.includes('已压缩当前会话历史'), () => output);
+    cli.end('/exit\n');
+    const result = await cli.done;
+    expect(result.code, `${result.stdout}\n---stderr---\n${result.stderr}`).toBe(0);
+
+    const events = langfuse.requests.flatMap(({ batch }) => batch);
+    const compactTrace = events.find(({ type, body }) => type === 'trace-create' && body.name === 'conversation.compact');
+    expect(compactTrace?.body).toMatchObject({
+      sessionId: 'compact-trace', output: '压缩摘要。', metadata: { status: 'succeeded' },
+    });
+    const summarySpan = events.find(({ type, body }) => type === 'span-create' && body.name === 'conversation.summary');
+    expect(summarySpan?.body).toMatchObject({ traceId: compactTrace!.body.id, output: '压缩摘要。' });
+    const summaryGeneration = events.find(({ type, body }) => type === 'generation-create' && body.name === 'summary.model');
+    expect(summaryGeneration?.body).toMatchObject({
+      traceId: compactTrace!.body.id, parentObservationId: summarySpan!.body.id, model: 'fixture',
+    });
   });
 });
