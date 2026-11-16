@@ -149,11 +149,13 @@ it('approval.mode=auto 在 stdin 中映射为 model', async () => {
 });
 
 it('多个匹配 Hook 并行执行、按配置顺序注入，matcher 按 startup 过滤', async () => {
+  const stamp = (name: string): string =>
+    `${process.execPath} -e "require('node:fs').writeFileSync('${name}', String(Date.now()))"`;
   const { workspace, home, fixture } = await setup({
     hooks: {
       SessionStart: [
-        { matcher: 'startup|resume', hooks: [commandHook("sleep 0.8; printf '第一'")] },
-        { matcher: 'startup', hooks: [commandHook("sleep 0.8; printf '第二'")] },
+        { matcher: 'startup|resume', hooks: [commandHook(`${stamp('hook-start-1')}; sleep 0.8; printf '第一'`)] },
+        { matcher: 'startup', hooks: [commandHook(`${stamp('hook-start-2')}; sleep 0.8; printf '第二'`)] },
         { matcher: 'resume', hooks: [commandHook('touch resume-hook-ran')] },
         { matcher: '^startup$', hooks: [commandHook("printf '第三'")] },
         { matcher: '*', hooks: [commandHook("printf '第四'")] },
@@ -161,17 +163,17 @@ it('多个匹配 Hook 并行执行、按配置顺序注入，matcher 按 startup
       ],
     },
   });
-  const started = performance.now();
   const result = await run({ workspace, home, conversationId: 'session-many' });
-  const duration = performance.now() - started;
 
   expect(result.code, result.stdout + result.stderr).toBe(0);
   const users = userMessages(fixture.requests[0]!);
   expect(users).toHaveLength(6);
   expect(users.slice(0, 5).map((content) => content.match(/>\n([^\n<]+)\n</)?.[1]))
     .toEqual(['第一', '第二', '第三', '第四', '第五']);
-  // 两个 800ms 的 Hook 若是串行至少 1600ms；并行应当明显更快。
-  expect(duration).toBeLessThan(1400);
+  // 两个 800ms 的 Hook 若串行，启动时间至少相差 800ms；并行时启动间隔远小于该值。
+  const firstStart = Number(await readFile(join(workspace, 'hook-start-1'), 'utf8'));
+  const secondStart = Number(await readFile(join(workspace, 'hook-start-2'), 'utf8'));
+  expect(Math.abs(secondStart - firstStart)).toBeLessThan(500);
   await expect(readFile(join(workspace, 'resume-hook-ran'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
