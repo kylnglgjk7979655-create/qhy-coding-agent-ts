@@ -15,7 +15,7 @@ export const MAX_HOOK_INJECT_CHARS = 8_000;
 export const DEFAULT_HOOK_TIMEOUT_MS = 60_000;
 
 export type HookOutcome = 'success' | 'blocking' | 'non_blocking_error' | 'cancelled';
-export type HookFailureKind = 'timeout' | 'spawn_error' | 'invalid_json' | 'output_limit' | 'exit_code';
+export type HookFailureKind = 'timeout' | 'spawn_error' | 'invalid_json' | 'output_limit' | 'exit_code' | 'invalid_updated_input';
 
 /** 所有 Hook 共用的 stdin 基础字段；事件专有字段由调用方附加。 */
 export interface HookInputBase {

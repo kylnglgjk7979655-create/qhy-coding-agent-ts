@@ -1,4 +1,4 @@
-import { InvalidToolInputError, NoSuchToolError, tool } from 'ai';
+import { InvalidToolInputError, NoSuchToolError, asSchema, tool } from 'ai';
 import type { FlexibleSchema, ToolExecutionOptions, ToolSet } from 'ai';
 import { AgentError } from '../utils/errors.js';
 
@@ -12,8 +12,21 @@ export interface ToolExecutionEvent {
 
 /** PreToolUse 的聚合结论；deny 已在审批前短路，因此审批请求只会携带 allow 或 ask。 */
 export interface ToolPreToolUseDecision {
-  decision: 'allow' | 'deny' | 'ask';
+  /** 权限结论；省略表示 Hook 只提供改写或未给出结论。 */
+  decision?: 'allow' | 'deny' | 'ask';
   reason?: string;
+  /** 已通过工具 inputSchema 校验的改写输入；deny 时 registry 不应用。 */
+  updatedInput?: unknown;
+}
+
+/** 注册时保留的校验与准备能力，供 PreToolUse 改写后重新校验并生成审批细节。 */
+interface RegisteredToolDefinition {
+  validateInput: (value: unknown) => Promise<boolean>;
+  prepare?: (input: unknown) => Promise<{
+    input: unknown;
+    details?: Record<string, string>;
+    cleanup?: () => Promise<void> | void;
+  }>;
 }
 
 export interface ToolApprovalRequest {
@@ -29,6 +42,16 @@ type ToolErrorCode = NonNullable<ToolExecutionEvent['errorCode']>;
 type ToolFailure = { is_error: true; error: { code: ToolErrorCode; message: string } };
 function permissionDeniedResult(): ToolFailure {
   return { is_error: true, error: { code: 'PERMISSION_DENIED', message: '本次工具调用未获权限批准。' } };
+}
+
+/** 用注册时的 prepare 重新生成改写输入的审批细节与执行输入；失败时回退。 */
+async function prepareUpdatedInput(definition: RegisteredToolDefinition, input: unknown) {
+  try {
+    return definition.prepare === undefined ? { input } : await definition.prepare(input);
+  } catch {
+    process.stderr.write('[hook] PreToolUse: updatedInput 无法准备，已回退原输入（不影响工具）。\n');
+    return undefined;
+  }
 }
 
 export const MAX_TOOL_CALL_CONCURRENCY = 10;
@@ -113,6 +136,8 @@ export class ToolRegistry {
       callId: string;
       toolName: string;
       input: unknown;
+      /** 按该工具注册的 inputSchema 校验 PreToolUse 候选输入。 */
+      validateInput: (value: unknown) => Promise<boolean>;
     }, signal?: AbortSignal) => Promise<ToolPreToolUseDecision | undefined>;
     approve?: (call: ToolApprovalRequest, signal?: AbortSignal) => Promise<boolean>;
   }) {}
@@ -135,6 +160,20 @@ export class ToolRegistry {
     if (this.registered.has(name)) {
       throw new AgentError('CONFIG_ERROR', `工具名称重复注册：${name}。`);
     }
+    const schema = asSchema(inputSchema);
+    const validate = schema.validate;
+    // 注册时保留校验与准备能力，供 PreToolUse 改写后重新校验并生成审批细节。
+    const registered: RegisteredToolDefinition = {
+      // 没有本地验证器时无法校验改写，保持原输入可用，不误判为非法。
+      validateInput: validate === undefined
+        ? async () => true
+        : async (value: unknown) => {
+          try { return (await validate(value)).success; } catch { return false; }
+        },
+      ...(prepare === undefined
+        ? {}
+        : { prepare: async (value: unknown) => prepare(value as Input) }),
+    };
     this.registered.set(name, tool({
       description,
       inputSchema,
@@ -161,14 +200,27 @@ export class ToolRegistry {
             callId: execution.toolCallId,
             toolName: name,
             input: prepared.input,
+            validateInput: registered.validateInput,
           }, execution.abortSignal);
           if (hookDecision?.decision === 'deny') {
             this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'rejected', errorCode: 'PERMISSION_DENIED' });
             return permissionDeniedResult();
           }
           execution.abortSignal?.throwIfAborted();
+          // 改写输入已通过 inputSchema 校验；重新 prepare 得到审批细节与执行输入。
+          // 准备失败说明改写目标当前不可用，回退原输入继续正常审批。
+          let approvalInput: unknown = input;
+          if (hookDecision?.updatedInput !== undefined) {
+            const replacement = await prepareUpdatedInput(registered, hookDecision.updatedInput);
+            if (replacement !== undefined) {
+              try { await prepared.cleanup?.(); } catch { /* 旧准备资源回收失败不影响改写。 */ }
+              prepared = replacement as typeof prepared;
+              approvalInput = hookDecision.updatedInput;
+            }
+          }
+          execution.abortSignal?.throwIfAborted();
           const details = { ...approvalDetails, ...prepared.details };
-          const hookPermission = hookDecision === undefined
+          const hookPermission = hookDecision?.decision === undefined
             ? undefined
             : {
               decision: hookDecision.decision,
@@ -177,7 +229,7 @@ export class ToolRegistry {
           if (this.options.approve && !await this.options.approve({
             callId: execution.toolCallId,
             toolName: name,
-            input,
+            input: approvalInput,
             ...(Object.keys(details).length > 0 ? { details } : {}),
             ...(hookPermission === undefined ? {} : { hookPermission }),
           }, execution.abortSignal)) {

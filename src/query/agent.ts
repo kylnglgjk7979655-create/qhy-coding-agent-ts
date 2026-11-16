@@ -21,7 +21,7 @@ import { appendRecentSkillLoads, collectSkillInjections, insertSkillInjections }
 import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import type { SkillInjection } from '../services/skills/skill-injection.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
-import { describeHookRun, preToolUseDecision, runHookEvent } from '../services/hooks/hook-engine.js';
+import { describeHookRun, evaluatePreToolUse, runHookEvent } from '../services/hooks/hook-engine.js';
 import type { PreToolUseHookInput } from '../services/hooks/hook-runner.js';
 import type { BackgroundAgentTasks, BackgroundTaskStatusEntry } from '../tools/AgentTool/background-agent-tasks.js';
 
@@ -179,11 +179,23 @@ export async function runAgent(
           process.stderr.write('[hook] PreToolUse: 执行失败（已忽略，不影响工具）\n');
           return undefined;
         }
-        for (const run of result.runs) {
+        // 改写候选按工具注册的 inputSchema 校验；失败的运行仅作为非阻断错误提示。
+        const evaluation = await evaluatePreToolUse(result, call.validateInput);
+        for (const run of evaluation.runs) {
           const message = describeHookRun(run);
           if (message !== undefined) process.stderr.write(`${message}\n`);
         }
-        return preToolUseDecision(result);
+        return evaluation.decision === undefined && evaluation.updatedInput === undefined
+          ? undefined
+          : {
+            ...(evaluation.decision === undefined
+              ? {}
+              : {
+                decision: evaluation.decision.decision,
+                ...(evaluation.decision.reason === undefined ? {} : { reason: evaluation.decision.reason }),
+              }),
+            ...(evaluation.updatedInput === undefined ? {} : { updatedInput: evaluation.updatedInput }),
+          };
       } finally {
         resumeDeadline();
       }

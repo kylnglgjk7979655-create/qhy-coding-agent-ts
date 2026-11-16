@@ -63,6 +63,18 @@ function decisionHook(decision: 'allow' | 'ask' | 'deny', reason: string) {
   return commandHook(`printf '%s' '${payload}'`);
 }
 
+function updateHook(updatedInput: unknown, decision?: { decision: 'allow' | 'ask' | 'deny'; reason: string }) {
+  const payload = JSON.stringify({
+    hookSpecificOutput: {
+      ...(decision === undefined
+        ? {}
+        : { permissionDecision: decision.decision, permissionDecisionReason: decision.reason }),
+      updatedInput,
+    },
+  });
+  return commandHook(`printf '%s' '${payload}'`);
+}
+
 function call(id: string, name: string, input: unknown): FixtureToolCall {
   return { id, type: 'function', function: { name, arguments: JSON.stringify(input) } };
 }
@@ -306,6 +318,139 @@ async function waitForOutput(readOutput: () => string, text: string): Promise<vo
   }
   expect(readOutput()).toContain(text);
 }
+
+it('合法 updatedInput 经 schema 校验后成为审批输入、审批细节与实际执行参数', async () => {
+  const { workspace, home, fixture } = await setup({
+    approval: { mode: 'auto' },
+    hooks: {
+      PreToolUse: [{ matcher: 'write_file', hooks: [
+        updateHook({ path: 'rewritten.txt', content: '改写后的内容' }, { decision: 'ask', reason: '改写后请审批' }),
+      ] }],
+    },
+  }, (_request, index) => index === 1 ? { calls: [
+    call('updated-write', 'write_file', { path: 'original.txt', content: '原始内容' }),
+  ] } : { content: '完成' });
+
+  const result = await run({ workspace, home, conversationId: 'pre-tool-updated-valid' });
+
+  expect(result.code, result.stdout + result.stderr).toBe(0);
+  expect(fixture.approvalRequests).toHaveLength(1);
+  const payload = JSON.parse(fixture.approvalRequests[0]!.messages.at(-1)!.content) as {
+    input: unknown;
+    context: { environment: { toolDetails: Record<string, string> } };
+  };
+  expect(payload.input).toEqual({ path: 'rewritten.txt', content: '改写后的内容' });
+  expect(payload.context.environment.toolDetails).toMatchObject({
+    requestedPath: 'rewritten.txt',
+    target: join(workspace, 'rewritten.txt'),
+  });
+  expect(JSON.parse(results(fixture)[0]!.content)).toMatchObject({ is_error: false });
+  expect(await readFile(join(workspace, 'rewritten.txt'), 'utf8')).toBe('改写后的内容');
+  await expect(readFile(join(workspace, 'original.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('非法 updatedInput 记为 non_blocking_error、忽略该 Hook 权限结论并回退原输入正常审批', async () => {
+  const { workspace, home, fixture } = await setup({
+    approval: { mode: 'auto' },
+    hooks: {
+      PreToolUse: [{ matcher: 'write_file', hooks: [
+        // write_file 的 inputSchema 要求 content；缺失时整条更新无效。
+        updateHook({ path: 'rewritten.txt' }, { decision: 'deny', reason: '不应生效的拒绝' }),
+      ] }],
+    },
+  }, (_request, index) => index === 1 ? { calls: [
+    call('updated-invalid', 'write_file', { path: 'original.txt', content: '原内容' }),
+  ] } : { content: '完成' });
+
+  const result = await run({ workspace, home, conversationId: 'pre-tool-updated-invalid' });
+
+  expect(result.code, result.stdout + result.stderr).toBe(0);
+  expect(result.stderr).toContain('updatedInput 未通过工具参数校验');
+  expect(fixture.approvalRequests).toHaveLength(1);
+  const payload = JSON.parse(fixture.approvalRequests[0]!.messages.at(-1)!.content) as { input: unknown };
+  expect(payload.input).toEqual({ path: 'original.txt', content: '原内容' });
+  expect(JSON.parse(results(fixture)[0]!.content)).toMatchObject({ is_error: false });
+  expect(await readFile(join(workspace, 'original.txt'), 'utf8')).toBe('原内容');
+  await expect(readFile(join(workspace, 'rewritten.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('多个有效 updatedInput 按配置顺序取最后一个，审批与执行结果稳定', async () => {
+  const { workspace, home, fixture } = await setup({
+    approval: { mode: 'auto' },
+    hooks: {
+      PreToolUse: [{ matcher: 'write_file', hooks: [
+        updateHook({ path: 'first.txt', content: '第一份' }),
+        updateHook({ path: 'second.txt', content: '第二份' }),
+      ] }],
+    },
+  }, (_request, index) => index === 1 ? { calls: [
+    call('updated-order', 'write_file', { path: 'original.txt', content: '原始内容' }),
+  ] } : { content: '完成' });
+
+  const result = await run({ workspace, home, conversationId: 'pre-tool-updated-order' });
+
+  expect(result.code, result.stdout + result.stderr).toBe(0);
+  expect(fixture.approvalRequests).toHaveLength(1);
+  const payload = JSON.parse(fixture.approvalRequests[0]!.messages.at(-1)!.content) as { input: unknown };
+  expect(payload.input).toEqual({ path: 'second.txt', content: '第二份' });
+  expect(await readFile(join(workspace, 'second.txt'), 'utf8')).toBe('第二份');
+  await expect(readFile(join(workspace, 'first.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(join(workspace, 'original.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it.each([
+  {
+    name: 'settings deny 规则优先于 Hook allow 的改写',
+    hooks: [updateHook({ path: 'rewritten.txt', content: '试图绕过' }, { decision: 'allow', reason: 'Hook 允许' })],
+    permissions: { deny: ['Write'] },
+    approvalRequests: 0,
+  },
+  {
+    name: 'Hook deny 优先于同一次改写',
+    hooks: [updateHook({ path: 'rewritten.txt', content: '不应写入' }, { decision: 'deny', reason: 'Hook 拒绝' })],
+    permissions: {},
+    approvalRequests: 0,
+  },
+])('$name', async ({ hooks, permissions, approvalRequests }) => {
+  const { workspace, home, fixture } = await setup({
+    approval: { mode: 'auto' },
+    permissions,
+    hooks: { PreToolUse: [{ matcher: 'write_file', hooks }] },
+  }, (_request, index) => index === 1 ? { calls: [
+    call('updated-denied', 'write_file', { path: 'original.txt', content: '原始内容' }),
+  ] } : { content: '完成' });
+
+  const result = await run({ workspace, home, conversationId: 'pre-tool-updated-denied' });
+
+  expect(result.code, result.stdout + result.stderr).toBe(0);
+  expect(fixture.approvalRequests).toHaveLength(approvalRequests);
+  expect(JSON.parse(results(fixture)[0]!.content)).toMatchObject({ is_error: true, error: { code: 'PERMISSION_DENIED' } });
+  await expect(readFile(join(workspace, 'rewritten.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(join(workspace, 'original.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('改写后的输入仍须满足 settings ask 规则，不能借 Hook allow 跳过审批', async () => {
+  const { workspace, home, fixture } = await setup({
+    approval: { mode: 'auto' },
+    permissions: { ask: ['Write'] },
+    hooks: {
+      PreToolUse: [{ matcher: 'write_file', hooks: [
+        updateHook({ path: 'rewritten.txt', content: '仍需审批' }, { decision: 'allow', reason: 'Hook 允许' }),
+      ] }],
+    },
+  }, (_request, index) => index === 1 ? { calls: [
+    call('updated-ask', 'write_file', { path: 'original.txt', content: '原始内容' }),
+  ] } : { content: '完成' });
+
+  const result = await run({ workspace, home, conversationId: 'pre-tool-updated-ask' });
+
+  expect(result.code, result.stdout + result.stderr).toBe(0);
+  expect(fixture.approvalRequests).toHaveLength(1);
+  const payload = JSON.parse(fixture.approvalRequests[0]!.messages.at(-1)!.content) as { input: unknown };
+  expect(payload.input).toEqual({ path: 'rewritten.txt', content: '仍需审批' });
+  expect(JSON.parse(results(fixture)[0]!.content)).toMatchObject({ is_error: false });
+  expect(await readFile(join(workspace, 'rewritten.txt'), 'utf8')).toBe('仍需审批');
+});
 
 it('deny 阻止 Bash 执行且 stdin 携带 prepare 后的命令与解析目录', async () => {
   const { workspace, home, fixture } = await setup({

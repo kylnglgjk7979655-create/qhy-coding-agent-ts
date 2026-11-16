@@ -118,6 +118,15 @@ export interface PreToolUseDecision {
   reason?: string;
 }
 
+/** PreToolUse 的聚合结果；updatedInput 与权限结论相互独立，deny 时不保留改写。 */
+export interface PreToolUseEvaluation {
+  decision?: PreToolUseDecision;
+  /** 已通过工具 inputSchema 校验的改写；按配置顺序取最后一个有效结果。 */
+  updatedInput?: unknown;
+  /** 配置顺序不变；updatedInput 校验失败的运行已改为 non_blocking_error。 */
+  runs: HookCommandRun[];
+}
+
 const PRE_TOOL_USE_PRECEDENCE: Record<PreToolUseDecision['decision'], number> = {
   allow: 0,
   ask: 1,
@@ -126,19 +135,44 @@ const PRE_TOOL_USE_PRECEDENCE: Record<PreToolUseDecision['decision'], number> = 
 
 /**
  * 聚合所有匹配 Hook 的 PreToolUse 结论：deny > ask > allow，同结论取配置顺序中的第一条。
+ * updatedInput 先经工具 inputSchema 校验；校验失败只把该运行记为 non_blocking_error，
+ * 并忽略其权限结论。有效改写按配置顺序覆盖，最后一个用于审批与执行；deny 优先于改写。
  * 故障、超时和不带权限结论的成功输出不参与聚合；调用方仍按现有工具错误码返回结果。
  */
-export function preToolUseDecision(result: HookEventResult): PreToolUseDecision | undefined {
+export async function evaluatePreToolUse(
+  result: HookEventResult,
+  validateInput?: (value: unknown) => boolean | Promise<boolean>,
+): Promise<PreToolUseEvaluation> {
   let selected: PreToolUseDecision | undefined;
+  let updatedInput: unknown;
+  const runs: HookCommandRun[] = [];
   for (const run of result.runs) {
-    const candidate = preToolUseRunDecision(run.result);
-    if (candidate === undefined) continue;
+    const candidate = run.result.outcome === 'success'
+      ? run.result.hookSpecificOutput?.updatedInput
+      : undefined;
+    if (candidate !== undefined && validateInput !== undefined && !await validateInput(candidate)) {
+      runs.push({
+        ...run,
+        result: { ...run.result, outcome: 'non_blocking_error', failureKind: 'invalid_updated_input' },
+      });
+      continue;
+    }
+    runs.push(run);
+    if (candidate !== undefined) updatedInput = candidate;
+    const decision = preToolUseRunDecision(run.result);
+    if (decision === undefined) continue;
     if (selected === undefined
-      || PRE_TOOL_USE_PRECEDENCE[candidate.decision] > PRE_TOOL_USE_PRECEDENCE[selected.decision]) {
-      selected = candidate;
+      || PRE_TOOL_USE_PRECEDENCE[decision.decision] > PRE_TOOL_USE_PRECEDENCE[selected.decision]) {
+      selected = decision;
     }
   }
-  return selected;
+  // deny 先于任何改写生效；不把改写结果交给审批或执行。
+  if (selected?.decision === 'deny') return { decision: selected, runs };
+  return {
+    ...(selected === undefined ? {} : { decision: selected }),
+    ...(updatedInput === undefined ? {} : { updatedInput }),
+    runs,
+  };
 }
 
 function preToolUseRunDecision(result: HookResult): PreToolUseDecision | undefined {
@@ -233,6 +267,7 @@ function failureDescription(result: HookResult): string {
     case 'spawn_error': return '启动失败';
     case 'invalid_json': return 'stdout JSON 无效';
     case 'output_limit': return 'stdout 超过 1 MiB，已终止';
+    case 'invalid_updated_input': return 'updatedInput 未通过工具参数校验';
     case 'exit_code': return `退出码 ${result.exitCode ?? '未知'}`;
     default: return '执行失败';
   }
