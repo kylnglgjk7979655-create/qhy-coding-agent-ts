@@ -20,6 +20,20 @@ export type SessionStartSource = (typeof SESSION_START_SOURCES)[number];
 /** Hook 超时的统一上限；单个 Hook 可用 timeoutMs 在 (0, 600000] 内覆盖默认值。 */
 export const MAX_HOOK_TIMEOUT_MS = 600_000;
 
+/** 各事件未单独配置 timeoutMs 时使用的默认超时；UserPromptSubmit 需要尽快回到用户输入。 */
+export const DEFAULT_HOOK_TIMEOUTS_MS: Record<HookEvent, number> = {
+  SessionStart: 60_000,
+  UserPromptSubmit: 10_000,
+  PreToolUse: 60_000,
+  PostToolUse: 60_000,
+  PostToolUseFailure: 60_000,
+  Stop: 60_000,
+};
+
+export function defaultHookTimeoutMs(event: HookEvent): number {
+  return DEFAULT_HOOK_TIMEOUTS_MS[event];
+}
+
 const exactNamePattern = /^[A-Za-z0-9_]+$/u;
 
 export type HookMatcher =

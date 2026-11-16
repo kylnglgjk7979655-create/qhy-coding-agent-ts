@@ -23,8 +23,9 @@ import { generateSummary } from './services/compact/context-summary.js';
 import { RecentFileTracker } from './services/compact/recent-files.js';
 import { formatHookCommandList, hasHookCommands, isHooksConfigTrusted, trustHooksConfig } from './services/hooks/hook-trust.js';
 import type { HooksConfig, SessionStartSource } from './services/hooks/hooks-config.js';
-import { HookInjectionTracker, describeHookRun, runHookEvent, sessionStartContextMessages } from './services/hooks/hook-engine.js';
-import type { SessionStartHookInput } from './services/hooks/hook-runner.js';
+import { HookInjectionTracker, describeHookRun, runHookEvent, sessionStartContextMessages, userPromptSubmitContextMessages, userPromptSubmitStop } from './services/hooks/hook-engine.js';
+import type { UserPromptSubmitStop } from './services/hooks/hook-engine.js';
+import type { SessionStartHookInput, UserPromptSubmitHookInput } from './services/hooks/hook-runner.js';
 import type { LoadedConfig } from './services/settings/config.js';
 
 const help = `用法：node dist/cli.js [选项]
@@ -262,6 +263,49 @@ async function main(): Promise<void> {
       // 恢复既有对话：附加上下文接在重建历史尾部，恢复后的下一次请求可见并随有效历史持久化。
       history = [...history, ...await runSessionStart('resume', conversationId)];
     }
+
+    /**
+     * 每次真实用户提交进入模型前运行 UserPromptSubmit；该事件没有 matcher query。
+     * 附加上下文排在用户消息之后；exit 2 与 decision block 取消本轮，continue false 保留原 prompt。
+     */
+    const runUserPromptSubmit = async (prompt: string, signal: AbortSignal): Promise<{
+      context: ModelMessage[];
+      stop?: UserPromptSubmitStop;
+    }> => {
+      if (config.hooks === undefined || config.disableAllHooks) return { context: [] };
+      const hookInput: UserPromptSubmitHookInput = {
+        session_id: conversationId,
+        transcript_path: sessionRecordPath(userHome, conversationId),
+        cwd: config.workspace,
+        approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
+        hook_event_name: 'UserPromptSubmit',
+        prompt,
+      };
+      let result: Awaited<ReturnType<typeof runHookEvent>>;
+      try {
+        result = await runHookEvent(config.hooks, 'UserPromptSubmit', hookInput, {
+          cwd: config.workspace,
+          env: process.env,
+          signal,
+        });
+      } catch {
+        process.stderr.write('[hook] UserPromptSubmit: 执行失败（已忽略，不影响对话）\n');
+        return { context: [] };
+      }
+      for (const run of result.runs) {
+        const message = describeHookRun(run);
+        if (message !== undefined) process.stderr.write(`${message}\n`);
+      }
+      const stop = userPromptSubmitStop(result);
+      if (stop) return { context: [], stop };
+      return { context: userPromptSubmitContextMessages(result, hookInjectionTracker) };
+    };
+    /** continue:false 不发出模型请求，但把原 prompt 留在 transcript 与有效历史中。 */
+    const preserveUserPrompt = async (prompt: string): Promise<void> => {
+      const preserved: ModelMessage = { role: 'user', content: prompt };
+      await appendSessionEvent(userHome, conversationId, [preserved]);
+      history = [...history, preserved];
+    };
 
     // 启动时注册一次 Skill；会话切换工作区后重新加载，本轮内来源文件变化不影响已注册内容。
     let skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
@@ -531,7 +575,14 @@ async function main(): Promise<void> {
       try {
         activeRound = new AbortController();
         const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
-        history = await runTurn(prompt, config, skills, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
+        const submitted = await runUserPromptSubmit(prompt, turnSignal);
+        turnSignal.throwIfAborted();
+        if (submitted.stop) {
+          if (submitted.stop.kind === 'stop') await preserveUserPrompt(prompt);
+          if (process.stdin.isTTY) input.prompt();
+          continue;
+        }
+        history = await runTurn(prompt, config, skills, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses, submitted.context);
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
@@ -634,6 +685,7 @@ async function runTurn(
   consumeCompactionRequest?: () => boolean,
   recentFiles: RecentFileTracker = new RecentFileTracker(),
   getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[],
+  promptContext: ModelMessage[] = [],
 ): Promise<ModelMessage[]> {
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
@@ -663,6 +715,7 @@ async function runTurn(
     const result = await runAgent(config, prompt, {
       smokeTool,
       history,
+      promptContext,
       summaryCoverageBase,
       summaryRestoredBase,
       recentSkillLoads,

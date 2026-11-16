@@ -58,6 +58,8 @@ export async function runAgent(
   options: {
     smokeTool: boolean;
     history?: ModelMessage[];
+    /** 用户消息之后的 Hook 附加上下文；只进入第一次模型请求并随有效历史持久化。 */
+    promptContext?: readonly ModelMessage[];
     onText?: (chunk: string) => Promise<void> | void;
     onToolCallStart?: (call: { callId: string; toolName: string; input: unknown }) => Promise<void> | void;
     onStepMessages?: (content: unknown[]) => Promise<void> | void;
@@ -316,6 +318,8 @@ export async function runAgent(
           ? `调用 read_file 读取 ${smokeProbePath}，然后在最终回答中逐字写出文件内容。`
           : prompt,
       },
+      // UserPromptSubmit 上下文必须排在用户消息之后，模型才能把它看作对本次提交的补充资料。
+      ...(options.smokeTool ? [] : options.promptContext ?? []),
     ];
     const result = await agent.stream({
       messages: inputMessages,

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { runControlledProcess } from '../process/controlled-process.js';
-import type { HookCommand, HookEvent, SessionStartSource } from './hooks-config.js';
+import { defaultHookTimeoutMs, type HookCommand, type HookEvent, type SessionStartSource } from './hooks-config.js';
 
 /** v1 Hook 协议版本；不写入 stdin，仅由 ADR 与后续兼容判断使用。 */
 export const HOOK_PROTOCOL_VERSION = 1;
@@ -11,7 +11,7 @@ export const MAX_HOOK_STDOUT_BYTES = 1024 * 1024;
 export const MAX_HOOK_STDERR_BYTES = 64 * 1024;
 /** 所有进入模型上下文的 Hook 文本统一按该字符数截断。 */
 export const MAX_HOOK_INJECT_CHARS = 8_000;
-/** SessionStart 等同步事件的默认超时；单条 Hook 可用 timeoutMs 覆盖。 */
+/** 旧版通用默认超时；现在按事件取 defaultHookTimeoutMs，保留该常量避免影响既有调用方。 */
 export const DEFAULT_HOOK_TIMEOUT_MS = 60_000;
 
 export type HookOutcome = 'success' | 'blocking' | 'non_blocking_error' | 'cancelled';
@@ -31,6 +31,12 @@ export type HookInput = HookInputBase & Record<string, unknown>;
 export interface SessionStartHookInput extends HookInput {
   hook_event_name: 'SessionStart';
   source: SessionStartSource;
+}
+
+/** 真实用户提交的原始文本；该事件没有 matcher query，配置 matcher 不参与过滤。 */
+export interface UserPromptSubmitHookInput extends HookInput {
+  hook_event_name: 'UserPromptSubmit';
+  prompt: string;
 }
 
 /** v1 stdout JSON 字段；未知字段忽略，已知字段类型不符按无效 JSON 处理。 */
@@ -88,7 +94,7 @@ export async function runCommandHook(
     stdin: JSON.stringify(input),
     ...(options.env === undefined ? {} : { env: options.env }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
-    timeoutMs: options.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS,
+    timeoutMs: options.timeoutMs ?? defaultHookTimeoutMs(input.hook_event_name),
     stdoutLimitBytes: MAX_HOOK_STDOUT_BYTES,
     stderrLimitBytes: MAX_HOOK_STDERR_BYTES,
     terminateOnStdoutLimit: true,

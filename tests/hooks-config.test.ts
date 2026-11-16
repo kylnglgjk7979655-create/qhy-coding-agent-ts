@@ -9,6 +9,7 @@ import {
 } from '../src/services/settings/config.js';
 import {
   SESSION_START_SOURCES,
+  defaultHookTimeoutMs,
   hookQueryField,
   matchesHookMatcher,
   parseHookMatcher,
@@ -129,6 +130,15 @@ describe('Hook 配置模型与分层合并', () => {
     expect(parseHookMatcher('*')).toEqual({ kind: 'all' });
     expect(parseHookMatcher(undefined)).toEqual({ kind: 'all' });
     expect(() => parseHookMatcher('(')).toThrow();
+  });
+
+  it('按事件提供默认超时，UserPromptSubmit 为 10 秒', () => {
+    expect(defaultHookTimeoutMs('UserPromptSubmit')).toBe(10_000);
+    expect(defaultHookTimeoutMs('SessionStart')).toBe(60_000);
+    expect(defaultHookTimeoutMs('PreToolUse')).toBe(60_000);
+    expect(defaultHookTimeoutMs('PostToolUse')).toBe(60_000);
+    expect(defaultHookTimeoutMs('PostToolUseFailure')).toBe(60_000);
+    expect(defaultHookTimeoutMs('Stop')).toBe(60_000);
   });
 
   it('按事件解析 match query，并且无 query 的事件不做 matcher 过滤', () => {

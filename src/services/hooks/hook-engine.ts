@@ -99,19 +99,76 @@ export function sessionStartContextMessages(
 }
 
 function sessionStartContext(result: HookResult): string | undefined {
-  if (result.outcome === 'success') {
-    // JSON stdout 已结构化为结果；未提供 additionalContext 时不能把整段 JSON 注入模型。
-    return result.stdoutIsJson ? result.hookSpecificOutput?.additionalContext : result.stdout;
-  }
+  const context = successfulContext(result);
+  if (context !== undefined) return context;
   // SessionStart 没有可阻止的启动动作；exit 2 的理由按反馈注入，启动继续。
   if (result.outcome === 'blocking') return result.reason;
   return undefined;
+}
+
+/** exit 0 时 JSON additionalContext 或普通 stdout 作为附加上下文；不能把其他 JSON 字段注入模型。 */
+function successfulContext(result: HookResult): string | undefined {
+  if (result.outcome !== 'success') return undefined;
+  return result.stdoutIsJson ? result.hookSpecificOutput?.additionalContext : result.stdout;
+}
+
+/** UserPromptSubmit 的停止结论；block 丢弃原 prompt，stop（continue:false）保留原 prompt。 */
+export interface UserPromptSubmitStop {
+  kind: 'block' | 'stop';
+  reason: string;
+}
+
+/**
+ * 合并所有匹配 Hook 的停止结论：exit 2 与 decision block 优先于 continue false。
+ * 只有 success 才可能携带 JSON 结论；故障与超时按协议只提示，不阻止本轮。
+ */
+export function userPromptSubmitStop(result: HookEventResult): UserPromptSubmitStop | undefined {
+  let stop: UserPromptSubmitStop | undefined;
+  for (const run of result.runs) {
+    const hookResult = run.result;
+    if (hookResult.outcome === 'blocking') {
+      return { kind: 'block', reason: hookResult.reason ?? 'Hook 请求阻止本轮。' };
+    }
+    if (hookResult.outcome !== 'success') continue;
+    if (hookResult.decision === 'block') {
+      return { kind: 'block', reason: hookResult.reason ?? 'Hook 请求阻止本轮。' };
+    }
+    if (hookResult.continue === false && stop === undefined) {
+      stop = { kind: 'stop', reason: hookResult.reason ?? 'Hook 请求停止本轮。' };
+    }
+  }
+  return stop;
+}
+
+/** UserPromptSubmit 的附加上下文：仅成功运行的 additionalContext 或普通 stdout。 */
+export function userPromptSubmitContextMessages(
+  result: HookEventResult,
+  tracker: HookInjectionTracker,
+): ModelMessage[] {
+  const messages: ModelMessage[] = [];
+  for (const run of result.runs) {
+    if (!tracker.claim(run.runId)) continue;
+    const context = successfulContext(run.result);
+    if (context === undefined || context.trim().length === 0) continue;
+    messages.push({
+      role: 'user',
+      content: `<hook-context event="UserPromptSubmit">\n${truncateHookText(context)}\n</hook-context>`,
+    });
+  }
+  return messages;
 }
 
 /** 面向用户的提示文本；Hook 故障只提示不阻止，普通成功不产生噪声。 */
 export function describeHookRun(run: HookCommandRun): string | undefined {
   switch (run.result.outcome) {
     case 'success':
+      if (run.result.decision === 'block') {
+        return `[hook] ${run.event}: ${truncateUiLine(run.result.reason ?? 'Hook 请求阻止该事件。')}`;
+      }
+      // continue:false 停止本轮；理由与 blocking 一样只给用户看。
+      if (run.result.continue === false) {
+        return `[hook] ${run.event}: ${truncateUiLine(run.result.reason ?? 'Hook 请求停止本轮。')}`;
+      }
       return run.result.systemMessage === undefined
         ? undefined
         : `[hook] ${run.event}: ${truncateUiLine(run.result.systemMessage)}`;
