@@ -1,7 +1,8 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { runControlledProcess } from '../src/services/process/controlled-process.js';
 import type { ControlledProcessResult } from '../src/services/process/controlled-process.js';
@@ -32,10 +33,13 @@ interface RunningGroup {
   workerPid: number;
 }
 
-/** 启动一个带子进程的独立 shell 进程组，并等待 shell 与子进程都已写入 PID。 */
+/**
+ * 启动一个带孙进程的独立 shell 进程组。PID 由 shell 在拉起后台进程后立即写入，
+ * 避免等待 Node 子进程启动占用超时窗口。
+ */
 async function startGroup(options: { timeoutMs?: number; signal?: AbortSignal }): Promise<RunningGroup> {
-  await writeFile(join(cwd, 'worker.cjs'), "const fs = require('node:fs'); fs.writeFileSync('child.pid', String(process.pid)); setInterval(() => {}, 1000);");
-  const command = `echo $$ > shell.pid; ${process.execPath} worker.cjs & wait`;
+  await writeFile(join(cwd, 'worker.cjs'), 'setInterval(() => {}, 1000);');
+  const command = `echo $$ > shell.pid; ${process.execPath} worker.cjs & echo $! > child.pid; wait`;
   const pending = runControlledProcess(
     'bash',
     ['--noprofile', '--norc', '-c', command],
@@ -114,7 +118,7 @@ it('非零退出码原样返回', async () => {
 });
 
 it('超时终止整个进程组并返回超时标记', async () => {
-  const { pending, shellPid, workerPid } = await startGroup({ timeoutMs: 2000 });
+  const { pending, shellPid, workerPid } = await startGroup({ timeoutMs: 300 });
 
   const result = await pending;
 
@@ -144,4 +148,51 @@ it('启动前已取消的信号不启动子进程', async () => {
 
   expect(result).toMatchObject({ exitCode: null, signal: null, timedOut: false, cancelled: true, startFailed: false });
   await expect(readFile(join(cwd, 'should-not-exist.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('stdin 写入遇到 EPIPE 记为启动失败且不抛错', async () => {
+  // 子进程不读取 stdin 立即退出，大块写入超过管道缓冲后必然产生 EPIPE。
+  const result = await runControlledProcess(process.execPath, ['-e', 'process.exit(0)'], {
+    cwd,
+    stdin: 'x'.repeat(1024 * 1024),
+  });
+
+  expect(result).toMatchObject({ exitCode: 0, startFailed: false, stdinFailed: true, timedOut: false, cancelled: false });
+});
+
+it('主进程退出时终止残留进程组并销毁管道', async () => {
+  const shellPidPath = join(cwd, 'exit-shell.pid');
+  const workerPidPath = join(cwd, 'exit-child.pid');
+  const command = `echo $$ > ${shellPidPath}; ${process.execPath} -e "setInterval(() => {}, 1000)" & echo $! > ${workerPidPath}; wait`;
+  const source = fileURLToPath(new URL('../src/services/process/controlled-process.ts', import.meta.url));
+  const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+  const script = [
+    `const { runControlledProcess } = await import(${JSON.stringify(pathToFileURL(source).href)});`,
+    `runControlledProcess('bash', ['--noprofile', '--norc', '-c', ${JSON.stringify(command)}],`,
+    `  { cwd: ${JSON.stringify(cwd)}, timeoutMs: 60000 });`,
+    'setTimeout(() => process.exit(0), 500);',
+  ].join('\n');
+  // 用独立进程模拟 CLI：命令仍在运行时主进程退出，注册的 exit 清理必须终止整个进程组。
+  const runner = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+    cwd: repoRoot,
+    stdio: 'ignore',
+  });
+
+  await expect.poll(async () => {
+    const shellPid = Number(await readFile(shellPidPath, 'utf8').catch(() => '0'));
+    const workerPid = Number(await readFile(workerPidPath, 'utf8').catch(() => '0'));
+    return shellPid > 0 && workerPid > 0;
+  }, { timeout: 5000, interval: 20 }).toBe(true);
+
+  const shellPid = Number(await readFile(shellPidPath, 'utf8'));
+  const workerPid = Number(await readFile(workerPidPath, 'utf8'));
+  managedPids.push(shellPid, workerPid);
+  const exitCode = await new Promise<number | null>((resolve, reject) => {
+    runner.once('error', reject);
+    runner.once('close', resolve);
+  });
+
+  expect(exitCode).toBe(0);
+  await expect.poll(() => isRunning(shellPid), { timeout: 3000, interval: 20 }).toBe(false);
+  await expect.poll(() => isRunning(workerPid), { timeout: 3000, interval: 20 }).toBe(false);
 });

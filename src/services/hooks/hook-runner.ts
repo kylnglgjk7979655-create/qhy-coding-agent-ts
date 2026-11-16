@@ -147,6 +147,8 @@ export async function runCommandHook(
     stdoutLimitBytes: MAX_HOOK_STDOUT_BYTES,
     stderrLimitBytes: MAX_HOOK_STDERR_BYTES,
     terminateOnStdoutLimit: true,
+    // Hook 必须同步结束：直接子进程退出后回收后台孙进程并关闭管道，避免继承管道导致挂起。
+    reapOnExit: true,
   });
   const stderr = result.stderrTruncated ? `${result.stderr}\n[hook stderr 已截断]` : result.stderr;
   const base: HookResult = {
@@ -172,6 +174,13 @@ export async function runCommandHook(
   if (result.exitCode !== 0) return { ...base, outcome: 'non_blocking_error', failureKind: 'exit_code' };
 
   const stdout = result.stdout.trim();
+  // 许多合法 Hook 不读取 stdin（只写文件或输出固定文本），进程退出时写入可能收到 EPIPE。
+  // 只要 Hook 仍产出了输出或明确退出码，就不能把这种竞态改判为故障；
+  // 只有退出 0 但完全没有输出时，才把 EPIPE 记为 spawn_error。
+  // stdin 错误本身由运行器转换，不会升级为未处理的进程异常。
+  if (stdout === '' && result.stdinFailed) {
+    return { ...base, outcome: 'non_blocking_error', failureKind: 'spawn_error' };
+  }
   if (!stdout.startsWith('{')) return base;
   let parsed: unknown;
   try {

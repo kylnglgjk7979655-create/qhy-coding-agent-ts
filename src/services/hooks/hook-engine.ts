@@ -365,10 +365,11 @@ export function describeHookRun(run: HookCommandRun): string | undefined {
         : `[hook] ${run.event}: ${truncateUiLine(run.result.systemMessage)}`;
     case 'blocking':
       return `[hook] ${run.event}: ${truncateUiLine(run.result.reason ?? 'Hook 请求阻止该事件。')}`;
+    // 用户中断与 Hook 自身故障分开措辞，UI 和日志都能直接判断责任方。
     case 'cancelled':
-      return `[hook] ${run.event}: 已取消`;
+      return `[hook] ${run.event}: 已取消（用户中断）`;
     case 'non_blocking_error':
-      return `[hook] ${run.event}: ${failureDescription(run.result)}（已忽略，不影响对话）`;
+      return `[hook] ${run.event}: Hook 故障：${failureDescription(run.result)}（已忽略，不影响对话）`;
     default:
       return undefined;
   }

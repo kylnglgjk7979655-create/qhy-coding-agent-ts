@@ -14,6 +14,12 @@ export interface ControlledProcessOptions {
   combinedLimitBytes?: number;
   /** stdout 一旦超过自身上限就终止整个进程组；用于需要以资源超限判定失败的调用方。 */
   terminateOnStdoutLimit?: boolean;
+  /**
+   * 直接子进程退出后立即终止残留进程组并销毁 stdout/stderr。
+   * 后台孙进程可能继承管道；不清理会让 close 迟迟不触发，调用方一直等待。
+   * 仅需要同步完成语义的调用方（Hook）启用，宿主 Bash 保持原有后台命令行为。
+   */
+  reapOnExit?: boolean;
 }
 
 export interface ControlledProcessResult {
@@ -26,10 +32,51 @@ export interface ControlledProcessResult {
   timedOut: boolean;
   cancelled: boolean;
   startFailed: boolean;
+  /** 写入 stdin 时子进程已关闭输入（EPIPE）；调用方通常按启动失败处理。 */
+  stdinFailed: boolean;
 }
 
 const DEFAULT_STREAM_LIMIT_BYTES = 65_536;
 const DEFAULT_TIMEOUT_MS = 30_000;
+/** 回收进程组后等待 close 的宽限；超时则直接用已记录的退出状态结束。 */
+const EXIT_CLOSE_GRACE_MS = 100;
+
+interface ActiveProcess {
+  pid: number;
+  child: ChildProcess;
+}
+
+/**
+ * 正在等待结果的进程组。主进程退出时统一清理，避免残留 Hook 或后台孙进程。
+ * 命令正常结束后移除条目，避免 PID 复用后误杀无关进程组。
+ */
+const activeProcesses = new Set<ActiveProcess>();
+let exitCleanupInstalled = false;
+
+function trackActiveProcess(entry: ActiveProcess): void {
+  activeProcesses.add(entry);
+  if (exitCleanupInstalled) return;
+  exitCleanupInstalled = true;
+  // exit 处理器必须同步完成；process.kill 与流 destroy 都满足该约束。
+  process.once('exit', () => {
+    for (const active of activeProcesses) {
+      killProcessGroup(active.pid);
+      destroyStdio(active.child);
+    }
+    activeProcesses.clear();
+  });
+}
+
+function killProcessGroup(pid: number | undefined): void {
+  if (pid === undefined) return;
+  try { process.kill(-pid, 'SIGKILL'); } catch { /* 进程组已退出。 */ }
+}
+
+function destroyStdio(child: ChildProcess): void {
+  child.stdin?.destroy();
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+}
 
 /**
  * 在独立进程组中启动子进程并收集受限输出。启动失败、超时、取消、退出码和截断均作为数据返回，
@@ -68,10 +115,36 @@ export async function runControlledProcess(
     let timedOut = false;
     let cancelled = false;
     let startFailed = false;
-    const terminate = (): void => {
-      if (child.pid === undefined) return;
-      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* 进程组已退出。 */ }
+    let stdinFailed = false;
+    let settled = false;
+    let closeGrace: NodeJS.Timeout | undefined;
+
+    const active: ActiveProcess = { pid: child.pid ?? -1, child };
+    if (child.pid !== undefined) trackActiveProcess(active);
+
+    const terminate = (): void => killProcessGroup(child.pid);
+
+    const finish = (result: { exitCode: number | null; signal: string | null }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (closeGrace !== undefined) clearTimeout(closeGrace);
+      signal?.removeEventListener('abort', onAbort);
+      activeProcesses.delete(active);
+      resolve({
+        stdout: stdout.text(),
+        stderr: stderr.text(),
+        exitCode: result.exitCode,
+        signal: result.signal,
+        stdoutTruncated: stdout.truncated,
+        stderrTruncated: stderr.truncated,
+        timedOut,
+        cancelled,
+        startFailed,
+        stdinFailed,
+      });
     };
+
     const onAbort = (): void => {
       cancelled = true;
       terminate();
@@ -93,33 +166,33 @@ export async function runControlledProcess(
     });
     child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
     if (stdin !== undefined) {
-      // 子进程可能提前退出导致 EPIPE；stdin 错误不应变成未处理的进程错误。
-      child.stdin?.on('error', () => undefined);
+      // 子进程可能提前退出导致 EPIPE；记录为启动失败，但不让流错误变成未处理的进程错误。
+      child.stdin?.on('error', (error: NodeJS.ErrnoException) => {
+        if (error.code === 'EPIPE') stdinFailed = true;
+      });
       child.stdin?.end(stdin);
     }
     child.once('error', () => { startFailed = true; });
-    child.once('close', (exitCode, exitSignal) => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      resolve({
-        stdout: stdout.text(),
-        stderr: stderr.text(),
-        exitCode,
-        signal: exitSignal,
-        stdoutTruncated: stdout.truncated,
-        stderrTruncated: stderr.truncated,
-        timedOut,
-        cancelled,
-        startFailed,
-      });
+    // 直接子进程退出后，后台孙进程可能仍持有 stdout/stderr 管道，使 close 迟迟不触发。
+    // 启用 reapOnExit 时终止残留进程组并销毁流；close 仍作为正常结束信号，
+    // 宽限定时器只兜底逃出进程组、继续持有管道的后代。
+    child.once('exit', (exitCode, exitSignal) => {
+      if (!options.reapOnExit) return;
+      terminate();
+      // 先让 close 自然结束以读完管道中已缓冲的输出；宽限后才销毁流并兜底结束。
+      closeGrace = setTimeout(() => {
+        destroyStdio(child);
+        finish({ exitCode, signal: exitSignal });
+      }, EXIT_CLOSE_GRACE_MS);
     });
+    child.once('close', (exitCode, exitSignal) => finish({ exitCode, signal: exitSignal }));
   });
 }
 
 function emptyResult(overrides: Partial<ControlledProcessResult>): ControlledProcessResult {
   return {
     stdout: '', stderr: '', exitCode: null, signal: null,
-    stdoutTruncated: false, stderrTruncated: false, timedOut: false, cancelled: false, startFailed: false,
+    stdoutTruncated: false, stderrTruncated: false, timedOut: false, cancelled: false, startFailed: false, stdinFailed: false,
     ...overrides,
   };
 }
