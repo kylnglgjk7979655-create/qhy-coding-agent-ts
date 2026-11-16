@@ -97,3 +97,25 @@
 **Skill 恢复预算**：压缩恢复 Skill 正文时使用的估算上限，单篇约 5K token、合计约 25K token；超出时从正文开头保留可容纳部分并附加省略标记，最近加载的 Skill 优先占用预算。
 
 **Skill 恢复正文**：压缩后被摘要移除的 Skill 正文按最近实际加载顺序恢复为程序生成的 `user` 消息，排在摘要之后进入有效历史；仍在保留历史中的正文不重复添加，恢复不改写完整 transcript、系统提示或工具策略。
+
+**Hook**：用户配置在生命周期事件上执行的扩展点；v1 只支持 `command` 类型，命令从 stdin 读取一个事件 JSON，通过退出码和 stdout JSON 返回结论。Hook 以 CLI 当前用户权限运行，继承 CLI 环境，不是操作系统沙箱。
+
+**Hook 事件**：Hook 可以挂载的生命周期时机；v1 只有 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure` 和 `Stop`，其中 `SessionStart` 只支持 `startup` 与 `resume` 来源。
+
+**Hook matcher**（matcher）：Hook 配置中按事件的查询字段过滤的匹配表达式；纯字母数字下划线按精确名称，`A|B` 按名称列表，空串、`*` 或省略匹配全部，其余按 JavaScript 正则解析。`UserPromptSubmit` 与 `Stop` 没有查询字段，matcher 不生效。
+
+**Hook 信任门禁**（信任门禁）：在任何 Hook 执行前确认其配置命令的授权；只有工作区 realpath 与规范化 hooks 配置 hash 匹配用户目录的 `trusted.json` 才视为已信任，非交互终端未信任时禁用全部 Hook，仓库不能给自己授权。`--trust-hooks` 或 `QHY_TRUST_HOOKS=1` 是显式 opt-in；`disableAllHooks` 与 `--no-hooks` 优先于信任判断。
+
+**Hook outcome**：单次 Hook 运行的公开结论，取 `success`、`blocking`、`non_blocking_error` 或 `cancelled`；超时、启动失败、无效 JSON、输出超限和非零退出默认转为 `non_blocking_error`，只提示不阻止。
+
+**Hook failureKind**：`non_blocking_error` 的诊断分类，取 `timeout`、`spawn_error`、`invalid_json`、`output_limit`、`exit_code` 或 `invalid_updated_input`；用于区分 Hook 自身故障、参数改写失败和用户取消。
+
+**Hook 附加上下文**：Hook 通过成功的 `additionalContext` 或 `SessionStart` / `UserPromptSubmit` 的普通 stdout 提供给模型的隐藏上下文；`SessionStart` 的 exit 2 理由也按此注入。以 `<hook-context event="...">` 消息注入，不改变系统提示或工具策略。
+
+**Hook 反馈**：`PostToolUse`、`PostToolUseFailure` 与 `Stop` 的阻止理由或成功 `additionalContext` 生成的隐藏用户消息；以 `<hook-feedback event="..." hook="事件:配置顺序">` 注入有效历史，工具事件反馈不改变工具结果或已发生的副作用。
+
+**stop_hook_active**：`Stop` stdin 中的布尔字段，表示本次运行是否由上一次 Stop 阻止后的续跑触发；第二次运行传 `true`，其阻止只记录日志，不再续跑。
+
+**Hook 注入去重**：在单个 CLI 进程内按 Hook 运行标识保证每条上下文或反馈只注入一次；不扫描命令输出，也不跨进程去重。
+
+**Hook 协议版本**：v1 契约的代码常量 `HOOK_PROTOCOL_VERSION = 1`，覆盖六个事件、command 类型、stdin 基础字段、退出码、stdout JSON 字段和注入上限；v1 不把版本字段写入 stdin JSON。

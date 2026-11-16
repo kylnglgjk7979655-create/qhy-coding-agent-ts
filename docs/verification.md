@@ -1,5 +1,18 @@
 # 基础 CLI 验收记录
 
+## Issue #174 Hook ADR 与术语
+
+日期：2026-11-16。分支 `agent/parent-151`，父需求 #151 的子任务。本轮新增 [ADR 0006](adr/0006-hooks.md) 并同步 `GLOSSARY.md` 的 Hook 词条；没有修改运行时代码或测试。父需求原计划使用 ADR 0005，但该编号已由父需求 #136 的 [Bash 沙箱](adr/0005-bash-sandbox.md) 使用，ADR 0006 开头已记录该编号调整。
+
+| 检查 | 结果 |
+| --- | --- |
+| `pnpm check` | 通过：TypeScript 严格类型检查、ESM 构建；Vitest 57 个测试文件通过、2 个跳过，678 项测试通过、20 项跳过（最终测试运行 144.55 秒） |
+| 相对 Markdown 链接检查 | 通过：ADR 0006 与术语表的相对链接 0 缺失 |
+| `git diff --check` | 通过：文档补丁无空白错误 |
+| Hook 人工 QA | 待执行；本轮只同步文档，未运行真实 TTY 信任确认、真实 Hook 命令或人工验收清单 |
+
+ADR 按 `src/services/hooks/`、`src/query/agent.ts`、`src/cli.ts`、`src/services/settings/config.ts` 和既有 Hook 测试核对事件范围、配置合并、信任门禁、退出码、输出上限、注入时序与 Stop 续跑边界；文档不改变运行时行为。
+
 ## PR #147 整体审查补强
 
 日期：2026-11-15。在父需求 #136 共享 PR 的整体审查中修复：CONNECT 显式 `:80` 被 WHATWG URL 默认端口归一化误判为非法目标、失败命令的结果丢失“未隔离执行/豁免未获准”通知、豁免获准路径短暂启动本机代理；并补充 IPv4-compatible 危险地址判定与相关测试，修正 QA 清单 SBX-12 的预期描述。
