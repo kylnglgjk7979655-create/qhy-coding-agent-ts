@@ -159,9 +159,11 @@ async function main(): Promise<void> {
     // 启动时注册一次 Skill；会话切换工作区后重新加载，本轮内来源文件变化不影响已注册内容。
     const loadSkills = async (): Promise<SkillCatalogue> => {
       const catalogue = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
-      // 诊断写入 stderr，不中断启动；有效 Skill 仍按原规则注册。
+      // 诊断不中断启动，有效 Skill 仍按原规则注册；交互模式显示可读提示，
+      // 非交互模式沿用 stderr 的 JSON 事件流，避免破坏可逐行解析的运行日志。
       for (const { path, reason } of catalogue.diagnostics) {
-        process.stderr.write(`[skill] 已跳过 ${path}：${reason}\n`);
+        if (isInteractiveTerminal()) process.stderr.write(`Skill 提示：跳过 ${path}（${reason}）\n`);
+        else log({ event: 'skill.skipped', path, reason });
       }
       return catalogue;
     };
