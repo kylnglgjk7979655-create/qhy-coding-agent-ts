@@ -21,6 +21,9 @@ import type { ApprovalControl } from './tools/tool-approval.js';
 import { acquireSessionLock } from './services/session/session-lock.js';
 import { generateSummary } from './services/compact/context-summary.js';
 import { RecentFileTracker } from './services/compact/recent-files.js';
+import { formatHookCommandList, hasHookCommands, isHooksConfigTrusted, trustHooksConfig } from './services/hooks/hook-trust.js';
+import type { HooksConfig } from './services/hooks/hooks-config.js';
+import type { LoadedConfig } from './services/settings/config.js';
 
 const help = `用法：node dist/cli.js [选项]
 
@@ -35,6 +38,8 @@ const help = `用法：node dist/cli.js [选项]
   --workspace <目录>  覆盖配置的工作区（相对当前目录）
   --conversation-id <ID>  继续指定会话（省略时新建会话）
   --smoke-tool        强制读取探针文件并验证模型使用结果
+  --trust-hooks       跳过 Hook 信任确认并记录当前 Hook 配置
+  --no-hooks          本次运行禁用全部 Hook
   --help              显示帮助
 
 从当前目录 .env 或环境变量读取配置中 apiKeyEnv 指定的凭据。
@@ -100,6 +105,9 @@ async function main(): Promise<void> {
       if (!isMissing(error)) throw new AgentError('CONFIG_ERROR', '无法读取当前目录 .env 文件。');
     }
     const smokeTool = args.values['smoke-tool'] ?? false;
+    const noHooks = args.values['no-hooks'] ?? false;
+    const trustHooksOptIn = (args.values['trust-hooks'] ?? false)
+      || process.env.QHY_TRUST_HOOKS?.trim() === '1';
     let conversationId = args.values['conversation-id'] ?? newConversationId();
     const userHome = homedir();
     const loadCurrentConfig = async () => {
@@ -108,6 +116,43 @@ async function main(): Promise<void> {
         env: process.env,
         ...(args.values.workspace === undefined ? {} : { workspace: args.values.workspace }),
       });
+      return loaded;
+    };
+    const disableHookConfig = (loaded: LoadedConfig): LoadedConfig => {
+      const { hooks: _hooks, ...rest } = loaded;
+      return rest;
+    };
+    const persistHookTrust = async (workspace: string, hooks: HooksConfig): Promise<void> => {
+      try {
+        await trustHooksConfig(userHome, workspace, hooks);
+      } catch {
+        // 记录失败不应阻断已获授权的本次运行；下次启动会重新要求确认。
+        process.stderr.write('警告：无法保存 Hook 信任记录；本次运行仍启用已确认的 Hook。\n');
+      }
+    };
+    /**
+     * 信任门禁：禁用开关优先，未信任的非交互运行 fail-closed。
+     * 只有交互终端会在任何 Hook 执行前展示完整命令清单并等待确认。
+     */
+    const applyHookTrust = async (loaded: LoadedConfig): Promise<LoadedConfig> => {
+      if (noHooks || loaded.disableAllHooks) return disableHookConfig(loaded);
+      const hooks = loaded.hooks;
+      if (!hasHookCommands(hooks)) return loaded;
+      if (await isHooksConfigTrusted(userHome, loaded.workspace, hooks)) return loaded;
+      if (trustHooksOptIn) {
+        await persistHookTrust(loaded.workspace, hooks);
+        return loaded;
+      }
+      if (!input || !process.stdin.isTTY || !process.stdout.isTTY) {
+        process.stderr.write('警告：检测到未信任的 Hook 配置，已禁用全部 Hook；使用 --trust-hooks 或 QHY_TRUST_HOOKS=1 显式信任。\n');
+        return disableHookConfig(loaded);
+      }
+      const accepted = await input.confirmHookTrust(loaded.workspace, formatHookCommandList(hooks));
+      if (!accepted) {
+        process.stdout.write('已禁用全部 Hook。\n');
+        return disableHookConfig(loaded);
+      }
+      await persistHookTrust(loaded.workspace, hooks);
       return loaded;
     };
     let config: Awaited<ReturnType<typeof loadConfig>>;
@@ -136,6 +181,10 @@ async function main(): Promise<void> {
         session = await createSession(userHome, { id: conversationId, workspace: config.workspace, config: persistableSessionConfig(config) });
       }
     }
+    if (!smokeTool) {
+      input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
+      config = await applyHookTrust(config);
+    }
     if (session) releaseSession = await acquireSessionLock(userHome, conversationId);
     // 最近读取文件记录跨进程续聊保留；进程内以该记录为准，轮次结束或压缩时持久化。
     const recentFiles = new RecentFileTracker(session?.recentFiles ?? []);
@@ -153,11 +202,12 @@ async function main(): Promise<void> {
       await runTurn('smoke', config, undefined, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), true);
       return;
     }
+    // 非 smoke 路径在配置加载后已建立输入消费者；此处显式收窄供后续闭包使用。
+    if (!input) throw new AgentError('CONFIG_ERROR', '交互输入未初始化。');
 
     // 启动时注册一次 Skill；会话切换工作区后重新加载，本轮内来源文件变化不影响已注册内容。
     let skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
 
-    input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
     const fileBaselinesBySession = new Map<string, Map<string, WorkspaceFileSnapshot>>();
     const fileBaselinesForSession = (id: string): Map<string, WorkspaceFileSnapshot> => {
       let baselines = fileBaselinesBySession.get(id);
@@ -183,6 +233,8 @@ async function main(): Promise<void> {
     };
     const switchSession = async (id: string) => {
       const resumed = await resumeSession(userHome, id);
+      // 恢复对话时从磁盘重新加载 Hook 配置，并按当前配置重新检查信任。
+      resumed.config = await applyHookTrust(resumed.config);
       if (id !== conversationId) {
         const nextRelease = await acquireSessionLock(userHome, id);
         await releaseSession?.();
@@ -680,6 +732,8 @@ function parseCliArgs() {
       workspace: { type: 'string' },
       'conversation-id': { type: 'string' },
       'smoke-tool': { type: 'boolean' },
+      'trust-hooks': { type: 'boolean' },
+      'no-hooks': { type: 'boolean' },
       help: { type: 'boolean' },
     },
     allowPositionals: true,

@@ -14,6 +14,7 @@ export class CliInput {
   private closed = false;
   private sequence = 0;
   private selector: (() => void) | undefined;
+  private confirmation: { answer: (line: string) => void; close: () => void } | undefined;
   private compactRequested = false;
 
   constructor(private readonly signal: AbortSignal, cancel: () => void, private readonly humanTimeoutMs: number) {
@@ -22,7 +23,10 @@ export class CliInput {
     });
     this.input.on('SIGINT', cancel);
     this.input.on('line', (line) => {
-      if (this.selector) {
+      if (this.confirmation) {
+        // 信任确认答复优先于对话消息和审批答复，避免启动输入被当成一次用户请求。
+        this.confirmation.answer(line);
+      } else if (this.selector) {
         // Enter is consumed by the active keyboard chooser, never as a chat or approval answer.
       } else if (this.approvals.size > 0) {
         const match = /^(approve|deny)\s+(\d+)$/i.exec(line.trim());
@@ -46,6 +50,8 @@ export class CliInput {
     });
     this.input.on('close', () => {
       this.closed = true;
+      this.confirmation?.close();
+      this.confirmation = undefined;
       this.selector?.();
       for (const approval of this.approvals.values()) approval.close();
       this.wakeNext?.();
@@ -112,6 +118,25 @@ export class CliInput {
       stdin.on('keypress', onKeypress);
       process.stdout.on('resize', render);
       render();
+    });
+  }
+
+  /** 首次遇到未信任 Hook 时请求确认；只有交互终端会展示，非交互调用一律视为拒绝。 */
+  async confirmHookTrust(workspace: string, commands: string): Promise<boolean> {
+    if (this.closed || !process.stdin.isTTY || !process.stdout.isTTY) return false;
+    process.stdout.write(`\n[hook] 检测到未信任的 Hook 配置（工作区：${workspace}）。\n${commands}\n信任并启用这些 Hook 请输入 yes，其他输入将禁用本次运行的全部 Hook：\n> `);
+    return new Promise<boolean>((resolve) => {
+      let finished = false;
+      const finish = (accepted: boolean): void => {
+        if (finished) return;
+        finished = true;
+        this.confirmation = undefined;
+        resolve(accepted);
+      };
+      this.confirmation = {
+        answer: (line) => finish(/^(yes|y)$/i.test(line.trim())),
+        close: () => finish(false),
+      };
     });
   }
 
