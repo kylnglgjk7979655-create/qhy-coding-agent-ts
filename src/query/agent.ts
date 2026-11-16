@@ -22,7 +22,7 @@ import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import type { SkillInjection } from '../services/skills/skill-injection.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
 import { HookInjectionTracker, describeHookRun, evaluatePreToolUse, runHookEvent, takeToolFeedbackMessages } from '../services/hooks/hook-engine.js';
-import type { HookEventResult } from '../services/hooks/hook-engine.js';
+import type { HookEventNotification, HookEventResult } from '../services/hooks/hook-engine.js';
 import type { ParentHookScope, SubagentHookScope } from '../services/hooks/hook-scope.js';
 import type { PostToolUseFailureHookInput, PostToolUseHookInput, PreToolUseHookInput } from '../services/hooks/hook-runner.js';
 import type { BackgroundAgentTasks, BackgroundTaskStatusEntry } from '../tools/AgentTool/background-agent-tasks.js';
@@ -96,6 +96,8 @@ export async function runAgent(
     hookScope?: SubagentHookScope;
     /** 与对话共享的注入去重集合；省略时本次运行自行创建。 */
     hookInjectionTracker?: HookInjectionTracker;
+    /** 独立于工具事件的 Hook 观测回调；失败只写 stderr，不改变 Hook 或模型流程。 */
+    onHookEvent?: (notification: HookEventNotification) => unknown;
     /** 成功读取文件后刷新最近文件顺序；子 Agent 没有会话记录时省略。 */
     onFileRead?: (target: string) => void;
     /** 压缩时提供当前最近读取文件候选；子 Agent 没有会话记录时省略。 */
@@ -168,6 +170,8 @@ export async function runAgent(
   const hookInjectionTracker = options.hookScope?.hookInjectionTracker
     ?? options.hookInjectionTracker
     ?? new HookInjectionTracker();
+  // 子 Agent 沿用父级的 Hook 观测回调；主 Agent 直接使用调用方传入的回调。
+  const onHookEvent = options.hookScope?.onHookEvent ?? options.onHookEvent;
   // 子 Agent 的 stdin 沿用父会话标识；主 Agent 省略 agent_id/agent_type。
   const hookSessionId = options.hookScope?.sessionId ?? options.sessionId;
   const hookTranscriptPath = options.hookScope?.transcriptPath ?? options.transcriptPath;
@@ -181,6 +185,7 @@ export async function runAgent(
       sessionId: hookSessionId,
       transcriptPath: hookTranscriptPath,
       hookInjectionTracker,
+      ...(onHookEvent === undefined ? {} : { onHookEvent }),
     };
   // 成功工具调用的 PostToolUse 结果先按调用标识暂存，下一次 prepareStep 再注入。
   const pendingToolFeedback = new Map<string, HookEventResult>();
@@ -210,6 +215,7 @@ export async function runAgent(
             cwd: config.workspace,
             env: process.env,
             signal: toolSignal ?? signal,
+            ...(onHookEvent === undefined ? {} : { onHookEvent }),
           });
         } catch {
           process.stderr.write('[hook] PreToolUse: 执行失败（已忽略，不影响工具）\n');
@@ -260,6 +266,7 @@ export async function runAgent(
             cwd: config.workspace,
             env: process.env,
             signal: toolSignal ?? signal,
+            ...(onHookEvent === undefined ? {} : { onHookEvent }),
           });
         } catch {
           process.stderr.write('[hook] PostToolUse: 执行失败（已忽略，不影响工具）\n');
@@ -299,6 +306,7 @@ export async function runAgent(
             cwd: config.workspace,
             env: process.env,
             signal: toolSignal ?? signal,
+            ...(onHookEvent === undefined ? {} : { onHookEvent }),
           });
         } catch {
           process.stderr.write('[hook] PostToolUseFailure: 执行失败（已忽略，不影响工具）\n');

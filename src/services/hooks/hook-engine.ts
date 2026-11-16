@@ -25,6 +25,71 @@ export interface HookEventResult {
   runs: HookCommandRun[];
 }
 
+/** Hook 观测阶段：started 在进程启动前，finished/failed 在结果确定后。 */
+export type HookNotificationPhase = 'started' | 'finished' | 'failed';
+
+/**
+ * 独立于工具执行事件的 Hook 观测通知。
+ * 观察者只能读取；回调失败由引擎隔离，不改变 Hook 结果或模型流程。
+ */
+export interface HookEventNotification {
+  phase: HookNotificationPhase;
+  event: HookEvent;
+  /** 配置顺序标识，形如 `PreToolUse:0`；同一事件内稳定。 */
+  hookId: string;
+  /** 终态结果；started 阶段省略。 */
+  run?: HookCommandRun;
+}
+
+export type HookEventCallback = (notification: HookEventNotification) => unknown;
+
+/** 事件级运行选项：在 runner 选项上附加观测回调。 */
+export type HookEventRunOptions = HookRunOptions & { onHookEvent?: HookEventCallback };
+
+/**
+ * 结构化日志字段：只含元数据，不包含 stdin、工具参数或输出正文。
+ * 完整输出仅在显式调试开关下由调用方另行追加。
+ */
+export interface HookLogFields {
+  hookEvent: HookEvent;
+  hook: string;
+  durationMs: number;
+  exitCode: number | null;
+  outcome: HookResult['outcome'];
+  failureKind?: NonNullable<HookResult['failureKind']>;
+  stdoutBytes: number;
+  stderrBytes: number;
+}
+
+export function hookLogFields(run: HookCommandRun): HookLogFields {
+  return {
+    hookEvent: run.event,
+    hook: `${run.event}:${run.order}`,
+    durationMs: run.result.durationMs,
+    exitCode: run.result.exitCode,
+    outcome: run.result.outcome,
+    ...(run.result.failureKind === undefined ? {} : { failureKind: run.result.failureKind }),
+    stdoutBytes: run.result.stdoutBytes,
+    stderrBytes: run.result.stderrBytes,
+  };
+}
+
+/** 观察回调失败只写诊断，不影响 Hook 执行；异步拒绝同样不向调用方传播。 */
+function notifyHookEvent(callback: HookEventCallback | undefined, notification: HookEventNotification): void {
+  if (callback === undefined) return;
+  try {
+    const outcome = callback(notification);
+    if (typeof outcome === 'object' && outcome !== null
+      && 'then' in outcome && typeof (outcome as PromiseLike<unknown>).then === 'function') {
+      void Promise.resolve(outcome).catch(() => {
+        process.stderr.write('Hook 事件通知失败。\n');
+      });
+    }
+  } catch {
+    process.stderr.write('Hook 事件通知失败。\n');
+  }
+}
+
 /** 按配置顺序选出事件下所有匹配 matcher 的 Hook；无 query 的事件不做 matcher 过滤。 */
 export function selectHooks(hooks: HooksConfig | undefined, event: HookEvent, query: string | undefined): SelectedHook[] {
   const selected: SelectedHook[] = [];
@@ -45,12 +110,14 @@ export async function runHookEvent(
   hooks: HooksConfig | undefined,
   event: HookEvent,
   input: HookInput,
-  options: HookRunOptions,
+  options: HookEventRunOptions,
 ): Promise<HookEventResult> {
   const queryField = hookQueryField(event);
   const query = queryField === undefined ? undefined : input[queryField];
   const selected = selectHooks(hooks, event, typeof query === 'string' ? query : undefined);
   const runs = await Promise.all(selected.map(async (item) => {
+    const hookId = `${event}:${item.order}`;
+    notifyHookEvent(options.onHookEvent, { phase: 'started', event, hookId });
     const controller = new AbortController();
     const signal = options.signal === undefined
       ? controller.signal
@@ -61,7 +128,14 @@ export async function runHookEvent(
       signal,
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
     });
-    return { ...item, runId: randomUUID(), result };
+    const run: HookCommandRun = { ...item, runId: randomUUID(), result };
+    notifyHookEvent(options.onHookEvent, {
+      phase: result.outcome === 'non_blocking_error' ? 'failed' : 'finished',
+      event,
+      hookId,
+      run,
+    });
+    return run;
   }));
   return { event, runs };
 }
@@ -360,9 +434,15 @@ export function describeHookRun(run: HookCommandRun): string | undefined {
       if (run.result.continue === false) {
         return `[hook] ${run.event}: ${truncateUiLine(run.result.reason ?? 'Hook 请求停止本轮。')}`;
       }
-      return run.result.systemMessage === undefined
+      // systemMessage 是 JSON 字段，始终只给用户看，不受 suppressOutput 影响。
+      if (run.result.systemMessage !== undefined) {
+        return `[hook] ${run.event}: ${truncateUiLine(run.result.systemMessage)}`;
+      }
+      // exit 0 的非 JSON stdout 默认作为终端 UI 行；suppressOutput 只隐藏该展示。
+      const stdout = run.result.stdoutIsJson ? '' : run.result.stdout.trim();
+      return run.result.suppressOutput === true || stdout === ''
         ? undefined
-        : `[hook] ${run.event}: ${truncateUiLine(run.result.systemMessage)}`;
+        : `[hook] ${run.event}: ${truncateUiLine(stdout)}`;
     case 'blocking':
       return `[hook] ${run.event}: ${truncateUiLine(run.result.reason ?? 'Hook 请求阻止该事件。')}`;
     // 用户中断与 Hook 自身故障分开措辞，UI 和日志都能直接判断责任方。

@@ -53,6 +53,7 @@ export async function runExplore(
   const hooksConfig = config.hooks !== undefined && !config.disableAllHooks ? config.hooks : undefined;
   const activeHookScope = hooksConfig === undefined ? undefined : hookScope;
   const hookInjectionTracker = hookScope?.hookInjectionTracker ?? new HookInjectionTracker();
+  const onHookEvent = hookScope?.onHookEvent;
   const pendingToolFeedback = new Map<string, HookEventResult>();
   const hookSignal = signal ?? new AbortController().signal;
   const runExploreToolHook = async (
@@ -66,6 +67,7 @@ export async function runExplore(
         cwd: config.workspace,
         env: process.env,
         signal: toolSignal ?? hookSignal,
+        ...(onHookEvent === undefined ? {} : { onHookEvent }),
       });
     } catch {
       process.stderr.write(`[hook] ${event}: 执行失败（已忽略，不影响工具）\n`);

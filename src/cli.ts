@@ -24,8 +24,8 @@ import { generateSummary } from './services/compact/context-summary.js';
 import { RecentFileTracker } from './services/compact/recent-files.js';
 import { formatHookCommandList, hasHookCommands, isHooksConfigTrusted, trustHooksConfig } from './services/hooks/hook-trust.js';
 import type { HooksConfig, SessionStartSource } from './services/hooks/hooks-config.js';
-import { HookInjectionTracker, describeHookRun, runHookEvent, sessionStartContextMessages, stopContinuation, stopFeedbackMessages, userPromptSubmitContextMessages, userPromptSubmitStop } from './services/hooks/hook-engine.js';
-import type { UserPromptSubmitStop } from './services/hooks/hook-engine.js';
+import { HookInjectionTracker, describeHookRun, hookLogFields, runHookEvent, sessionStartContextMessages, stopContinuation, stopFeedbackMessages, userPromptSubmitContextMessages, userPromptSubmitStop } from './services/hooks/hook-engine.js';
+import type { HookEventNotification, UserPromptSubmitStop } from './services/hooks/hook-engine.js';
 import type { SessionStartHookInput, StopHookInput, UserPromptSubmitHookInput } from './services/hooks/hook-runner.js';
 import type { LoadedConfig } from './services/settings/config.js';
 
@@ -57,6 +57,31 @@ function isInteractiveTerminal(): boolean {
 function log(event: Record<string, unknown>): void {
   if (isInteractiveTerminal()) return;
   process.stderr.write(`${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`);
+}
+
+/** 调试开关独立于普通日志；开启后才允许把 Hook 输出正文写入结构化日志。 */
+function hookDebugEnabled(): boolean {
+  return process.env.QHY_HOOK_DEBUG?.trim() === '1';
+}
+
+/**
+ * Hook 观测回调：结构化日志只含元数据，回调异常不会传播到 Hook 执行或模型流程。
+ * 完整 stdout/stderr 仅在显式调试开关下追加；suppressOutput 仍隐藏普通 stdout。
+ */
+function reportHookEvent(notification: HookEventNotification): void {
+  if (notification.phase === 'started') {
+    log({ event: 'hook.started', hookEvent: notification.event, hook: notification.hookId });
+    return;
+  }
+  const run = notification.run;
+  if (run === undefined) return;
+  log({
+    event: notification.phase === 'failed' ? 'hook.failed' : 'hook.finished',
+    ...hookLogFields(run),
+    ...(hookDebugEnabled() && run.result.suppressOutput !== true
+      ? { stdout: run.result.stdout, stderr: run.result.stderr }
+      : {}),
+  });
 }
 
 function formatUserError(error: unknown): string {
@@ -235,6 +260,7 @@ async function main(): Promise<void> {
           cwd: config.workspace,
           env: process.env,
           signal,
+          onHookEvent: reportHookEvent,
         });
       } catch {
         process.stderr.write('[hook] SessionStart: 执行失败（已忽略，不影响对话）\n');
@@ -288,6 +314,7 @@ async function main(): Promise<void> {
           cwd: config.workspace,
           env: process.env,
           signal,
+          onHookEvent: reportHookEvent,
         });
       } catch {
         process.stderr.write('[hook] UserPromptSubmit: 执行失败（已忽略，不影响对话）\n');
@@ -708,6 +735,7 @@ async function runStopHook(
       cwd: config.workspace,
       env: process.env,
       signal,
+      onHookEvent: reportHookEvent,
     });
   } catch {
     process.stderr.write('[hook] Stop: 执行失败（已忽略，不影响本轮）\n');
@@ -802,6 +830,7 @@ async function runTurn(
       },
       ...(!smokeTool ? { transcriptPath: sessionRecordPath(userHome, conversationId), sessionId: conversationId } : {}),
       ...(hookInjectionTracker === undefined ? {} : { hookInjectionTracker }),
+      onHookEvent: reportHookEvent,
       onFileRead: (target) => recentFiles.record(target),
       getRecentFiles: () => recentFiles.list(),
       ...(getTaskStatuses ? { getTaskStatuses } : {}),
