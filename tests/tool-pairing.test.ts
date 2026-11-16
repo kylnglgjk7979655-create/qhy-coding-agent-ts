@@ -252,23 +252,22 @@ describe('工具批次顺序与新增往返配对', () => {
   });
 
   it('模型文本流先输出内容时，不等待响应结束再显示', async () => {
+    const endDelayMs = 1200;
     await setup((_request, index) => index === 1
       ? { frames: [
         { delta: { content: '实时前缀' } },
         { delta: { content: '后续内容' }, finish_reason: 'stop' },
-      ], endDelayMs: 1200 }
+      ], endDelayMs }
       : { content: '后续请求。' });
-    let sawPrefix!: () => void;
-    const prefix = new Promise<void>((resolve) => { sawPrefix = resolve; });
+    let prefixShownAt = 0;
     const resultPromise = run('测试流式输出\n/exit\n', (stdout) => {
-      if (stdout.includes('实时前缀')) sawPrefix();
+      if (prefixShownAt === 0 && stdout.includes('实时前缀')) prefixShownAt = performance.now();
     });
-    const arrivedEarly = await Promise.race([
-      prefix.then(() => true),
-      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500)),
-    ]);
-    expect(arrivedEarly).toBe(true);
     const result = await resultPromise;
+    const exitedAt = performance.now();
+    expect(prefixShownAt).toBeGreaterThan(0);
+    // 夹具在最后一帧后停留 endDelayMs；若前缀等到流结束才显示，前缀与退出几乎同时。
+    expect(exitedAt - prefixShownAt).toBeGreaterThan(endDelayMs / 2);
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('实时前缀后续内容');
   });
