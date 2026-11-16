@@ -26,12 +26,20 @@ async function setup(settings: Record<string, unknown>, respond?: Respond) {
   const fixture = await startLocalOpenAIModel(respond ?? (() => ({ content: '已完成' })));
   fixtures.push(fixture);
   await mkdir(join(workspace, '.agent'), { recursive: true });
+  await writeSettings(workspace, fixture, settings);
+  return { workspace, home, fixture };
+}
+
+async function writeSettings(
+  workspace: string,
+  fixture: Awaited<ReturnType<typeof startLocalOpenAIModel>>,
+  settings: Record<string, unknown>,
+): Promise<void> {
   await writeFile(join(workspace, '.agent', 'settings.json'), JSON.stringify({
     model: 'hook-fixture', baseURL: fixture.baseURL, apiKeyEnv: 'HOOK_TEST_KEY',
     timeoutMs: 3000,
     ...settings,
   }));
-  return { workspace, home, fixture };
 }
 
 function run(options: {
@@ -279,6 +287,102 @@ it('smoke 探针轮次不运行 Hook', async () => {
 
   expect(result.code, result.stdout + result.stderr).toBe(0);
   await expect(readFile(join(workspace, 'smoke-hook-ran'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('启动时恢复既有会话以 resume 来源注入在重建历史尾部，并使用磁盘最新配置', async () => {
+  const { workspace, home, fixture } = await setup({
+    hooks: { SessionStart: [{ matcher: 'startup', hooks: [commandHook("printf '启动上下文'")] }] },
+  });
+
+  const first = await run({ workspace, home, conversationId: 'session-resume-startup', input: '第一轮\n/exit\n' });
+  expect(first.code, first.stdout + first.stderr).toBe(0);
+  expect(fixture.requests).toHaveLength(1);
+  expect(userMessages(fixture.requests[0]!)[0]).toContain('启动上下文');
+
+  const recordPath = join(home, '.qhy-coding-agents', 'sessions', 'session-resume-startup', 'record.json');
+  const record = JSON.parse(await readFile(recordPath, 'utf8')) as { config: Record<string, unknown> };
+  // 旧快照残留的 Hook 不得执行；配置只能来自当前磁盘 settings。
+  record.config.hooks = { SessionStart: [{ hooks: [commandHook('touch stale-hook-ran')] }] };
+  await writeFile(recordPath, JSON.stringify(record));
+  await writeSettings(workspace, fixture, {
+    hooks: { SessionStart: [{ matcher: 'resume', hooks: [commandHook("cat > resume-input.json; printf '恢复上下文'")] }] },
+  });
+
+  const second = await run({ workspace, home, conversationId: 'session-resume-startup', input: '继续\n/exit\n' });
+
+  expect(second.code, second.stdout + second.stderr).toBe(0);
+  await expect(readFile(join(workspace, 'stale-hook-ran'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(JSON.parse(await readFile(join(workspace, 'resume-input.json'), 'utf8'))).toMatchObject({
+    session_id: 'session-resume-startup',
+    source: 'resume',
+    hook_event_name: 'SessionStart',
+  });
+  expect(userMessages(fixture.requests[1]!).slice(-3)).toEqual([
+    '第一轮',
+    expect.stringContaining('恢复上下文'),
+    '继续',
+  ]);
+});
+
+it('进程内 /resume 以 resume 来源注入，并重新加载磁盘 Hook 配置', async () => {
+  const { workspace, home, fixture } = await setup({
+    hooks: { SessionStart: [{ matcher: 'resume', hooks: [commandHook("printf '旧配置上下文'")] }] },
+  });
+
+  const target = await run({ workspace, home, conversationId: 'session-resume-target', input: '目标内容\n/exit\n' });
+  expect(target.code, target.stdout + target.stderr).toBe(0);
+  expect(userMessages(fixture.requests[0]!)).toEqual(['目标内容']);
+
+  await writeSettings(workspace, fixture, {
+    hooks: { SessionStart: [{ matcher: 'resume', hooks: [commandHook("cat > switch-input.json; printf '切换后上下文'")] }] },
+  });
+  const switched = await run({
+    workspace,
+    home,
+    input: '/resume session-resume-target\n继续\n/exit\n',
+  });
+
+  expect(switched.code, switched.stdout + switched.stderr).toBe(0);
+  expect(fixture.requests).toHaveLength(2);
+  expect(JSON.parse(await readFile(join(workspace, 'switch-input.json'), 'utf8'))).toMatchObject({
+    session_id: 'session-resume-target',
+    source: 'resume',
+    hook_event_name: 'SessionStart',
+  });
+  expect(userMessages(fixture.requests[1]!)).toEqual([
+    '目标内容',
+    expect.stringContaining('切换后上下文'),
+    '继续',
+  ]);
+});
+
+it('进程内 /resume 重新执行信任门禁，Hook 配置变化后禁用未经确认的命令', async () => {
+  const { workspace, home, fixture } = await setup({});
+
+  const target = await run({
+    workspace,
+    home,
+    conversationId: 'session-resume-untrusted',
+    input: '目标内容\n/exit\n',
+    args: ['--trust-hooks'],
+  });
+  expect(target.code, target.stdout + target.stderr).toBe(0);
+
+  await writeSettings(workspace, fixture, {
+    hooks: { SessionStart: [{ matcher: 'resume', hooks: [commandHook('touch untrusted-resume-ran')] }] },
+  });
+  const switched = await run({
+    workspace,
+    home,
+    input: '/resume session-resume-untrusted\n继续\n/exit\n',
+    args: [],
+  });
+
+  expect(switched.code, switched.stdout + switched.stderr).toBe(0);
+  // 启动与进程内恢复各执行一次门禁；第二次证明 /resume 没有沿用启动时的判定。
+  expect((switched.stderr.match(/已禁用全部 Hook/gu) ?? [])).toHaveLength(2);
+  await expect(readFile(join(workspace, 'untrusted-resume-ran'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(userMessages(fixture.requests[1]!)).toEqual(['目标内容', '继续']);
 });
 
 it('/clear 新建会话时重新运行 SessionStart(startup)，每次新会话只注入一次', async () => {

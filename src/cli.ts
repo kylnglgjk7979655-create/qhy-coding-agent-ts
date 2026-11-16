@@ -177,7 +177,8 @@ async function main(): Promise<void> {
           config: persistableSessionConfig(config),
           ...(legacyHistory === undefined ? {} : { transcript: legacyHistory, effectiveHistory: legacyHistory }),
         });
-        sessionStartedFresh = true;
+        // 旧版历史已在恢复既有对话；只有记录不存在且无历史时才按新建会话处理。
+        sessionStartedFresh = legacyHistory === undefined;
       }
     } else {
       config = await loadCurrentConfig();
@@ -257,6 +258,9 @@ async function main(): Promise<void> {
     };
     if (sessionStartedFresh && session) {
       history = [...await runSessionStart('startup', conversationId), ...history];
+    } else if (session) {
+      // 恢复既有对话：附加上下文接在重建历史尾部，恢复后的下一次请求可见并随有效历史持久化。
+      history = [...history, ...await runSessionStart('resume', conversationId)];
     }
 
     // 启动时注册一次 Skill；会话切换工作区后重新加载，本轮内来源文件变化不影响已注册内容。
@@ -300,6 +304,8 @@ async function main(): Promise<void> {
       recentFiles.replace(resumed.recentFiles);
       skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
       bindBackgroundNotifications(id);
+      // 进程内切换与启动恢复使用同一来源；Hook 配置与信任已在上面按磁盘当前状态重新判定。
+      resumed.history = [...resumed.history, ...await runSessionStart('resume', id)];
       process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
       return resumed;
     };
