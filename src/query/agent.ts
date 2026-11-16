@@ -21,6 +21,8 @@ import { appendRecentSkillLoads, collectSkillInjections, insertSkillInjections }
 import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import type { SkillInjection } from '../services/skills/skill-injection.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
+import { describeHookRun, preToolUseDecision, runHookEvent } from '../services/hooks/hook-engine.js';
+import type { PreToolUseHookInput } from '../services/hooks/hook-runner.js';
 import type { BackgroundAgentTasks, BackgroundTaskStatusEntry } from '../tools/AgentTool/background-agent-tasks.js';
 
 export type { ApprovalControl } from '../tools/tool-approval.js';
@@ -77,6 +79,8 @@ export async function runAgent(
     }) => Promise<{ coversThrough: number } | void> | { coversThrough: number } | void;
     /** 会话原始记录路径，写入摘要续接包装供后续找回细节；子 Agent 没有会话记录时省略。 */
     transcriptPath?: string;
+    /** 工具 Hook 的对话标识；smoke 与尚未接入会话范围的子 Agent 省略时，不运行工具 Hook。 */
+    sessionId?: string;
     /** 成功读取文件后刷新最近文件顺序；子 Agent 没有会话记录时省略。 */
     onFileRead?: (target: string) => void;
     /** 压缩时提供当前最近读取文件候选；子 Agent 没有会话记录时省略。 */
@@ -148,6 +152,42 @@ export async function runAgent(
   const registry = new ToolRegistry({
     ...(options.onToolEvent ? { onToolEvent: options.onToolEvent } : {}),
     ...(options.onToolCallStart ? { beforeTool: options.onToolCallStart } : {}),
+    preToolUse: async (call, toolSignal) => {
+      if (config.hooks === undefined || config.disableAllHooks
+        || options.sessionId === undefined || options.transcriptPath === undefined) return undefined;
+      // Hook 是同步策略计算：暂停整轮时限，避免慢 Hook 被对话超时误杀；finally 保证恢复。
+      try {
+        pauseDeadline();
+        const hookInput: PreToolUseHookInput = {
+          session_id: options.sessionId,
+          transcript_path: options.transcriptPath,
+          cwd: config.workspace,
+          approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
+          hook_event_name: 'PreToolUse',
+          tool_name: call.toolName,
+          tool_input: call.input,
+          tool_use_id: call.callId,
+        };
+        let result: Awaited<ReturnType<typeof runHookEvent>>;
+        try {
+          result = await runHookEvent(config.hooks, 'PreToolUse', hookInput, {
+            cwd: config.workspace,
+            env: process.env,
+            signal: toolSignal ?? signal,
+          });
+        } catch {
+          process.stderr.write('[hook] PreToolUse: 执行失败（已忽略，不影响工具）\n');
+          return undefined;
+        }
+        for (const run of result.runs) {
+          const message = describeHookRun(run);
+          if (message !== undefined) process.stderr.write(`${message}\n`);
+        }
+        return preToolUseDecision(result);
+      } finally {
+        resumeDeadline();
+      }
+    },
     approve: async (call) => {
       signal.throwIfAborted();
       try {

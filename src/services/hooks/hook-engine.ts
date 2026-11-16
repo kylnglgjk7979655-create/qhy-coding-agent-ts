@@ -112,6 +112,50 @@ function successfulContext(result: HookResult): string | undefined {
   return result.stdoutIsJson ? result.hookSpecificOutput?.additionalContext : result.stdout;
 }
 
+/** PreToolUse 的权限结论；deny 在审批前短路，allow/ask 继续经过权限策略。 */
+export interface PreToolUseDecision {
+  decision: 'allow' | 'deny' | 'ask';
+  reason?: string;
+}
+
+const PRE_TOOL_USE_PRECEDENCE: Record<PreToolUseDecision['decision'], number> = {
+  allow: 0,
+  ask: 1,
+  deny: 2,
+};
+
+/**
+ * 聚合所有匹配 Hook 的 PreToolUse 结论：deny > ask > allow，同结论取配置顺序中的第一条。
+ * 故障、超时和不带权限结论的成功输出不参与聚合；调用方仍按现有工具错误码返回结果。
+ */
+export function preToolUseDecision(result: HookEventResult): PreToolUseDecision | undefined {
+  let selected: PreToolUseDecision | undefined;
+  for (const run of result.runs) {
+    const candidate = preToolUseRunDecision(run.result);
+    if (candidate === undefined) continue;
+    if (selected === undefined
+      || PRE_TOOL_USE_PRECEDENCE[candidate.decision] > PRE_TOOL_USE_PRECEDENCE[selected.decision]) {
+      selected = candidate;
+    }
+  }
+  return selected;
+}
+
+function preToolUseRunDecision(result: HookResult): PreToolUseDecision | undefined {
+  // exit 2 与顶层 decision block 都等价于 deny，理由来自 blocking reason。
+  if (result.outcome === 'blocking') return denyDecision(result.reason);
+  if (result.outcome !== 'success') return undefined;
+  if (result.decision === 'block') return denyDecision(result.reason);
+  const decision = result.hookSpecificOutput?.permissionDecision;
+  if (decision === undefined) return undefined;
+  const reason = result.hookSpecificOutput?.permissionDecisionReason;
+  return { decision, ...(reason === undefined ? {} : { reason }) };
+}
+
+function denyDecision(reason: string | undefined): PreToolUseDecision {
+  return { decision: 'deny', ...(reason === undefined ? {} : { reason }) };
+}
+
 /** UserPromptSubmit 的停止结论；block 丢弃原 prompt，stop（continue:false）保留原 prompt。 */
 export interface UserPromptSubmitStop {
   kind: 'block' | 'stop';

@@ -193,7 +193,7 @@ export class CliInput {
         close: () => finish('deny'),
       });
       signal.addEventListener('abort', abort, { once: true });
-      process.stdout.write(`\n[人工审批 ${number}] ${call.toolName}（调用 ${call.callId}；最多等待 ${this.humanTimeoutMs}ms）\n${JSON.stringify(call.input, null, 2)}\n${call.details?.target ? `实际文件目标：${call.details.target}\n` : ''}${call.details?.cwd ? `实际工作目录：${call.details.cwd}\n` : ''}${call.details?.searchAsk ? `需审批的搜索范围：${call.details.searchAsk}\n` : ''}${call.details?.sandboxExecution ? `沙箱执行模式：${call.details.sandboxExecution}\n` : ''}${call.details?.sandboxBypass ? `豁免申请：${call.details.sandboxBypass}\n` : ''}${call.details?.sandboxNotice ? `沙箱状态：${call.details.sandboxNotice}\n` : ''}批准请输入 approve ${number}，拒绝请输入 deny ${number}：\n`);
+      process.stdout.write(`\n[人工审批 ${number}] ${call.toolName}（调用 ${call.callId}；最多等待 ${this.humanTimeoutMs}ms）\n${JSON.stringify(call.input, null, 2)}\n${call.details?.target ? `实际文件目标：${call.details.target}\n` : ''}${call.details?.cwd ? `实际工作目录：${call.details.cwd}\n` : ''}${call.details?.searchAsk ? `需审批的搜索范围：${call.details.searchAsk}\n` : ''}${call.details?.sandboxExecution ? `沙箱执行模式：${call.details.sandboxExecution}\n` : ''}${call.details?.sandboxBypass ? `豁免申请：${call.details.sandboxBypass}\n` : ''}${call.details?.sandboxNotice ? `沙箱状态：${call.details.sandboxNotice}\n` : ''}${call.hookPermission?.reason ? `Hook 审批说明：${call.hookPermission.reason}\n` : ''}批准请输入 approve ${number}，拒绝请输入 deny ${number}：\n`);
     });
   };
 

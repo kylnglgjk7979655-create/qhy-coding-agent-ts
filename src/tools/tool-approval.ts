@@ -58,12 +58,20 @@ export async function approveToolCall(
   const permissionAction = mcpAction ?? basicToolAction ?? readAction ?? writeAction ?? searchAction;
   const permissionRequiresApproval = permissionAction === 'ask' || readOutsideWorkspace || searchOutsideWorkspace || searchAsks
     || bashActions.includes('ask') || bashRequiresApproval;
+  const hookAsk = call.hookPermission?.decision === 'ask';
+  const hookAllow = call.hookPermission?.decision === 'allow';
+  // 只有权限规则本身没有 deny/ask 时，Hook 的 allow 才能跳过其余审批。
+  const ruleRequiresApproval = permissionAction === 'ask' || searchAsks || bashActions.includes('ask');
   if (permissionAction === 'deny' || bashDenied) return false;
-  if (call.toolName === 'Bash' && bashAllowed && !permissionRequiresApproval) return true;
-  // 范围要求审批时，不能被另一条宽泛 allow 跳过。
-  if (!permissionRequiresApproval && permissionAction === 'allow') return true;
-  if (!permissionRequiresApproval
-    && ['read_file', 'glob', 'grep', 'runtimeInfo', 'agent', 'skill'].includes(call.toolName)) return true;
+  // ask 强制审批，即使权限规则原本允许；allow 不能绕过规则里的 deny/ask。
+  if (!hookAsk) {
+    if (hookAllow && !ruleRequiresApproval) return true;
+    if (call.toolName === 'Bash' && bashAllowed && !permissionRequiresApproval) return true;
+    // 范围要求审批时，不能被另一条宽泛 allow 跳过。
+    if (!permissionRequiresApproval && permissionAction === 'allow') return true;
+    if (!permissionRequiresApproval
+      && ['read_file', 'glob', 'grep', 'runtimeInfo', 'agent', 'skill'].includes(call.toolName)) return true;
+  }
 
   if (config.approval.mode === 'default') {
     if (!control) return false;
@@ -100,7 +108,12 @@ export async function approveToolCall(
         ...(baseURL === undefined ? {} : { baseURL }),
       });
       const context = {
-        environment: { workspace: config.workspace, toolDetails: call.details ?? {} },
+        environment: {
+          workspace: config.workspace,
+          toolDetails: call.details ?? {},
+          // PreToolUse 的 ask 理由作为审批说明，供独立审查模型判断。
+          ...(call.hookPermission === undefined ? {} : { preToolUse: call.hookPermission }),
+        },
         rules: { permissions: config.permissions ?? {} },
         history: extractApprovalHistory(history),
       };

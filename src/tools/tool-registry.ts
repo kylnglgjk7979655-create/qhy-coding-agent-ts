@@ -10,15 +10,27 @@ export interface ToolExecutionEvent {
   errorCode?: 'INVALID_TOOL_ARGUMENTS' | 'UNKNOWN_TOOL' | 'TOOL_EXECUTION_ERROR' | 'PERMISSION_DENIED';
 }
 
+/** PreToolUse 的聚合结论；deny 已在审批前短路，因此审批请求只会携带 allow 或 ask。 */
+export interface ToolPreToolUseDecision {
+  decision: 'allow' | 'deny' | 'ask';
+  reason?: string;
+}
+
 export interface ToolApprovalRequest {
   callId: string;
   toolName: string;
   input: unknown;
   details?: Record<string, string>;
+  /** Hook 的 allow/ask 结论与理由；deny 不会进入审批。 */
+  hookPermission?: { decision: 'allow' | 'ask'; reason?: string };
 }
 
 type ToolErrorCode = NonNullable<ToolExecutionEvent['errorCode']>;
 type ToolFailure = { is_error: true; error: { code: ToolErrorCode; message: string } };
+function permissionDeniedResult(): ToolFailure {
+  return { is_error: true, error: { code: 'PERMISSION_DENIED', message: '本次工具调用未获权限批准。' } };
+}
+
 export const MAX_TOOL_CALL_CONCURRENCY = 10;
 
 interface ScheduledCall {
@@ -96,6 +108,12 @@ export class ToolRegistry {
   constructor(private readonly options: {
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     beforeTool?: (event: { callId: string; toolName: string; input: unknown }) => Promise<void> | void;
+    /** 在 prepare 与 beforeTool 之后、审批之前运行；输入为 prepare 后的结果。 */
+    preToolUse?: (call: {
+      callId: string;
+      toolName: string;
+      input: unknown;
+    }, signal?: AbortSignal) => Promise<ToolPreToolUseDecision | undefined>;
     approve?: (call: ToolApprovalRequest, signal?: AbortSignal) => Promise<boolean>;
   }) {}
 
@@ -139,10 +157,32 @@ export class ToolRegistry {
           execution.abortSignal?.throwIfAborted();
           await this.options.beforeTool?.({ callId: execution.toolCallId, toolName: name, input });
           execution.abortSignal?.throwIfAborted();
-          const details = { ...approvalDetails, ...prepared.details };
-          if (this.options.approve && !await this.options.approve({ callId: execution.toolCallId, toolName: name, input, ...(Object.keys(details).length > 0 ? { details } : {}) }, execution.abortSignal)) {
+          const hookDecision = await this.options.preToolUse?.({
+            callId: execution.toolCallId,
+            toolName: name,
+            input: prepared.input,
+          }, execution.abortSignal);
+          if (hookDecision?.decision === 'deny') {
             this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'rejected', errorCode: 'PERMISSION_DENIED' });
-            return { is_error: true as const, error: { code: 'PERMISSION_DENIED' as const, message: '本次工具调用未获权限批准。' } };
+            return permissionDeniedResult();
+          }
+          execution.abortSignal?.throwIfAborted();
+          const details = { ...approvalDetails, ...prepared.details };
+          const hookPermission = hookDecision === undefined
+            ? undefined
+            : {
+              decision: hookDecision.decision,
+              ...(hookDecision.reason === undefined ? {} : { reason: hookDecision.reason }),
+            };
+          if (this.options.approve && !await this.options.approve({
+            callId: execution.toolCallId,
+            toolName: name,
+            input,
+            ...(Object.keys(details).length > 0 ? { details } : {}),
+            ...(hookPermission === undefined ? {} : { hookPermission }),
+          }, execution.abortSignal)) {
+            this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'rejected', errorCode: 'PERMISSION_DENIED' });
+            return permissionDeniedResult();
           }
           execution.abortSignal?.throwIfAborted();
           this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'started' });

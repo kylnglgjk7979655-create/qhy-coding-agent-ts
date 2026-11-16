@@ -731,7 +731,7 @@ async function runTurn(
         if (!smokeTool && roundId) await appendRoundText(userHome, conversationId, roundId, chunk);
         process.stdout.write(chunk);
       },
-      ...(!smokeTool ? { transcriptPath: sessionRecordPath(userHome, conversationId) } : {}),
+      ...(!smokeTool ? { transcriptPath: sessionRecordPath(userHome, conversationId), sessionId: conversationId } : {}),
       onFileRead: (target) => recentFiles.record(target),
       getRecentFiles: () => recentFiles.list(),
       ...(getTaskStatuses ? { getTaskStatuses } : {}),

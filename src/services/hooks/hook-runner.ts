@@ -39,6 +39,14 @@ export interface UserPromptSubmitHookInput extends HookInput {
   prompt: string;
 }
 
+/** 工具输入使用 prepare 后的结果，即即将审批和执行的输入；调用标识用于关联后续工具事件。 */
+export interface PreToolUseHookInput extends HookInput {
+  hook_event_name: 'PreToolUse';
+  tool_name: string;
+  tool_input: unknown;
+  tool_use_id: string;
+}
+
 /** v1 stdout JSON 字段；未知字段忽略，已知字段类型不符按无效 JSON 处理。 */
 const hookOutputSchema = z.object({
   continue: z.boolean().optional(),
