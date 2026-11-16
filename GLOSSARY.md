@@ -18,6 +18,18 @@
 
 **工具结果**：针对一次工具调用返回给 Agent 的反馈，包含成功输出或失败信息。
 
+**Read 工具**：接收 `file_path`、可选 `offset` 和 `limit`，读取工作区文件的工具；未指定 `limit` 时最多返回前 2000 行，工作区外读取按权限规则或审批控制。旧 `read_file` 名称保留为兼容入口。
+
+**Write 工具**：接收 `file_path` 和 `content`，创建或完整重写文件的工具；与旧 `write_file` 共用受控写入基线，工作区外写入按权限规则或审批控制。
+
+**Edit 工具**：接收 `file_path`、`old_string`、`new_string` 和可选 `replace_all`，在单个文件内替换文本的工具。默认要求唯一匹配；无匹配或多处匹配且未启用 `replace_all` 时失败且不修改文件。
+
+**TodoWrite 工具**：接收完整 `todos` 列表并替换本次 Agent 运行内待办状态的工具；每项包含内容、状态和可选进行时描述，最多一个任务处于 `in_progress`。
+
+**WebFetch 工具**：接收 `url` 和 `prompt`，读取公开 HTTP/HTTPS 网页文本的工具；执行前解析主机并逐次校验重定向，拒绝本机、内网、链路本地、云 metadata 和保留地址。
+
+**WebSearch 工具**：接收 `query`，通过可替换的搜索服务提供方检索网络的工具；首期实现为 Tavily，凭据从配置的环境变量读取，缺失或服务失败时返回明确工具错误。
+
 **执行事件**：工具调用执行状态变化的通知，供 CLI 展示工具运行进度。
 
 **权限策略**：用户通过 settings 中的 `permissions.allow`、`permissions.ask` 和 `permissions.deny` 按工具能力及操作目标设定的允许、审批或拒绝要求；同一调用命中多种规则时拒绝优先，其次审批。

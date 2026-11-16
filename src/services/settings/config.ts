@@ -54,6 +54,14 @@ const exploreConfigSchema = z.strictObject({
   model: z.string().trim().min(1).optional(),
   loadRootAgents: z.boolean().default(false),
 });
+/** 网络搜索配置；凭据只引用环境变量，缺失时工具调用返回明确错误而不影响其他工具。 */
+const webSearchConfigSchema = z.strictObject({
+  provider: z.literal('tavily').default('tavily'),
+  apiKeyEnv: apiKeyEnvSchema.default('TAVILY_API_KEY'),
+  baseURL: baseURLSchema.optional(),
+  timeoutMs: operationTimeoutSchema.default(30_000),
+  maxResults: z.number().int().min(1).max(20).default(5),
+});
 
 /** 沙箱内的路径、域名、环境变量与命令条目；空字符串没有可执行含义。 */
 const sandboxEntrySchema = z.string().trim().min(1);
@@ -81,12 +89,13 @@ const sandboxArrayKeys = [
 ] as const;
 
 const permissionRuleSchema = z.string().trim().min(1).refine((rule) => {
-  const match = /^(Read|Write|Glob|Grep|Bash|MCP|Agent|RuntimeInfo)(?:\(([^()]+)\))?$/u.exec(rule);
+  const match = /^(Read|Write|Edit|Glob|Grep|Bash|MCP|Agent|RuntimeInfo|TodoWrite|WebFetch|WebSearch)(?:\(([^()]+)\))?$/u.exec(rule);
   if (!match) return false;
   const [, kind, argument] = match;
-  if (['Read', 'Write', 'Glob', 'Grep'].includes(kind!)) return argument === undefined || argument.trim().length > 0;
+  if (['Read', 'Write', 'Edit', 'Glob', 'Grep'].includes(kind!)) return argument === undefined || argument.trim().length > 0;
   if (kind === 'Bash') return argument !== undefined && argument.trim().length > 0;
   if (kind === 'MCP') return argument === undefined || /^[a-z][a-z0-9-]{0,15}\/(?:\*|[^\s()*][^\s()]*)$/u.test(argument);
+  if (kind === 'WebFetch') return argument === undefined || /^domain:\S+$/u.test(argument);
   return argument === undefined;
 }, '权限规则语法无效');
 
@@ -99,6 +108,7 @@ export const configSchema = z.strictObject({
   timeoutMs: z.number().int().min(1).max(3_600_000).default(60_000),
   maxSteps: z.number().int().min(1).max(100).default(20),
   explore: exploreConfigSchema.optional(),
+  webSearch: webSearchConfigSchema.optional(),
   context: contextSchema.optional(),
   mcp: z.strictObject({
     servers: z.array(mcpServerSchema).refine((servers) => new Set(servers.map(({ name }) => name)).size === servers.length, 'MCP 服务名称重复'),
@@ -141,6 +151,8 @@ export type ResolvedConfig = ModelConfig & {
   apiKey: string;
   approvalApiKey?: string;
   mcpHeaders?: Record<string, Record<string, string>>;
+  /** 网络搜索凭据；未配置时 WebSearch 调用返回明确错误，启动不失败。 */
+  webSearchApiKey?: string;
   migrationWarnings?: string[];
 };
 /** 从 settings 解析出的配置始终带 permissions 与沙箱默认值。 */
@@ -204,8 +216,11 @@ export async function loadConfig(options: ConfigOptions): Promise<LoadedConfig> 
   const approvalApiKey = reviewKeyEnv === undefined ? undefined : options.env[reviewKeyEnv]?.trim();
   if (reviewKeyEnv !== undefined && !approvalApiKey) throw new AgentError('CONFIG_ERROR', `缺少审批凭据：请设置环境变量 ${reviewKeyEnv}。`);
   const mcpHeaders = resolveMcpHeaders(config, options.env);
+  const webSearchKeyEnv = config.webSearch?.apiKeyEnv ?? 'TAVILY_API_KEY';
+  const webSearchApiKey = options.env[webSearchKeyEnv]?.trim();
   const warnings = [...migrationWarnings, ...deprecationWarnings];
   return { ...config, workspace, apiKey, mcpHeaders, ...(approvalApiKey === undefined ? {} : { approvalApiKey }),
+    ...(webSearchApiKey ? { webSearchApiKey } : {}),
     ...(warnings.length === 0 ? {} : { migrationWarnings: warnings }) };
 }
 

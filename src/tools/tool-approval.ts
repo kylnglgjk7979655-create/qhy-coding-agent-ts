@@ -39,14 +39,17 @@ export async function approveToolCall(
   history: ModelMessage[] = [],
 ): Promise<boolean> {
   signal.throwIfAborted();
-  const readAction = call.toolName === 'read_file' ? readPermissionAction(config, call) : undefined;
-  const writeAction = call.toolName === 'write_file' ? pathPermissionAction(config, call, 'Write') : undefined;
-  const searchAction = call.toolName === 'glob' || call.toolName === 'grep'
-    ? pathPermissionAction(config, call, call.toolName === 'glob' ? 'Glob' : 'Grep') : undefined;
+  const readAction = isReadTool(call.toolName) ? readPermissionAction(config, call) : undefined;
+  const writeAction = isWriteTool(call.toolName) ? pathPermissionAction(config, call, 'Write') : undefined;
+  const searchAction = isSearchTool(call.toolName)
+    ? pathPermissionAction(config, call, isGlobTool(call.toolName) ? 'Glob' : 'Grep') : undefined;
   const searchAsks = call.details?.searchAsk !== undefined;
-  const searchOutsideWorkspace = (call.toolName === 'glob' || call.toolName === 'grep')
+  const searchOutsideWorkspace = isSearchTool(call.toolName)
     && searchAction === undefined && call.details?.target !== undefined
     && !isWithinWorkspace(config.workspace, call.details.target);
+  const webFetchAction = call.toolName === 'WebFetch' ? webFetchPermissionAction(config, call) : undefined;
+  const webSearchAction = call.toolName === 'WebSearch' ? basicToolPermissionAction(config, 'WebSearch') : undefined;
+  const todoAction = call.toolName === 'TodoWrite' ? basicToolPermissionAction(config, 'TodoWrite') : undefined;
   const bashActions = call.toolName === 'Bash' ? bashPermissionActions(config, call) : [];
   const mcpAction = mcpPermissionAction(config, call);
   const basicToolAction = ['agent', 'runtimeInfo'].includes(call.toolName)
@@ -54,16 +57,20 @@ export async function approveToolCall(
   const bashDenied = bashActions.includes('deny');
   const bashAllowed = bashActions.length > 0 && bashActions.every((action) => action === 'allow');
   const bashRequiresApproval = call.toolName === 'Bash' && call.details?.bashRequiresApproval === 'true';
-  const readOutsideWorkspace = call.toolName === 'read_file' && readAction === undefined && !isReadTargetInWorkspace(config, call);
-  const permissionAction = mcpAction ?? basicToolAction ?? readAction ?? writeAction ?? searchAction;
+  const readOutsideWorkspace = isReadTool(call.toolName) && readAction === undefined && !isReadTargetInWorkspace(config, call);
+  const permissionAction = mcpAction ?? webFetchAction ?? webSearchAction ?? todoAction
+    ?? basicToolAction ?? readAction ?? writeAction ?? searchAction;
+  // 网络工具未显式 allow/deny 时默认进入审批；TodoWrite 只修改本次运行内状态。
+  const webRequiresApproval = (call.toolName === 'WebFetch' && webFetchAction === undefined)
+    || (call.toolName === 'WebSearch' && webSearchAction === undefined);
   const permissionRequiresApproval = permissionAction === 'ask' || readOutsideWorkspace || searchOutsideWorkspace || searchAsks
-    || bashActions.includes('ask') || bashRequiresApproval;
+    || webRequiresApproval || bashActions.includes('ask') || bashRequiresApproval;
   if (permissionAction === 'deny' || bashDenied) return false;
   if (call.toolName === 'Bash' && bashAllowed && !permissionRequiresApproval) return true;
   // 范围要求审批时，不能被另一条宽泛 allow 跳过。
   if (!permissionRequiresApproval && permissionAction === 'allow') return true;
   if (!permissionRequiresApproval
-    && ['read_file', 'glob', 'grep', 'runtimeInfo', 'agent', 'skill'].includes(call.toolName)) return true;
+    && ['read_file', 'Read', 'glob', 'Glob', 'grep', 'Grep', 'runtimeInfo', 'agent', 'skill', 'TodoWrite'].includes(call.toolName)) return true;
 
   if (config.approval.mode === 'default') {
     if (!control) return false;
@@ -184,9 +191,17 @@ function historicalToolInput(toolName: string, input: unknown): unknown {
   const fields: Record<string, string[]> = {
     Bash: ['command'],
     read_file: ['path'],
+    Read: ['file_path', 'offset', 'limit'],
     write_file: ['path', 'content'],
+    Write: ['file_path', 'content'],
+    Edit: ['file_path', 'old_string', 'new_string', 'replace_all'],
     glob: ['pattern', 'path'],
+    Glob: ['pattern', 'path'],
     grep: ['pattern', 'path', 'glob'],
+    Grep: ['pattern', 'path', 'glob'],
+    TodoWrite: ['todos'],
+    WebFetch: ['url', 'prompt'],
+    WebSearch: ['query', 'allowed_domains', 'blocked_domains', 'max_results'],
     runtimeInfo: [],
     skill: ['name'],
     agent: ['description', 'prompt', 'subagent_type', 'model', 'background'],
@@ -248,20 +263,51 @@ function mcpPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest):
   return undefined;
 }
 
-function basicToolPermissionAction(config: ResolvedConfig, permission: 'Agent' | 'RuntimeInfo'): 'allow' | 'ask' | 'deny' | undefined {
+function basicToolPermissionAction(
+  config: ResolvedConfig,
+  permission: 'Agent' | 'RuntimeInfo' | 'TodoWrite' | 'WebSearch',
+): 'allow' | 'ask' | 'deny' | undefined {
   for (const action of ['deny', 'ask', 'allow'] as const) {
     if ((config.permissions?.[action] ?? []).includes(permission)) return action;
   }
   return undefined;
 }
 
+function webFetchPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest): 'allow' | 'ask' | 'deny' | undefined {
+  const inputUrl = typeof call.input === 'object' && call.input !== null && 'url' in call.input
+    && typeof call.input.url === 'string' ? call.input.url : undefined;
+  let hostname: string | undefined;
+  try { hostname = inputUrl === undefined ? undefined : new URL(inputUrl).hostname.toLowerCase(); }
+  catch { hostname = undefined; }
+  const matches = (rule: string): boolean => {
+    const match = /^WebFetch(?:\(domain:(.+)\))?$/u.exec(rule);
+    if (!match) return false;
+    if (match[1] === undefined) return true;
+    if (hostname === undefined) return false;
+    const pattern = match[1].toLowerCase();
+    const expression = globExpression(pattern);
+    return expression.test(hostname);
+  };
+  for (const action of ['deny', 'ask', 'allow'] as const) {
+    if ((config.permissions?.[action] ?? []).some(matches)) return action;
+  }
+  return undefined;
+}
+
+function isReadTool(name: string): boolean { return name === 'read_file' || name === 'Read'; }
+function isWriteTool(name: string): boolean { return name === 'write_file' || name === 'Write' || name === 'Edit'; }
+function isSearchTool(name: string): boolean { return ['glob', 'Glob', 'grep', 'Grep'].includes(name); }
+function isGlobTool(name: string): boolean { return name === 'glob' || name === 'Glob'; }
+
 function readPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest): 'allow' | 'ask' | 'deny' | undefined {
   return pathPermissionAction(config, call, 'Read');
 }
 
 function pathPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest, permission: 'Read' | 'Write' | 'Glob' | 'Grep'): 'allow' | 'ask' | 'deny' | undefined {
-  const inputPath = typeof call.input === 'object' && call.input !== null && 'path' in call.input
-    && typeof call.input.path === 'string' ? call.input.path : undefined;
+  const inputPath = typeof call.input === 'object' && call.input !== null
+    ? ('file_path' in call.input && typeof call.input.file_path === 'string' ? call.input.file_path
+      : 'path' in call.input && typeof call.input.path === 'string' ? call.input.path : undefined)
+    : undefined;
   const requestedPath = call.details?.requestedPath ?? inputPath;
   const target = call.details?.target;
   if (!requestedPath || !target) return undefined;

@@ -54,9 +54,10 @@ export async function runExplore(
     bashOperations: new Set(),
     ...(skills === undefined ? {} : { skills }),
   };
-  registerGrepTool(registry, context);
-  registerGlobTool(registry, context);
-  registerFileReadTool(registry, context);
+  // Explore 保持原有只读工具名，避免子 Agent 工具集合随主 Agent 别名扩展。
+  registerGrepTool(registry, context, ['grep']);
+  registerGlobTool(registry, context, ['glob']);
+  registerFileReadTool(registry, context, ['read_file']);
   // 只有存在 Skill 清单时才公布 Skill 工具，保持无 Skill 场景的只读工具集合不变。
   if (skills !== undefined) registerSkillTool(registry, skills);
 

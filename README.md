@@ -1,6 +1,6 @@
 # qhy-coding-agent-ts
 
-基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `read_file`、`write_file`、`runtimeInfo` 和 `Bash`，可读取工作区文件，并在工具策略允许或所选审批通过后修改文件、运行命令。Bash 可在 macOS Seatbelt 沙箱内执行；沙箱默认关闭，v1 仅支持 macOS，其他平台按不可用处理。审批默认由独立模型完成，也可切换人工模式。会话记录保存在用户目录 `~/.qhy-coding-agents/sessions/`，支持用 conversation ID 跨进程继续对话。
+基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `Read`、`Write`、`Edit`、`Bash`、`Glob`、`Grep`、`TodoWrite`、`WebFetch` 和 `WebSearch`，并保留 `read_file`、`write_file`、`glob`、`grep` 旧名称；可读取、搜索和修改工作区文件，记录待办，访问公开网页或使用 Tavily 搜索网络，并在工具策略允许或所选审批通过后运行命令。Bash 可在 macOS Seatbelt 沙箱内执行；沙箱默认关闭，v1 仅支持 macOS，其他平台按不可用处理。审批默认由独立模型完成，也可切换人工模式。会话记录保存在用户目录 `~/.qhy-coding-agents/sessions/`，支持用 conversation ID 跨进程继续对话。
 
 通过 `ToolLoopAgent.stream()` 运行工具循环，每个对话轮次使用独立的 `maxSteps` 限制，默认 20 步。Agent 可通过 Bash 运行项目测试，文件工具与 Bash 共用策略、审批、串行执行和结果路径；启用沙箱后，Bash 的读写与网络还受沙箱计划和本机网络代理约束。
 
@@ -161,14 +161,41 @@ pnpm dev --workspace ./demo
 
 | 工具 | 能力 |
 | --- | --- |
-| `read_file` | 接收 `path`，按权限规则读取文本文件并将内容返回给 Agent |
-| `write_file` | 接收 `path` 和 `content`，完整替换目标文件；文件不存在时创建，不自动创建父目录 |
+| `Read` | 接收 `file_path`，可选 `offset`（从 1 开始）和 `limit`（默认最多 2000 行），按权限规则读取文本文件并返回选中内容和行数信息 |
+| `read_file` | 接收 `path`，按权限规则读取完整文本文件；保留用于兼容旧调用 |
+| `Write` | 接收 `file_path` 和 `content`，创建或完整重写目标文件；不自动创建父目录 |
+| `write_file` | 接收 `path` 和 `content`，完整替换目标文件；要求先读取既有文件，保留用于兼容旧调用 |
+| `Edit` | 接收 `file_path`、`old_string`、`new_string` 和可选 `replace_all`（默认 `false`）。默认要求 `old_string` 在文件中唯一匹配；无匹配或多处匹配时失败且不修改文件，`replace_all: true` 时替换全部匹配 |
+| `Glob` / `glob` | 接收 `pattern` 和可选 `path`，按 glob 模式查找工作区文件 |
+| `Grep` / `grep` | 接收 `pattern`（正则）、可选 `path` 和 `glob`，返回相对路径、行号和命中文本 |
+| `TodoWrite` | 接收 `todos` 完整列表，每项包含 `content`、`status`（`pending`、`in_progress`、`completed`）和可选 `activeForm`；调用以新列表替换旧状态，最多一个任务处于 `in_progress` |
+| `WebFetch` | 接收 `url` 和 `prompt`，读取公开 HTTP/HTTPS 网页文本；拒绝本机、内网、链路本地和云 metadata 地址，并逐次校验重定向目标 |
+| `WebSearch` | 接收 `query`，可选 `allowed_domains`、`blocked_domains` 和 `max_results`；首期使用 Tavily，凭据从环境变量读取 |
 | `runtimeInfo` | 返回工作区绝对路径和本轮运行探针 |
 | `Bash` | 接收 `command`、可选 `cwd` 和 `disableSandbox`，在沙箱可用时从工作区默认目录或经审批的其他目录运行沙箱内独立 shell；沙箱关闭、不可用按 fail-open 回退或豁免获准时以宿主方式执行 |
 
-相对路径从配置的工作区解析。`read_file` 和 `write_file` 可按权限规则或逐次审批访问工作区外的目标；工作区外读取默认需要审批，写入默认进入当前审批策略。符号链接按解析后的实际目标匹配权限。`glob` 和 `grep` 默认搜索工作区，指定工作区外搜索根时需要审批；权限规则可对搜索范围分别允许、要求审批或拒绝。工具权限始终是应用层策略，不能替代隔离：启用沙箱后，Bash 命令的读写与网络限制来自沙箱计划和本机代理；沙箱关闭、不可用按 fail-open 回退或豁免获准时，Bash 以宿主当前用户权限执行，可访问工作区外资源。远程 MCP 不受 Bash 沙箱约束。审批通过不会自动回滚已经发生的副作用。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
+相对路径从配置的工作区解析。`Read`、`Write` 和 `Edit` 与旧名称工具共用同一套受控写入基线：同一进程内并发写入会检测读取后变化；`Write` 可在目标未被本进程读取时直接创建或重写，旧 `write_file` 仍要求先读取。文件工具可按权限规则或逐次审批访问工作区外的目标；工作区外读取默认需要审批，写入默认进入当前审批策略。符号链接按解析后的实际目标匹配权限。`Glob`/`glob` 和 `Grep`/`grep` 默认搜索工作区，指定工作区外搜索根时需要审批；权限规则可对搜索范围分别允许、要求审批或拒绝。工具权限始终是应用层策略，不能替代隔离：启用沙箱后，Bash 命令的读写与网络限制来自沙箱计划和本机代理；沙箱关闭、不可用按 fail-open 回退或豁免获准时，Bash 以宿主当前用户权限执行，可访问工作区外资源。远程 MCP 不受 Bash 沙箱约束。审批通过不会自动回滚已经发生的副作用。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
 
-终端实时显示 `[工具] read_file：开始`、`[工具] read_file：成功`、`[工具] read_file：失败` 或 `[工具] read_file：拒绝` 等执行状态，不直接打印工具参数、文件内容或原始异常。一次调用只显示一个终结状态；普通调用失败后，同批后续调用仍会执行，Agent 会收到各次工具结果并决定如何继续。Agent 的最终回答可以按用户要求引用文件内容。
+终端实时显示 `[工具] Read：开始`、`[工具] Read：成功`、`[工具] Read：失败` 或 `[工具] Write：拒绝` 等执行状态，不直接打印工具参数、文件内容或原始异常。一次调用只显示一个终结状态；普通调用失败后，同批后续调用仍会执行，Agent 会收到各次工具结果并决定如何继续。Agent 的最终回答可以按用户要求引用文件内容。
+
+## 网络工具
+
+`WebFetch` 只允许公开的 HTTP/HTTPS 地址。执行前会解析主机并在每次重定向时重新校验，拒绝回环、私网、链路本地、云 metadata、保留地址及 `localhost`、`.local`、`.internal` 等名称；不接受带用户名或密码的 URL。读取使用 30 秒独立超时，响应正文最多 5 MiB，返回内容最多 100,000 字符；仅支持文本、JSON、XML 和 JavaScript 等文本类型。地址无效、被拒绝、超时、重定向过多或内容类型不支持时返回明确工具错误，不影响同批其他工具。
+
+`WebSearch` 首期接入 Tavily。未配置 API Key 时调用返回明确错误，启动和其他工具不受影响；额度耗尽、鉴权失败、服务失败、响应无效或超时也分别返回可区分的错误。搜索服务通过 `WebSearchProvider` 接口解耦，后续可增加其他服务实现。
+
+```json
+{
+  "webSearch": {
+    "provider": "tavily",
+    "apiKeyEnv": "TAVILY_API_KEY",
+    "timeoutMs": 30000,
+    "maxResults": 5
+  }
+}
+```
+
+`provider` 目前只接受 `tavily`；`apiKeyEnv` 指向保存 API Key 的环境变量，默认 `TAVILY_API_KEY`，凭据不会写入工具参数、日志或会话记录。省略 `baseURL` 时使用 `https://api.tavily.com`；如需本地夹具可配置 `https://...` 形式的服务地址。`timeoutMs` 范围为 1–3,600,000 毫秒，`maxResults` 范围为 1–20，单次调用的 `max_results` 可覆盖默认值。`WebFetch` 与 `WebSearch` 未配置权限规则时默认进入当前审批。
 
 ## Bash 与操作系统沙箱
 
@@ -237,7 +264,7 @@ Bash 在支持 POSIX 进程组的系统（Linux/macOS）上使用 PATH 中的 `b
 
 退出码为 0 时返回 `is_error: false`；非零退出、启动失败、单命令超时和 fail-closed 拒绝返回 `is_error: true`、`TOOL_EXECUTION_ERROR` 及可用输出。沙箱内出现 `Operation not permitted` 时提示为策略拦截，便于区分命令自身错误。超时结果保留终止信号，错误消息说明超时；取消和整轮超时走轮次停止通路。
 
-沙箱只约束 Bash 及其子进程。`read_file`、`write_file`、远程 MCP、审查模型和 CLI 其他进程不在其内；沙箱关闭、按 fail-open 回退或豁免获准时，Bash 仍以宿主用户权限运行。常规验证通过本地模型夹具、受控进程和 macOS Seatbelt 集成测试完成，Linux 等平台只验证不可用路径，不能代替最终人工 QA。
+沙箱只约束 Bash 及其子进程。`Read`、`Write`、`Edit`、`read_file`、`write_file`、远程 MCP、审查模型和 CLI 其他进程不在其内；沙箱关闭、按 fail-open 回退或豁免获准时，Bash 仍以宿主用户权限运行。常规验证通过本地模型夹具、受控进程和 macOS Seatbelt 集成测试完成，Linux 等平台只验证不可用路径，不能代替最终人工 QA。
 
 ## 工具策略与审批
 
@@ -246,16 +273,16 @@ Bash 在支持 POSIX 进程组的系统（Linux/macOS）上使用 PATH 中的 `b
 ```json
 {
   "permissions": {
-    "allow": ["Read(src/**)", "Glob(src/**)", "Grep(src/**)", "Bash(pnpm test)", "MCP(alpha/lookup)"],
+    "allow": ["Read(src/**)", "Edit(src/**)", "Glob(src/**)", "Grep(src/**)", "Bash(pnpm test)", "WebSearch", "WebFetch(domain:example.com)", "MCP(alpha/lookup)"],
     "ask": ["Write(src/**)", "Bash(git push:*)"],
-    "deny": ["Read(.env)", "Bash(rm:*)", "MCP(alpha/*)"]
+    "deny": ["Read(.env)", "Bash(rm:*)", "WebFetch(domain:internal.example)", "MCP(alpha/*)"]
   }
 }
 ```
 
-`Read`、`Write`、`Glob`、`Grep` 可不带参数以匹配该类全部目标，也可带路径模式；相对路径从工作区解析，支持 `*`、`?`、`**`。`Bash` 必须带命令规则：精确匹配完整命令，末尾 `:*` 匹配该前缀及其后续参数，并要求参数边界相符，例如 `Bash(git push:*)`。复合命令按其中每个简单命令分别检查；可识别的管道、串接和重定向等语法额外要求逐次审批，无法可靠解析的控制结构则作为无效参数拒绝。`MCP` 可匹配所有服务，或用 `服务名/工具名`、`服务名/*` 匹配远端工具。`Agent`、`RuntimeInfo` 分别控制 Agent 委派与运行信息工具。
+`Read`、`Write`、`Edit`、`Glob`、`Grep` 可不带参数以匹配该类全部目标，也可带路径模式；相对路径从工作区解析，支持 `*`、`?`、`**`。`Bash` 必须带命令规则：精确匹配完整命令，末尾 `:*` 匹配该前缀及其后续参数，并要求参数边界相符，例如 `Bash(git push:*)`。复合命令按其中每个简单命令分别检查；可识别的管道、串接和重定向等语法额外要求逐次审批，无法可靠解析的控制结构则作为无效参数拒绝。`MCP` 可匹配所有服务，或用 `服务名/工具名`、`服务名/*` 匹配远端工具。`WebFetch` 可不带参数，或用 `WebFetch(domain:example.com)`、`WebFetch(domain:*.example.com)` 按主机匹配；`WebSearch` 和 `TodoWrite` 不带参数。`Agent`、`RuntimeInfo` 分别控制 Agent 委派与运行信息工具。
 
-权限按工具能力独立生效：例如 `Read(src/**)` 不会授权 `Write(src/**)`，`Bash(pnpm test)` 也不会授权其他命令。匹配规则的动作优先级为 `deny`、`ask`、`allow`；未匹配时，工作区内读取、搜索、`runtimeInfo` 和 Agent 默认允许，写入、Bash、MCP 默认进入当前审批，工作区外读取默认需要审批。显式 `allow` 可免除相应逐次审批，`deny` 不可由审批放行。Glob/Grep 对被拒绝路径予以排除，对需审批路径暂停该次搜索并在人工审批界面展示范围。
+权限按工具能力独立生效：例如 `Read(src/**)` 不会授权 `Write(src/**)`，`Bash(pnpm test)` 也不会授权其他命令。匹配规则的动作优先级为 `deny`、`ask`、`allow`；未匹配时，工作区内读取、搜索、`TodoWrite`、`runtimeInfo` 和 Agent 默认允许，写入、Bash、WebFetch、WebSearch、MCP 默认进入当前审批，工作区外读取默认需要审批。显式 `allow` 可免除相应逐次审批，`deny` 不可由审批放行。Glob/Grep 对被拒绝路径予以排除，对需审批路径暂停该次搜索并在人工审批界面展示范围。
 
 设置分层时，`permissions.allow`、`permissions.ask`、`permissions.deny` 与 `permissions.sandbox` 的数组字段各自跨层合并并去重；其他对象字段递归合并，其他数组由更具体层整体替换。旧版 `approval.rules` 不再提供运行授权；请迁移到 `permissions`，无效或未迁移的旧规则不会覆盖默认权限。
 

@@ -105,7 +105,7 @@ it.each(['summary-error', 'summary-invalid'] as const)('混合副作用与工具
   await setup(scenario);
   await mkdir(join(cwd, '.agent'), { recursive: true });
   await writeFile(join(cwd, '.agent/settings.json'), JSON.stringify({ ...qa.config,
-    context: { capacityTokens: 19_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
+    context: { capacityTokens: 21_200, answerReserveTokens: 700, maxOutputTokens: 1_000 },
   }));
   const directory = join(cwd, '.agent/conversations');
   await mkdir(directory, { recursive: true });
@@ -132,7 +132,7 @@ it('混合工具增长后整体摘要，工具往返进入摘要且跨进程续�
   await setup();
   await mkdir(join(cwd, '.agent'), { recursive: true });
   await writeFile(join(cwd, '.agent/settings.json'), JSON.stringify({ ...qa.config,
-    context: { capacityTokens: 19_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
+    context: { capacityTokens: 21_200, answerReserveTokens: 700, maxOutputTokens: 1_000 },
   }));
   await mkdir(join(cwd, '.agent/conversations'), { recursive: true });
   const historyPath = join(cwd, '.agent/conversations/combined.json');

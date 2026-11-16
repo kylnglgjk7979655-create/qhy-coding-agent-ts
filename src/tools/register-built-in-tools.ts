@@ -7,6 +7,10 @@ import { registerFileReadTool } from './FileReadTool/FileReadTool.js';
 import { registerGlobTool } from './GlobTool/GlobTool.js';
 import { registerGrepTool } from './GrepTool/GrepTool.js';
 import { registerFileWriteTool } from './FileWriteTool/FileWriteTool.js';
+import { registerEditTool } from './EditTool/EditTool.js';
+import { registerTodoWriteTool } from './TodoWriteTool/TodoWriteTool.js';
+import { registerWebFetchTool } from './WebFetchTool/WebFetchTool.js';
+import { registerWebSearchTool } from './WebSearchTool/WebSearchTool.js';
 import { registerBashTool } from './BashTool/BashTool.js';
 import { registerAgentTool } from './AgentTool/AgentTool.js';
 import type { ApprovalControl } from './tool-approval.js';
@@ -39,6 +43,10 @@ export function registerBuiltInTools(registry: ToolRegistry, context: BuiltInToo
   registerGlobTool(registry, context);
   registerGrepTool(registry, context);
   registerFileWriteTool(registry, context);
+  registerEditTool(registry, context);
+  registerTodoWriteTool(registry);
+  registerWebFetchTool(registry);
+  registerWebSearchTool(registry, context);
   registerBashTool(registry, context);
   if (context.allowAgent !== false) {
     registerAgentTool(registry, context.config, context.approvalControl, context.backgroundTasks, context.fileWriteCallbacks, context.skills);

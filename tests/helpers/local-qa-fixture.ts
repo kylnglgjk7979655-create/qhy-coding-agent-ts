@@ -83,7 +83,7 @@ export async function startLocalQA(scenario: QAScenario = 'normal', reviewDelayM
       model: 'local-qa', baseURL: model.baseURL, apiKeyEnv: 'TEST_MODEL_API_KEY',
       timeoutMs: 10000,
       approval: { mode: 'auto', timeoutMs: 2000 },
-      context: { capacityTokens: 19_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
+      context: { capacityTokens: 21_200, answerReserveTokens: 700, maxOutputTokens: 1_000 },
       mcp: { servers: [
         { name: 'alpha', url: alpha.url, headers: { Authorization: { env: 'QA_MCP_HEADER' } } },
         { name: 'beta', url: beta.url },
