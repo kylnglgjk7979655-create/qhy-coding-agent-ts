@@ -40,8 +40,17 @@ export interface UserPromptSubmitHookInput extends HookInput {
   prompt: string;
 }
 
+/**
+ * 子 Agent 的工具事件身份；主 Agent 的工具事件省略这两个字段。
+ * session_id 与 transcript_path 仍指向父对话，便于 Hook 关联同一会话。
+ */
+export interface SubagentHookIdentity {
+  agent_id?: string;
+  agent_type?: string;
+}
+
 /** 工具输入使用 prepare 后的结果，即即将审批和执行的输入；调用标识用于关联后续工具事件。 */
-export interface PreToolUseHookInput extends HookInput {
+export interface PreToolUseHookInput extends HookInput, SubagentHookIdentity {
   hook_event_name: 'PreToolUse';
   tool_name: string;
   tool_input: unknown;
@@ -49,7 +58,7 @@ export interface PreToolUseHookInput extends HookInput {
 }
 
 /** 成功工具调用之后的输入；tool_response 与返回给模型的成功信封一致。 */
-export interface PostToolUseHookInput extends HookInput {
+export interface PostToolUseHookInput extends HookInput, SubagentHookIdentity {
   hook_event_name: 'PostToolUse';
   tool_name: string;
   tool_input: unknown;
@@ -58,7 +67,7 @@ export interface PostToolUseHookInput extends HookInput {
 }
 
 /** 工具执行抛错后的输入；error_code 只取工具错误码枚举，v1 当前只会是 TOOL_EXECUTION_ERROR。 */
-export interface PostToolUseFailureHookInput extends HookInput {
+export interface PostToolUseFailureHookInput extends HookInput, SubagentHookIdentity {
   hook_event_name: 'PostToolUseFailure';
   tool_name: string;
   tool_input: unknown;

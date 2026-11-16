@@ -21,8 +21,9 @@ import { appendRecentSkillLoads, collectSkillInjections, insertSkillInjections }
 import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import type { SkillInjection } from '../services/skills/skill-injection.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
-import { HookInjectionTracker, describeHookRun, evaluatePreToolUse, runHookEvent, toolEventFeedbackMessages } from '../services/hooks/hook-engine.js';
+import { HookInjectionTracker, describeHookRun, evaluatePreToolUse, runHookEvent, takeToolFeedbackMessages } from '../services/hooks/hook-engine.js';
 import type { HookEventResult } from '../services/hooks/hook-engine.js';
+import type { ParentHookScope, SubagentHookScope } from '../services/hooks/hook-scope.js';
 import type { PostToolUseFailureHookInput, PostToolUseHookInput, PreToolUseHookInput } from '../services/hooks/hook-runner.js';
 import type { BackgroundAgentTasks, BackgroundTaskStatusEntry } from '../tools/AgentTool/background-agent-tasks.js';
 
@@ -53,34 +54,6 @@ function modelStreamError(error: unknown): AgentError {
   if (error instanceof AgentError) return error;
   if (APICallError.isInstance(error) || ToolChoiceViolationError.isInstance(error)) return publicError(error);
   return new AgentError('PROVIDER_ERROR', '模型响应流无效，已终止当前对话轮次。');
-}
-
-/**
- * 按工具结果在消息中的顺序消费 PostToolUse / PostToolUseFailure 结果，生成隐藏反馈消息。
- * 找不到对应工具结果时仍按暂存顺序追加，避免反馈丢失；每次都清空暂存。
- */
-function takeToolFeedbackMessages(
-  messages: readonly ModelMessage[],
-  pending: Map<string, HookEventResult>,
-  tracker: HookInjectionTracker,
-): ModelMessage[] {
-  const feedback: ModelMessage[] = [];
-  const emitted = new Set<string>();
-  for (const message of messages) {
-    if (message.role !== 'tool' || !Array.isArray(message.content)) continue;
-    for (const part of message.content) {
-      if (part.type !== 'tool-result' || emitted.has(part.toolCallId)) continue;
-      const result = pending.get(part.toolCallId);
-      if (result === undefined) continue;
-      emitted.add(part.toolCallId);
-      feedback.push(...toolEventFeedbackMessages(result, tracker));
-    }
-  }
-  for (const [callId, result] of pending) {
-    if (!emitted.has(callId)) feedback.push(...toolEventFeedbackMessages(result, tracker));
-  }
-  pending.clear();
-  return feedback;
 }
 
 /**
@@ -116,6 +89,11 @@ export async function runAgent(
     transcriptPath?: string;
     /** 工具 Hook 的对话标识；smoke 与尚未接入会话范围的子 Agent 省略时，不运行工具 Hook。 */
     sessionId?: string;
+    /**
+     * 子 Agent 的工具 Hook 范围：沿用父对话的 session_id 与记录路径，并附加 agent_id/agent_type。
+     * 省略时按主 Agent 处理，从 sessionId/transcriptPath 推导范围。
+     */
+    hookScope?: SubagentHookScope;
     /** 与对话共享的注入去重集合；省略时本次运行自行创建。 */
     hookInjectionTracker?: HookInjectionTracker;
     /** 成功读取文件后刷新最近文件顺序；子 Agent 没有会话记录时省略。 */
@@ -187,7 +165,23 @@ export async function runAgent(
     activeSince = performance.now();
     timer = setTimeout(() => deadline.abort(), remainingMs);
   }
-  const hookInjectionTracker = options.hookInjectionTracker ?? new HookInjectionTracker();
+  const hookInjectionTracker = options.hookScope?.hookInjectionTracker
+    ?? options.hookInjectionTracker
+    ?? new HookInjectionTracker();
+  // 子 Agent 的 stdin 沿用父会话标识；主 Agent 省略 agent_id/agent_type。
+  const hookSessionId = options.hookScope?.sessionId ?? options.sessionId;
+  const hookTranscriptPath = options.hookScope?.transcriptPath ?? options.transcriptPath;
+  const subagentHookFields = options.hookScope === undefined
+    ? {}
+    : { agent_id: options.hookScope.agentId, agent_type: options.hookScope.agentType };
+  // 委派工具沿用同一份父会话范围；子 Agent 不能再委派，因此只对主 Agent 生效。
+  const parentHookScope: ParentHookScope | undefined = hookSessionId === undefined || hookTranscriptPath === undefined
+    ? undefined
+    : {
+      sessionId: hookSessionId,
+      transcriptPath: hookTranscriptPath,
+      hookInjectionTracker,
+    };
   // 成功工具调用的 PostToolUse 结果先按调用标识暂存，下一次 prepareStep 再注入。
   const pendingToolFeedback = new Map<string, HookEventResult>();
   const registry = new ToolRegistry({
@@ -195,16 +189,17 @@ export async function runAgent(
     ...(options.onToolCallStart ? { beforeTool: options.onToolCallStart } : {}),
     preToolUse: async (call, toolSignal) => {
       if (config.hooks === undefined || config.disableAllHooks
-        || options.sessionId === undefined || options.transcriptPath === undefined) return undefined;
+        || hookSessionId === undefined || hookTranscriptPath === undefined) return undefined;
       // Hook 是同步策略计算：暂停整轮时限，避免慢 Hook 被对话超时误杀；finally 保证恢复。
       try {
         pauseDeadline();
         const hookInput: PreToolUseHookInput = {
-          session_id: options.sessionId,
-          transcript_path: options.transcriptPath,
+          session_id: hookSessionId,
+          transcript_path: hookTranscriptPath,
           cwd: config.workspace,
           approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
           hook_event_name: 'PreToolUse',
+          ...subagentHookFields,
           tool_name: call.toolName,
           tool_input: call.input,
           tool_use_id: call.callId,
@@ -243,16 +238,17 @@ export async function runAgent(
     },
     postToolUse: async (call, toolSignal) => {
       if (config.hooks === undefined || config.disableAllHooks
-        || options.sessionId === undefined || options.transcriptPath === undefined) return;
+        || hookSessionId === undefined || hookTranscriptPath === undefined) return;
       // 与 PreToolUse 一样，Hook 执行期间暂停整轮时限；反馈不参与工具结果构造。
       try {
         pauseDeadline();
         const hookInput: PostToolUseHookInput = {
-          session_id: options.sessionId,
-          transcript_path: options.transcriptPath,
+          session_id: hookSessionId,
+          transcript_path: hookTranscriptPath,
           cwd: config.workspace,
           approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
           hook_event_name: 'PostToolUse',
+          ...subagentHookFields,
           tool_name: call.toolName,
           tool_input: call.input,
           tool_response: call.response,
@@ -280,16 +276,17 @@ export async function runAgent(
     },
     postToolUseFailure: async (call, toolSignal) => {
       if (config.hooks === undefined || config.disableAllHooks
-        || options.sessionId === undefined || options.transcriptPath === undefined) return;
+        || hookSessionId === undefined || hookTranscriptPath === undefined) return;
       // 只有 execute 抛错会走到这里；反馈与 PostToolUse 共用工具结果后的注入位置。
       try {
         pauseDeadline();
         const hookInput: PostToolUseFailureHookInput = {
-          session_id: options.sessionId,
-          transcript_path: options.transcriptPath,
+          session_id: hookSessionId,
+          transcript_path: hookTranscriptPath,
           cwd: config.workspace,
           approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
           hook_event_name: 'PostToolUseFailure',
+          ...subagentHookFields,
           tool_name: call.toolName,
           tool_input: call.input,
           error: call.error,
@@ -344,6 +341,7 @@ export async function runAgent(
     bashOperations,
     ...(options.onFileRead ? { onFileRead: options.onFileRead } : {}),
     ...(options.skills === undefined ? {} : { skills: options.skills }),
+    ...(parentHookScope === undefined ? {} : { hookScope: parentHookScope }),
   });
   let closeMCP: (() => Promise<void>) | undefined;
   try {

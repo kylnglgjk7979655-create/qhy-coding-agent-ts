@@ -80,6 +80,35 @@ export class HookInjectionTracker {
   }
 }
 
+/**
+ * 按工具结果在消息中的顺序消费 PostToolUse / PostToolUseFailure 结果，生成隐藏反馈消息。
+ * 找不到对应工具结果时仍按暂存顺序追加，避免反馈丢失；每次都清空暂存。
+ * 主 Agent 与子 Agent 共用该顺序，保证反馈总排在整批工具结果之后。
+ */
+export function takeToolFeedbackMessages(
+  messages: readonly ModelMessage[],
+  pending: Map<string, HookEventResult>,
+  tracker: HookInjectionTracker,
+): ModelMessage[] {
+  const feedback: ModelMessage[] = [];
+  const emitted = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== 'tool' || !Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (part.type !== 'tool-result' || emitted.has(part.toolCallId)) continue;
+      const result = pending.get(part.toolCallId);
+      if (result === undefined) continue;
+      emitted.add(part.toolCallId);
+      feedback.push(...toolEventFeedbackMessages(result, tracker));
+    }
+  }
+  for (const [callId, result] of pending) {
+    if (!emitted.has(callId)) feedback.push(...toolEventFeedbackMessages(result, tracker));
+  }
+  pending.clear();
+  return feedback;
+}
+
 /** SessionStart 的附加上下文：成功时取 JSON additionalContext 或普通 stdout，blocking 时取理由。 */
 export function sessionStartContextMessages(
   result: HookEventResult,

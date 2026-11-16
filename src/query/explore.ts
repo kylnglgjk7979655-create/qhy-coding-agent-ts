@@ -14,6 +14,10 @@ import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.
 import { readWorkspaceFile } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
 import type { ApprovalControl } from '../tools/tool-approval.js';
+import { HookInjectionTracker, describeHookRun, evaluatePreToolUse, runHookEvent, takeToolFeedbackMessages } from '../services/hooks/hook-engine.js';
+import type { HookCommandRun, HookEventResult } from '../services/hooks/hook-engine.js';
+import type { SubagentHookScope } from '../services/hooks/hook-scope.js';
+import type { PostToolUseFailureHookInput, PostToolUseHookInput, PreToolUseHookInput } from '../services/hooks/hook-runner.js';
 
 const exploreInstructions = [
   '你是只读 Explore 调查 Agent。使用独立的新对话，只调查用户指定的工作区问题。',
@@ -33,6 +37,7 @@ export async function runExplore(
   signal?: AbortSignal,
   approvalControl?: ApprovalControl,
   skills?: SkillCatalogue,
+  hookScope?: SubagentHookScope,
 ): Promise<string> {
   signal?.throwIfAborted();
   const provider = createOpenAI({
@@ -44,8 +49,109 @@ export async function runExplore(
   // Explore 没有会话记录；只在本运行内记录已注入的 Skill 调用。
   const injectedSkillCalls = new Set<string>();
   const approvalSignal = signal ?? new AbortController().signal;
+  // Explore 作为子 Agent 沿用父级配置与引擎，但只触发工具事件；会话级事件由父轮次负责。
+  const hooksConfig = config.hooks !== undefined && !config.disableAllHooks ? config.hooks : undefined;
+  const activeHookScope = hooksConfig === undefined ? undefined : hookScope;
+  const hookInjectionTracker = hookScope?.hookInjectionTracker ?? new HookInjectionTracker();
+  const pendingToolFeedback = new Map<string, HookEventResult>();
+  const hookSignal = signal ?? new AbortController().signal;
+  const runExploreToolHook = async (
+    event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure',
+    input: PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput,
+    toolSignal: AbortSignal | undefined,
+  ): Promise<HookEventResult | undefined> => {
+    if (hooksConfig === undefined || activeHookScope === undefined) return undefined;
+    try {
+      return await runHookEvent(hooksConfig, event, input, {
+        cwd: config.workspace,
+        env: process.env,
+        signal: toolSignal ?? hookSignal,
+      });
+    } catch {
+      process.stderr.write(`[hook] ${event}: 执行失败（已忽略，不影响工具）\n`);
+      return undefined;
+    }
+  };
+  const reportHookRuns = (runs: readonly HookCommandRun[]): void => {
+    for (const run of runs) {
+      const message = describeHookRun(run);
+      if (message !== undefined) process.stderr.write(`${message}\n`);
+    }
+  };
   const registry = new ToolRegistry({
     approve: (call) => approveToolCall(config, call, approvalSignal, approvalControl, undefined, approvalHistory),
+    preToolUse: async (call, toolSignal) => {
+      if (activeHookScope === undefined) return undefined;
+      const hookInput: PreToolUseHookInput = {
+        session_id: activeHookScope.sessionId,
+        transcript_path: activeHookScope.transcriptPath,
+        cwd: config.workspace,
+        approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
+        hook_event_name: 'PreToolUse',
+        agent_id: activeHookScope.agentId,
+        agent_type: activeHookScope.agentType,
+        tool_name: call.toolName,
+        tool_input: call.input,
+        tool_use_id: call.callId,
+      };
+      const result = await runExploreToolHook('PreToolUse', hookInput, toolSignal);
+      if (result === undefined) return undefined;
+      // 改写候选按工具注册的 inputSchema 校验，与主 Agent 使用同一套聚合规则。
+      const evaluation = await evaluatePreToolUse(result, call.validateInput);
+      reportHookRuns(evaluation.runs);
+      return evaluation.decision === undefined && evaluation.updatedInput === undefined
+        ? undefined
+        : {
+          ...(evaluation.decision === undefined
+            ? {}
+            : {
+              decision: evaluation.decision.decision,
+              ...(evaluation.decision.reason === undefined ? {} : { reason: evaluation.decision.reason }),
+            }),
+          ...(evaluation.updatedInput === undefined ? {} : { updatedInput: evaluation.updatedInput }),
+        };
+    },
+    postToolUse: async (call, toolSignal) => {
+      if (activeHookScope === undefined) return;
+      const hookInput: PostToolUseHookInput = {
+        session_id: activeHookScope.sessionId,
+        transcript_path: activeHookScope.transcriptPath,
+        cwd: config.workspace,
+        approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
+        hook_event_name: 'PostToolUse',
+        agent_id: activeHookScope.agentId,
+        agent_type: activeHookScope.agentType,
+        tool_name: call.toolName,
+        tool_input: call.input,
+        tool_response: call.response,
+        tool_use_id: call.callId,
+      };
+      const result = await runExploreToolHook('PostToolUse', hookInput, toolSignal);
+      if (result === undefined) return;
+      reportHookRuns(result.runs);
+      if (result.runs.length > 0) pendingToolFeedback.set(call.callId, result);
+    },
+    postToolUseFailure: async (call, toolSignal) => {
+      if (activeHookScope === undefined) return;
+      const hookInput: PostToolUseFailureHookInput = {
+        session_id: activeHookScope.sessionId,
+        transcript_path: activeHookScope.transcriptPath,
+        cwd: config.workspace,
+        approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
+        hook_event_name: 'PostToolUseFailure',
+        agent_id: activeHookScope.agentId,
+        agent_type: activeHookScope.agentType,
+        tool_name: call.toolName,
+        tool_input: call.input,
+        error: call.error,
+        error_code: call.errorCode,
+        tool_use_id: call.callId,
+      };
+      const result = await runExploreToolHook('PostToolUseFailure', hookInput, toolSignal);
+      if (result === undefined) return;
+      reportHookRuns(result.runs);
+      if (result.runs.length > 0) pendingToolFeedback.set(call.callId, result);
+    },
   });
   const context: BuiltInToolContext = {
     config,
@@ -83,17 +189,17 @@ export async function runExplore(
     stopWhen: isStepCount(config.maxSteps),
     maxRetries: 0,
     prepareStep: async ({ messages, responseMessages }) => {
-      if (skills === undefined) {
+      // 只扫描本轮响应消息；Hook 反馈与 Skill 正文都排在工具结果之后并延续到后续步骤。
+      const toolFeedback = takeToolFeedbackMessages(messages, pendingToolFeedback, hookInjectionTracker);
+      const injections = skills === undefined
+        ? []
+        : collectSkillInjections(skills, responseMessages, injectedSkillCalls);
+      const extraMessages = [...toolFeedback, ...injections.map(({ message }) => message)];
+      if (extraMessages.length === 0) {
         approvalHistory = [...messages];
         return {};
       }
-      // 只扫描本轮响应消息；注入消息排在工具结果之后并延续到后续步骤。
-      const injections = collectSkillInjections(skills, responseMessages, injectedSkillCalls);
-      if (injections.length === 0) {
-        approvalHistory = [...messages];
-        return {};
-      }
-      const stepMessages = [...messages, ...injections.map(({ message }) => message)];
+      const stepMessages = [...messages, ...extraMessages];
       approvalHistory = stepMessages;
       return { messages: stepMessages };
     },

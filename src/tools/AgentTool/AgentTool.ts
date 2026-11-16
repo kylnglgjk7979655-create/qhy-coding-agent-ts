@@ -8,6 +8,7 @@ import type { ApprovalControl } from '../tool-approval.js';
 import type { BackgroundAgentTasks } from './background-agent-tasks.js';
 import type { WorkspaceFileSnapshot } from '../workspace-files.js';
 import type { SkillCatalogue } from '../../services/skills/skill-registry.js';
+import type { ParentHookScope } from '../../services/hooks/hook-scope.js';
 
 export function registerAgentTool(
   registry: ToolRegistry,
@@ -19,6 +20,7 @@ export function registerAgentTool(
     onCheckpointError?: (path: string) => void;
   } = {},
   skills?: SkillCatalogue,
+  hookScope?: ParentHookScope,
 ): void {
   registry.register({
     name: 'agent',
@@ -58,6 +60,9 @@ export function registerAgentTool(
               ...(approvalControl === undefined ? {} : { approvalControl }),
               ...(model === undefined ? {} : { modelOverride: model }),
               ...(skills === undefined ? {} : { skills }),
+              ...(hookScope === undefined ? {} : {
+                hookScope: { ...hookScope, agentId: execution.toolCallId, agentType: 'general-purpose' },
+              }),
             });
             return { report: result.text, usage: result.usage };
           });
@@ -76,12 +81,20 @@ export function registerAgentTool(
           ...(model === undefined ? {} : { modelOverride: model }),
           ...(execution.abortSignal === undefined ? {} : { signal: execution.abortSignal }),
           ...(skills === undefined ? {} : { skills }),
+          ...(hookScope === undefined ? {} : {
+            hookScope: { ...hookScope, agentId: execution.toolCallId, agentType: 'general-purpose' },
+          }),
         });
         return { report: result.text };
       }
       if (background === true) throw new ToolExecutionError('Explore 暂不支持后台模式。', undefined);
       if (type !== 'explore') throw new ToolExecutionError(`未知子智能体类型“${subagent_type}”；可用类型：general-purpose、Explore。`, undefined);
-      const report = await runExplore(config, description, prompt, model, execution.abortSignal, approvalControl, skills);
+      const report = await runExplore(
+        config, description, prompt, model, execution.abortSignal, approvalControl, skills,
+        hookScope === undefined
+          ? undefined
+          : { ...hookScope, agentId: execution.toolCallId, agentType: 'Explore' },
+      );
       return { report };
     },
   });
