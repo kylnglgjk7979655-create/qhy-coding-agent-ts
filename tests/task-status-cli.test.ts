@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
+import { readStoredSession } from './helpers/session-store.js';
 
 const secret = 'task-status-cli-test-key';
 const summary = '目标：压缩后附加待关注任务状态；约束：只读且不改变任务；结果：状态资料已附加；未完成事项：继续当前任务。';
@@ -46,16 +47,12 @@ function tasksDirectory(userDir: string): string {
   return join(userDir, '.qhy-coding-agents', 'sessions', conversationId, 'tasks');
 }
 
-function recordPath(userDir: string): string {
-  return join(userDir, '.qhy-coding-agents', 'sessions', conversationId, 'record.json');
-}
-
 interface SavedRecord {
   effectiveHistory: Array<{ role: string; content: unknown }>;
 }
 
 async function readRecord(userDir: string): Promise<SavedRecord> {
-  return JSON.parse(await readFile(recordPath(userDir), 'utf8')) as SavedRecord;
+  return await readStoredSession(userDir, conversationId) as SavedRecord;
 }
 
 async function waitRecord(userDir: string, predicate: (record: SavedRecord) => boolean, describe: string): Promise<SavedRecord> {

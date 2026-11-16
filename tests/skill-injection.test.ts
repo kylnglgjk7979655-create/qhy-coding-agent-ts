@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ModelMessage } from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -7,6 +7,7 @@ import type { SkillRecord } from '../src/services/skills/skill-registry.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureRequest, FixtureToolCall } from './helpers/local-openai-fixture.js';
 import { startCLI } from './helpers/cli-process.js';
+import { readStoredSession, writeLegacySession } from './helpers/session-store.js';
 import { tempDir } from './helpers/temp-dir.js';
 
 const secret = 'skill-injection-test-key';
@@ -52,7 +53,7 @@ describe('Skill 正文注入', () => {
   async function sessionRecord(userDir: string, conversationId?: string) {
     const sessions = join(userDir, '.qhy-coding-agents', 'sessions');
     const id = conversationId ?? (await readdir(sessions))[0]!;
-    const record = JSON.parse(await readFile(join(sessions, id, 'record.json'), 'utf8')) as {
+    const record = await readStoredSession(userDir, id) as {
       transcript: Array<{ role: string; content: unknown }>;
       effectiveHistory: Array<{ role: string; content: unknown }>;
     };
@@ -195,11 +196,10 @@ describe('Skill 正文注入', () => {
       expect(model.requests).toHaveLength(2);
       expect(model.summaryRequests).toHaveLength(0);
       if (legacy) {
-        const path = join(userDir, '.qhy-coding-agents', 'sessions', 'boundary', 'record.json');
-        const record = JSON.parse(await readFile(path, 'utf8'));
+        const record = await readStoredSession(userDir, 'boundary');
         // 模拟来源标记引入前保存的会话，保留真实工具调用与结果。
-        const oldRecord = JSON.stringify(record, (key, value) => key === 'providerOptions' ? undefined : value);
-        await writeFile(path, oldRecord);
+        const oldRecord = JSON.parse(JSON.stringify(record, (key, value) => key === 'providerOptions' ? undefined : value));
+        await writeLegacySession(userDir, oldRecord as Parameters<typeof writeLegacySession>[1]);
       }
       const resumed = startCLI({ cwd, userDir, conversationId: 'boundary', input: `${'新'.repeat(2000)}\n/exit\n`, env: { TEST_MODEL_API_KEY: secret } });
       const result = await resumed.done;

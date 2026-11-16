@@ -8,7 +8,7 @@ import type { ModelMessage } from 'ai';
 import { runAgent } from './query/agent.js';
 import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession, type BackgroundTaskStatusEntry } from './tools/AgentTool/background-agent-tasks.js';
 import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
-import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, saveManualCompaction, sessionRecordPath, sessionTaskOutputDirectory, startSessionRound } from './services/session/conversations.js';
+import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, saveManualCompaction, sessionRecordPath, sessionTaskOutputDirectory, startSessionRound, type SessionLoadWarning } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
 import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './services/session/file-checkpoints.js';
 import type { FileRewindPlan } from './services/session/file-checkpoints.js';
@@ -59,6 +59,11 @@ function formatUserError(error: unknown): string {
 function reportCheckpointWarning(event: string, message: string, details: Record<string, unknown>): void {
   if (isInteractiveTerminal()) process.stdout.write(`\n警告：${message}\n`);
   else log({ event, ...details, message });
+}
+
+/** 会话记录尾部不完整或快照无效时提示用户；恢复本身继续进行。 */
+function reportSessionWarning(conversationId: string, warning: SessionLoadWarning): void {
+  reportCheckpointWarning(`session.${warning.code}`, warning.message, { conversationId });
 }
 
 async function main(): Promise<void> {
@@ -115,7 +120,7 @@ async function main(): Promise<void> {
     let legacyHistory: ModelMessage[] | undefined;
     if (!smokeTool && args.values['conversation-id'] !== undefined) {
       try {
-        session = await loadSession(userHome, conversationId);
+        session = await loadSession(userHome, conversationId, { onWarning: (warning) => reportSessionWarning(conversationId, warning) });
         config = await restoreSessionConfig(session.config, process.env);
       } catch (error) {
         if (!(error instanceof Error) || !error.message.startsWith('会话记录不存在：')) throw error;
@@ -203,7 +208,9 @@ async function main(): Promise<void> {
     // 失败或取消的轮次可能已保存压缩检查点；内存历史需与磁盘一致，避免覆盖边界与摘要基数错位。
     const syncHistoryFromSession = async (): Promise<void> => {
       try {
-        const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
+        const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId, {
+          onWarning: (warning) => reportSessionWarning(conversationId, warning),
+        }));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
       } catch {
@@ -700,7 +707,7 @@ async function resumeSession(userHome: string, id: string): Promise<{
   recoveredRoundIds: string[];
   recentFiles: string[];
 }> {
-  const session = await loadSession(userHome, id);
+  const session = await loadSession(userHome, id, { onWarning: (warning) => reportSessionWarning(id, warning) });
   const config = await restoreSessionConfig(session.config, process.env);
   const recovered = reconstructSessionHistory(session);
   return { config, conversationId: id, ...recovered, recentFiles: session.recentFiles };

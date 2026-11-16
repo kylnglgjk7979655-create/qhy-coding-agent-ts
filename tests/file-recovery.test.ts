@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
+import { readStoredSession } from './helpers/session-store.js';
 
 const secret = 'file-recovery-test-key';
 const summary = '目标：压缩后恢复最近读取文件；约束：保留最近顺序；结果：候选开头已附加；未完成事项：人工 QA。';
@@ -52,17 +53,13 @@ async function setup(
   return { cwd, userDir, model };
 }
 
-function recordPath(userDir: string): string {
-  return join(userDir, '.qhy-coding-agents', 'sessions', 'recover', 'record.json');
-}
-
 interface SavedRecord {
   effectiveHistory: Array<{ role: string; content: unknown }>;
   recentFiles: string[];
 }
 
 async function readRecord(userDir: string): Promise<SavedRecord> {
-  return JSON.parse(await readFile(recordPath(userDir), 'utf8')) as SavedRecord;
+  return await readStoredSession(userDir, 'recover') as SavedRecord;
 }
 
 function recoveryContent(record: SavedRecord): string | undefined {

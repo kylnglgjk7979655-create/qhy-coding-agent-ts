@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
+import { readStoredSession, writeLegacySession } from './helpers/session-store.js';
 
 const secret = 'summary-retention-test-key';
 let roots: string[] = [];
@@ -53,12 +54,7 @@ it('跨进程复用已保存摘要，保留摘要覆盖的完整 transcript 和�
 
   const [conversationId] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
   expect(conversationId).toBeTruthy();
-  const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', conversationId!, 'record.json');
-  const saved = JSON.parse(await readFile(recordPath, 'utf8')) as {
-    transcript: Array<{ role: string; content: unknown }>;
-    effectiveHistory: unknown[];
-    summaries: Array<{ text: string; coversThrough: number }>;
-  };
+  const saved = await readStoredSession(userDir, conversationId!);
 
   for (const prompt of prompts) expect(JSON.stringify(saved.transcript)).toContain(prompt);
   expect(saved.summaries).toEqual([{
@@ -80,7 +76,7 @@ it('跨进程复用已保存摘要，保留摘要覆盖的完整 transcript 和�
   expect(resumedRequest.messages
     .filter(({ role, content }) => role === 'user' && !content.includes('[对话摘要]'))
     .map(({ content }) => content)).toEqual([prompts[4]!, '重启后续聊']);
-  const afterResume = JSON.parse(await readFile(recordPath, 'utf8')) as typeof saved;
+  const afterResume = await readStoredSession(userDir, conversationId!);
   expect(afterResume.summaries).toEqual(saved.summaries);
 });
 
@@ -105,14 +101,13 @@ it('压缩检查点覆盖更早的中断轮次，重启后不重复回放已覆�
   expect((await cli.done).code).toBe(0);
 
   // 构造会话记录：更早的中断轮次已进入后续轮次的压缩检查点，但该轮自身没有 compactedThrough。
-  const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', 'replay', 'record.json');
-  const record = JSON.parse(await readFile(recordPath, 'utf8')) as Record<string, unknown>;
+  const record = await readStoredSession(userDir, 'replay');
   const transcript = [
     { role: 'user', content: '已覆盖旧轮用户_MARKER' },
     { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'covered-call', toolName: 'read_file', input: { path: 'a.txt' } }] },
     { role: 'tool', content: [{ type: 'tool-result', toolCallId: 'covered-call', toolName: 'read_file', output: { is_error: false, output: { content: 'X' } } }] },
   ];
-  await writeFile(recordPath, JSON.stringify({
+  await writeLegacySession(userDir, {
     ...record,
     title: '复述检查',
     transcript,
@@ -125,7 +120,7 @@ it('压缩检查点覆盖更早的中断轮次，重启后不重复回放已覆�
       { id: 'covered-round', status: 'running', startedAt: new Date().toISOString(), transcriptStart: 0, messages: transcript },
       { id: 'checkpoint-round', status: 'failed', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), transcriptStart: 3, compactedThrough: 3, error: { code: 'PROVIDER_ERROR', message: '摘要后失败' } },
     ],
-  }));
+  } as unknown as Parameters<typeof writeLegacySession>[1]);
 
   const resumed = startCLI({ cwd, userDir, conversationId: 'replay', input: '重启续聊\n/exit\n', env: { TEST_MODEL_API_KEY: secret } });
   expect((await resumed.done).code).toBe(0);
@@ -133,7 +128,7 @@ it('压缩检查点覆盖更早的中断轮次，重启后不重复回放已覆�
   expect(JSON.stringify(request)).toContain('检查点摘要_MARKER');
   // 检查点已覆盖更早的中断轮次；重启后不得在摘要之上重复回放其原文。
   expect(JSON.stringify(request)).not.toContain('已覆盖旧轮用户_MARKER');
-  const after = JSON.parse(await readFile(recordPath, 'utf8')) as { rounds: Array<{ id: string; recovered?: boolean }> };
+  const after = await readStoredSession(userDir, 'replay');
   expect(after.rounds.find(({ id }) => id === 'covered-round')?.recovered).toBe(true);
 });
 
@@ -163,10 +158,7 @@ it('迁移旧版工作区历史时将摘要原文纳入新会话 transcript', as
   const cli = startCLI({ cwd, userDir, conversationId: 'legacy-summary', input: '迁移后的新需求\n/exit\n', env: { TEST_MODEL_API_KEY: secret } });
   expect((await cli.done).code).toBe(0);
   expect(model.summaryRequests).toHaveLength(1);
-  const record = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', 'legacy-summary', 'record.json'), 'utf8')) as {
-    transcript: unknown[];
-    summaries: Array<{ text: string; coversThrough: number }>;
-  };
+  const record = await readStoredSession(userDir, 'legacy-summary');
   expect(record.transcript.slice(0, 2)).toEqual(legacyHistory);
   expect(JSON.stringify(record.transcript)).toContain('旧版对话原文_MARKER');
   expect(record.summaries[0]?.coversThrough).toBe(3);
@@ -200,11 +192,7 @@ it('摘要压缩校验失败时保留完整 transcript 且不保存无效摘要'
   expect(result.stdout + result.stderr).toContain('CONTEXT_ERROR');
   expect(model.summaryRequests).toHaveLength(1);
   expect(model.requests).toEqual([]);
-  const record = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', 'budget-summary', 'record.json'), 'utf8')) as {
-    transcript: unknown[];
-    effectiveHistory: unknown[];
-    summaries: Array<{ text: string; coversThrough: number }>;
-  };
+  const record = await readStoredSession(userDir, 'budget-summary');
   expect(record.transcript.slice(0, 2)).toEqual(legacyHistory);
   expect(record.effectiveHistory).toEqual(legacyHistory);
   expect(JSON.stringify(record.transcript)).toContain('预算失败时仍须保留的原文_MARKER');
