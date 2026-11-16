@@ -47,6 +47,15 @@ export interface PreToolUseHookInput extends HookInput {
   tool_use_id: string;
 }
 
+/** 成功工具调用之后的输入；tool_response 与返回给模型的成功信封一致。 */
+export interface PostToolUseHookInput extends HookInput {
+  hook_event_name: 'PostToolUse';
+  tool_name: string;
+  tool_input: unknown;
+  tool_response: { is_error: false; output: unknown };
+  tool_use_id: string;
+}
+
 /** v1 stdout JSON 字段；未知字段忽略，已知字段类型不符按无效 JSON 处理。 */
 const hookOutputSchema = z.object({
   continue: z.boolean().optional(),

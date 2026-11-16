@@ -425,7 +425,7 @@ async function main(): Promise<void> {
         ].join('\n');
         try {
           activeRound = new AbortController();
-          history = await runTurn(notificationPrompt, config, skills, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
+          history = await runTurn(notificationPrompt, config, skills, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses, [], hookInjectionTracker);
           const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
           history = recovered.history;
           recoveredRoundIds = recovered.recoveredRoundIds;
@@ -582,7 +582,7 @@ async function main(): Promise<void> {
           if (process.stdin.isTTY) input.prompt();
           continue;
         }
-        history = await runTurn(prompt, config, skills, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses, submitted.context);
+        history = await runTurn(prompt, config, skills, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses, submitted.context, hookInjectionTracker);
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
@@ -686,6 +686,7 @@ async function runTurn(
   recentFiles: RecentFileTracker = new RecentFileTracker(),
   getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[],
   promptContext: ModelMessage[] = [],
+  hookInjectionTracker?: HookInjectionTracker,
 ): Promise<ModelMessage[]> {
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
@@ -732,6 +733,7 @@ async function runTurn(
         process.stdout.write(chunk);
       },
       ...(!smokeTool ? { transcriptPath: sessionRecordPath(userHome, conversationId), sessionId: conversationId } : {}),
+      ...(hookInjectionTracker === undefined ? {} : { hookInjectionTracker }),
       onFileRead: (target) => recentFiles.record(target),
       getRecentFiles: () => recentFiles.list(),
       ...(getTaskStatuses ? { getTaskStatuses } : {}),

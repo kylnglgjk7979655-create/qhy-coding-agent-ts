@@ -139,6 +139,14 @@ export class ToolRegistry {
       /** 按该工具注册的 inputSchema 校验 PreToolUse 候选输入。 */
       validateInput: (value: unknown) => Promise<boolean>;
     }, signal?: AbortSignal) => Promise<ToolPreToolUseDecision | undefined>;
+    /** execute 成功后运行；回调失败只写 stderr，不改变工具结果或错误码。 */
+    postToolUse?: (call: {
+      callId: string;
+      toolName: string;
+      input: unknown;
+      /** 与返回给模型的工具成功信封一致。 */
+      response: { is_error: false; output: unknown };
+    }, signal?: AbortSignal) => Promise<void> | void;
     approve?: (call: ToolApprovalRequest, signal?: AbortSignal) => Promise<boolean>;
   }) {}
 
@@ -240,8 +248,22 @@ export class ToolRegistry {
           this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'started' });
           try {
             const output = await execute(prepared.input, execution);
+            const response = { is_error: false as const, output };
             this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'succeeded' });
-            return { is_error: false as const, output };
+            // 反馈只作为后续模型请求的附加上下文；Hook 故障不能改变已成功的结果。
+            try {
+              await this.options.postToolUse?.({
+                callId: execution.toolCallId,
+                toolName: name,
+                input: prepared.input,
+                response,
+              }, execution.abortSignal);
+            } catch {
+              if (!execution.abortSignal?.aborted) {
+                process.stderr.write('[hook] PostToolUse: 执行失败（已忽略，不影响工具）\n');
+              }
+            }
+            return response;
           } catch (error) {
             execution.abortSignal?.throwIfAborted();
             const message = error instanceof Error ? error.message : '工具执行失败。';
