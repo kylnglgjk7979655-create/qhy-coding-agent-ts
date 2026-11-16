@@ -2,7 +2,7 @@ import { mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promi
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runAgent } from '../src/query/agent.js';
-import type { ResolvedConfig } from '../src/services/settings/config.js';
+import { DEFAULT_SANDBOX, type ResolvedConfig } from '../src/services/settings/config.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import { tempDir } from './helpers/temp-dir.js';
 
@@ -40,6 +40,7 @@ describe('公共工具执行边界', () => {
         allow: ['Read(nested*)'],
         ask: ['Read(nested.txt)'],
         deny: ['Read(secret.txt)'],
+        sandbox: DEFAULT_SANDBOX,
       },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
@@ -136,7 +137,7 @@ describe('公共工具执行边界', () => {
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
       approval: { mode: 'default', rules: [], timeoutMs: 30_000 },
-      permissions: { allow: [], ask: [], deny: ['Write(external-dir/denied.txt)'] },
+      permissions: { allow: [], ask: [], deny: ['Write(external-dir/denied.txt)'], sandbox: DEFAULT_SANDBOX },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -206,6 +207,7 @@ describe('公共工具执行边界', () => {
         allow: [`Read(${join(workspace, 'nested', 'data?.txt')})`],
         ask: ['Read(deep/**/secret.txt)'],
         deny: [],
+        sandbox: DEFAULT_SANDBOX,
       },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
@@ -451,7 +453,7 @@ describe('公共工具执行边界', () => {
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
       approval: { mode: 'default', timeoutMs: 1000, humanTimeoutMs: 500 },
-      permissions: { allow: [], ask: ['Read'], deny: [] },
+      permissions: { allow: [], ask: ['Read'], deny: [], sandbox: DEFAULT_SANDBOX },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 100, maxSteps: 5,
     };

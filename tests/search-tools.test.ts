@@ -2,7 +2,7 @@ import { mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { basename, join, relative } from 'node:path';
 import { expect, it } from 'vitest';
 import { runAgent } from '../src/query/agent.js';
-import type { ResolvedConfig } from '../src/services/settings/config.js';
+import { DEFAULT_SANDBOX, type ResolvedConfig } from '../src/services/settings/config.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import { tempDir } from './helpers/temp-dir.js';
 
@@ -138,7 +138,7 @@ it('Glob 与 Grep 按各自权限范围剪枝并汇总审批', async () => {
       permissions: { allow: ['Read'], ask: ['Grep(needs-review.txt)', 'Grep(review-zone)'], deny: [
         'Read(private)', 'Glob(private)', 'Grep(private)', 'Grep(private/secret.txt)',
         'Glob(private/secret.txt)',
-      ] },
+      ], sandbox: DEFAULT_SANDBOX },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
     };
@@ -188,7 +188,7 @@ it('搜索审批后新增的 ask 范围不会被未覆盖的先前批准放行',
     closeFixture = fixture.close;
     const config: ResolvedConfig = {
       approval: { mode: 'default', rules: [], timeoutMs: 30_000 },
-      permissions: { allow: [], ask: ['Grep(reviewed.txt)', 'Grep(new-review.txt)'], deny: [] },
+      permissions: { allow: [], ask: ['Grep(reviewed.txt)', 'Grep(new-review.txt)'], deny: [], sandbox: DEFAULT_SANDBOX },
       provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 4,
     };

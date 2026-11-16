@@ -47,10 +47,134 @@ describe('configuration', () => {
     expect(config.model).toBe('local-model');
     expect(config.workspace).toBe(project);
     expect(config.approval.mode).toBe('default');
-    expect(config.permissions).toEqual({
+    expect(config.permissions).toMatchObject({
       allow: ['Read', 'Write', 'Glob'], ask: ['Write', 'Bash(npm test)'], deny: ['Bash(rm:*)'],
+      sandbox: { enabled: false, onUnavailable: 'open', networkPorts: [443] },
     });
     expect(config.mcp?.servers).toEqual([{ name: 'project', url: 'https://project.example/mcp', headers: {} }]);
+  });
+
+  it('沙箱配置默认关闭，并具有稳定的放行策略、端口与空数组默认值', () => {
+    const expected = {
+      enabled: false,
+      onUnavailable: 'open',
+      writePaths: [],
+      writeDenyPaths: [],
+      readDenyPaths: [],
+      readAllowPaths: [],
+      networkAllow: [],
+      networkPorts: [443],
+      envPassthrough: [],
+      bypassAllowedCommands: [],
+    };
+    expect(configSchema.parse({}).permissions.sandbox).toEqual(expected);
+    expect(configSchema.parse({ permissions: {} }).permissions.sandbox).toEqual(expected);
+  });
+
+  it('接受沙箱合法枚举、端口与追加数组', () => {
+    const sandbox = configSchema.parse({
+      permissions: {
+        sandbox: {
+          enabled: true,
+          onUnavailable: 'closed',
+          writePaths: ['/data'],
+          writeDenyPaths: ['/data/secret'],
+          readDenyPaths: ['/home/.ssh'],
+          readAllowPaths: ['/home/.ssh/authorized_keys'],
+          networkAllow: ['registry.npmjs.org', '*.example.com'],
+          networkPorts: [443, 8443],
+          envPassthrough: ['NPM_TOKEN'],
+          bypassAllowedCommands: ['git push:*', 'npm test'],
+        },
+      },
+    }).permissions.sandbox;
+
+    expect(sandbox).toMatchObject({
+      enabled: true,
+      onUnavailable: 'closed',
+      writePaths: ['/data'],
+      writeDenyPaths: ['/data/secret'],
+      readDenyPaths: ['/home/.ssh'],
+      readAllowPaths: ['/home/.ssh/authorized_keys'],
+      networkAllow: ['registry.npmjs.org', '*.example.com'],
+      networkPorts: [443, 8443],
+      envPassthrough: ['NPM_TOKEN'],
+      bypassAllowedCommands: ['git push:*', 'npm test'],
+    });
+  });
+
+  it.each([
+    ['未知字段', { permissions: { sandbox: { unknown: true } } }],
+    ['onUnavailable 非法', { permissions: { sandbox: { onUnavailable: 'maybe' } } }],
+    ['enabled 非布尔值', { permissions: { sandbox: { enabled: 'true' } } }],
+    ['networkPorts 端口为零', { permissions: { sandbox: { networkPorts: [0] } } }],
+    ['networkPorts 超出范围', { permissions: { sandbox: { networkPorts: [65_536] } } }],
+    ['networkPorts 非整数', { permissions: { sandbox: { networkPorts: [443.5] } } }],
+    ['networkPorts 为字符串', { permissions: { sandbox: { networkPorts: ['443'] } } }],
+  ])('拒绝非法沙箱配置：%s', (_label, raw) => {
+    expect(configSchema.safeParse(raw).success).toBe(false);
+  });
+
+  it('三层沙箱配置标量由高层覆盖，数组取并集去重且不能被高层削弱', async () => {
+    const home = join(cwd, 'sandbox-home');
+    const project = join(cwd, 'sandbox-project');
+    await mkdir(join(home, '.agent'), { recursive: true });
+    await mkdir(join(project, '.agent'), { recursive: true });
+    await writeFile(join(home, '.agent', 'settings.json'), JSON.stringify({
+      permissions: {
+        sandbox: {
+          enabled: true,
+          onUnavailable: 'closed',
+          writePaths: ['/data/shared', '/data/user'],
+          readDenyPaths: ['/home/.ssh'],
+          networkAllow: ['registry.npmjs.org'],
+          networkPorts: [443, 8443],
+          envPassthrough: ['NPM_TOKEN'],
+          bypassAllowedCommands: ['git push:*'],
+        },
+      },
+    }));
+    await writeFile(join(project, '.agent', 'settings.json'), JSON.stringify({
+      permissions: {
+        sandbox: {
+          enabled: false,
+          onUnavailable: 'open',
+          writePaths: ['/data/user', '/data/project'],
+          readDenyPaths: [],
+          readAllowPaths: ['/home/.ssh/authorized_keys'],
+          networkAllow: ['github.com'],
+          networkPorts: [443, 8080],
+          bypassAllowedCommands: ['npm test'],
+        },
+      },
+    }));
+    await writeFile(join(project, '.agent', 'settings.local.json'), JSON.stringify({
+      permissions: {
+        sandbox: {
+          enabled: true,
+          writeDenyPaths: ['/data/project/.git/hooks'],
+          readAllowPaths: ['/home/.ssh/authorized_keys', '/home/.ssh/public'],
+          envPassthrough: ['NPM_TOKEN', 'CUSTOM_TOKEN'],
+        },
+      },
+    }));
+
+    const config = await loadConfig({
+      cwd: project, home, env: { HOME: home, USERPROFILE: home, OPENAI_API_KEY: 'key' },
+    });
+
+    expect(config.permissions.sandbox).toEqual({
+      enabled: true,
+      onUnavailable: 'open',
+      writePaths: ['/data/shared', '/data/user', '/data/project'],
+      writeDenyPaths: ['/data/project/.git/hooks'],
+      readDenyPaths: ['/home/.ssh'],
+      readAllowPaths: ['/home/.ssh/authorized_keys', '/home/.ssh/public'],
+      networkAllow: ['registry.npmjs.org', 'github.com'],
+      networkPorts: [443, 8443, 8080],
+      envPassthrough: ['NPM_TOKEN', 'CUSTOM_TOKEN'],
+      bypassAllowedCommands: ['git push:*', 'npm test'],
+    });
   });
 
   it('命令行工作区覆盖用户级工作区，且不向父目录发现项目 settings', async () => {

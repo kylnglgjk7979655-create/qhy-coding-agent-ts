@@ -5,6 +5,28 @@ import { isWithinWorkspace } from '../workspace-files.js';
 import { ToolExecutionError } from '../tool-registry.js';
 import { analyzeBashCommand } from './bash-policy.js';
 
+export interface BashRunResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  signal: string | null;
+  truncated: boolean;
+  /** 本次调用是否在操作系统沙箱内执行；沙箱关闭或不可用时为 false。 */
+  sandboxed: boolean;
+  /** 需要向模型说明的执行状态；例如沙箱不可用时明确标注“未隔离执行”。 */
+  notice?: string;
+}
+
+export interface BashProcessOptions {
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  sandboxed: boolean;
+  /** 无法启动子进程时的提示；宿主与沙箱使用不同措辞。 */
+  startFailureMessage?: string;
+}
+
 export async function prepareBashInput<Input extends { command: string; cwd?: string | undefined }>(workspace: string, input: Input) {
   try {
     const requestedCwd = input.cwd ?? '.';
@@ -28,7 +50,26 @@ export async function verifyBashWorkingDirectory(workspace: string, requestedCwd
   }
 }
 
-export async function runHostBash(command: string, cwd: string, signal?: AbortSignal, timeoutMs = 30_000) {
+/** 宿主 Bash 沿用当前用户环境启动独立 shell；结果显式标记未隔离。 */
+export async function runHostBash(command: string, cwd: string, signal?: AbortSignal, timeoutMs = 30_000): Promise<BashRunResult> {
+  return runBashProcess('bash', ['--noprofile', '--norc', '-c', command], {
+    cwd,
+    sandboxed: false,
+    ...(signal === undefined ? {} : { signal }),
+    timeoutMs,
+  });
+}
+
+/**
+ * 启动一次 Bash 子进程并收集受限输出；宿主与沙箱执行共用进程组、超时和取消语义。
+ * 调用方负责在审批后确认 cwd 未变化。
+ */
+export async function runBashProcess(
+  file: string,
+  args: string[],
+  options: BashProcessOptions,
+): Promise<BashRunResult> {
+  const { cwd, env, signal, timeoutMs = 30_000, sandboxed } = options;
   signal?.throwIfAborted();
   if (process.platform === 'win32') throw new Error('宿主 Bash 需要支持 POSIX 进程组的系统。');
   try {
@@ -38,9 +79,10 @@ export async function runHostBash(command: string, cwd: string, signal?: AbortSi
     throw new Error('Bash 工作目录在审批后不可用或发生变化，请重新提交调用。');
   }
   signal?.throwIfAborted();
-  return new Promise<{ stdout: string; stderr: string; exitCode: number | null; signal: string | null; truncated: boolean }>((resolve, reject) => {
-    const child = spawn('bash', ['--noprofile', '--norc', '-c', command], {
+  return new Promise<BashRunResult>((resolve, reject) => {
+    const child = spawn(file, args, {
       cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      ...(env === undefined ? {} : { env }),
     });
     const terminate = (): void => {
       if (child.pid === undefined) return;
@@ -68,12 +110,16 @@ export async function runHostBash(command: string, cwd: string, signal?: AbortSi
     child.once('close', (exitCode, exitSignal) => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', terminate);
-      const result = { stdout: outputText(stdout), stderr: outputText(stderr), exitCode, signal: exitSignal, truncated };
+      const result: BashRunResult = {
+        stdout: outputText(stdout), stderr: outputText(stderr), exitCode, signal: exitSignal, truncated, sandboxed,
+      };
       if (signal?.aborted) reject(signal.reason);
       else if (timedOut) reject(new ToolExecutionError('Bash 命令执行超时。', result));
-      else if (startFailed) reject(new ToolExecutionError('无法启动 Bash 命令。', result));
+      else if (startFailed) reject(new ToolExecutionError(options.startFailureMessage ?? '无法启动 Bash 命令。', result));
       else if (exitCode === 0) resolve(result);
-      else reject(new ToolExecutionError('Bash 命令执行失败。', result));
+      else if (sandboxed && /operation not permitted/iu.test(result.stderr)) {
+        reject(new ToolExecutionError('Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。', result));
+      } else reject(new ToolExecutionError('Bash 命令执行失败。', result));
     });
   });
 }

@@ -1,8 +1,8 @@
 # qhy-coding-agent-ts
 
-基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `read_file`、`write_file`、`runtimeInfo` 和 `Bash`，可读取工作区文件，并在工具策略允许或所选审批通过后修改文件、运行宿主命令。审批默认由独立模型完成，也可切换人工模式。会话记录保存在用户目录 `~/.qhy-coding-agents/sessions/`，支持用 conversation ID 跨进程继续对话。
+基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `read_file`、`write_file`、`runtimeInfo` 和 `Bash`，可读取工作区文件，并在工具策略允许或所选审批通过后修改文件、运行命令。Bash 可在 macOS Seatbelt 沙箱内执行；沙箱默认关闭，v1 仅支持 macOS，其他平台按不可用处理。审批默认由独立模型完成，也可切换人工模式。会话记录保存在用户目录 `~/.qhy-coding-agents/sessions/`，支持用 conversation ID 跨进程继续对话。
 
-通过 `ToolLoopAgent.stream()` 运行工具循环，每个对话轮次使用独立的 `maxSteps` 限制，默认 20 步。Agent 可通过 Bash 运行项目测试，文件工具与 Bash 共用策略、审批、串行执行和结果路径。
+通过 `ToolLoopAgent.stream()` 运行工具循环，每个对话轮次使用独立的 `maxSteps` 限制，默认 20 步。Agent 可通过 Bash 运行项目测试，文件工具与 Bash 共用策略、审批、串行执行和结果路径；启用沙箱后，Bash 的读写与网络还受沙箱计划和本机网络代理约束。
 
 ## 项目结构
 
@@ -15,10 +15,11 @@ src/
 │   ├── api/               # 模型通信
 │   ├── compact/           # 上下文摘要
 │   ├── mcp/               # 远端 MCP 连接
+│   ├── sandbox/           # 沙箱计划、平台探测与本机网络代理
 │   ├── session/           # 会话、锁和文件检查点
 │   └── settings/          # 配置加载
 ├── tools/
-│   ├── BashTool/          # 宿主命令执行
+│   ├── BashTool/          # Bash、沙箱执行与豁免展示
 │   ├── FileReadTool/      # 文件读取
 │   ├── FileWriteTool/     # 文件写入
 │   ├── GlobTool/          # 文件路径搜索
@@ -90,7 +91,7 @@ pnpm dev --workspace ./demo
 
 ## 模型及运行配置
 
-配置由用户级 `~/.agent/settings.json`、项目级 `<工作区>/.agent/settings.json` 和项目本地 `<工作区>/.agent/settings.local.json` 按此顺序合并；更具体的字段覆盖同名字段，权限列表跨层合并去重，其他数组整体替换。项目本地文件已加入 Git 忽略规则。工作区依次由 `--workspace`、用户级设置和启动目录确定；项目设置不能重定向工作区，也不会向父目录逐级发现。仓库示例位于 `demo/.agent/settings.json`，启动示例使用 `--workspace ./demo`。发现旧的 `agent.config.json` 时会提示迁移，但不会加载该文件。
+配置由用户级 `~/.agent/settings.json`、项目级 `<工作区>/.agent/settings.json` 和项目本地 `<工作区>/.agent/settings.local.json` 按此顺序合并；更具体的字段覆盖同名字段，权限列表与 `permissions.sandbox` 的数组字段跨层合并去重，其他数组整体替换。项目本地文件已加入 Git 忽略规则。工作区依次由 `--workspace`、用户级设置和启动目录确定；项目设置不能重定向工作区，也不会向父目录逐级发现。仓库示例位于 `demo/.agent/settings.json`，启动示例使用 `--workspace ./demo`。发现旧的 `agent.config.json` 时会提示迁移，但不会加载该文件。
 
 ```json
 {
@@ -124,7 +125,7 @@ pnpm dev --workspace ./demo
 
 自定义 `baseURL` 的服务必须兼容 OpenAI Chat Completions 及函数调用；仅能返回文本不足以认定工具兼容。缺少 settings 时，内置默认值使用 OpenAI 地址、`gpt-4.1-mini-2025-04-14` 和 `OPENAI_API_KEY`。
 
-2026-11-03 的基础版本曾通过方舟真实模型和 `runtimeInfo` 工具验收，详见 [历史验收记录](docs/verification.md)。当前工具权限、Bash、基础 MCP 与摘要的离线验收入口见 [本地 QA 指南](docs/qa-tool-capabilities.md)；早期交互式文件工具的验收项目保留在 [QA 清单](.scratch/interactive-cli-file-tools/qa-checklist.md)。
+2026-11-03 的基础版本曾通过方舟真实模型和 `runtimeInfo` 工具验收，详见 [历史验收记录](docs/verification.md)。当前工具权限、Bash、基础 MCP 与摘要的离线验收入口见 [本地 QA 指南](docs/qa-tool-capabilities.md)；其中 [macOS Bash 沙箱人工验收清单](docs/qa-tool-capabilities.md#macos-bash-沙箱人工验收) 仍待人工执行。早期交互式文件工具的验收项目保留在 [QA 清单](.scratch/interactive-cli-file-tools/qa-checklist.md)。
 
 ## 长对话与历史替换
 
@@ -163,19 +164,63 @@ pnpm dev --workspace ./demo
 | `read_file` | 接收 `path`，按权限规则读取文本文件并将内容返回给 Agent |
 | `write_file` | 接收 `path` 和 `content`，完整替换目标文件；文件不存在时创建，不自动创建父目录 |
 | `runtimeInfo` | 返回工作区绝对路径和本轮运行探针 |
-| `Bash` | 接收 `command` 和可选 `cwd`，从工作区默认目录或经审批的其他目录运行独立宿主 Bash |
+| `Bash` | 接收 `command`、可选 `cwd` 和 `disableSandbox`，在沙箱可用时从工作区默认目录或经审批的其他目录运行沙箱内独立 shell；沙箱关闭、不可用按 fail-open 回退或豁免获准时以宿主方式执行 |
 
-相对路径从配置的工作区解析。`read_file` 和 `write_file` 可按权限规则或逐次审批访问工作区外的目标；工作区外读取默认需要审批，写入默认进入当前审批策略。符号链接按解析后的实际目标匹配权限。`glob` 和 `grep` 默认搜索工作区，指定工作区外搜索根时需要审批；权限规则可对搜索范围分别允许、要求审批或拒绝。工具权限是应用层策略，不是操作系统沙箱；宿主 Bash 和 MCP 等外部副作用不受内置文件工具边界约束。审批通过不会自动回滚已经发生的副作用。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
+相对路径从配置的工作区解析。`read_file` 和 `write_file` 可按权限规则或逐次审批访问工作区外的目标；工作区外读取默认需要审批，写入默认进入当前审批策略。符号链接按解析后的实际目标匹配权限。`glob` 和 `grep` 默认搜索工作区，指定工作区外搜索根时需要审批；权限规则可对搜索范围分别允许、要求审批或拒绝。工具权限始终是应用层策略，不能替代隔离：启用沙箱后，Bash 命令的读写与网络限制来自沙箱计划和本机代理；沙箱关闭、不可用按 fail-open 回退或豁免获准时，Bash 以宿主当前用户权限执行，可访问工作区外资源。远程 MCP 不受 Bash 沙箱约束。审批通过不会自动回滚已经发生的副作用。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
 
 终端实时显示 `[工具] read_file：开始`、`[工具] read_file：成功`、`[工具] read_file：失败` 或 `[工具] read_file：拒绝` 等执行状态，不直接打印工具参数、文件内容或原始异常。一次调用只显示一个终结状态；普通调用失败后，同批后续调用仍会执行，Agent 会收到各次工具结果并决定如何继续。Agent 的最终回答可以按用户要求引用文件内容。
 
-## 宿主 Bash
+## Bash 与操作系统沙箱
 
-宿主 Bash 在支持 POSIX 进程组的系统（Linux/macOS）上使用 PATH 中的 `bash`，以 CLI 当前用户权限执行。它不提供操作系统沙箱、文件系统隔离或网络隔离。`cwd` 只限制启动位置，命令仍可能访问工作区外的资源；内置文件工具的工作区边界继续有效。
+Bash 在支持 POSIX 进程组的系统（Linux/macOS）上使用 PATH 中的 `bash`，每次调用启动独立 shell。沙箱 v1 只支持 macOS Seatbelt：`permissions.sandbox.enabled` 默认 `false`；启用后，程序在每个 CLI 进程内探测一次 `sandbox-exec` 能否执行最小 profile 并缓存结果，只有探测成功才进入沙箱。Linux、Windows 及其他平台没有沙箱实现，按“沙箱不可用”处理，不能声称具备操作系统隔离。
 
-`command` 必须为非空命令。省略 `cwd` 时从配置工作区启动；相对 `cwd` 从工作区解析。审批前解析实际目录并检查其可用；工作区外目录以及指向外部位置的符号链接都要求逐次审批。人工审批展示原始完整参数和实际启动目录；启动前再次核验该目录，变化或不可用时拒绝执行并要求重新提交。Bash 权限规则匹配命令，不会单独放行工作区外的启动目录。
+启用沙箱时，可在 settings 中使用以下配置：
 
-每次调用使用独立 shell，继承 CLI 环境，不保留上次调用的 `cd`、环境修改或其他 shell 状态；不接受 `env` 或其他模型自定义环境参数。Bash 默认进入所选审批，固定规则使用精确工具名称 `Bash`。等待或拒绝期间不会启动命令。
+```json
+{
+  "permissions": {
+    "sandbox": {
+      "enabled": true,
+      "onUnavailable": "closed",
+      "writePaths": ["~/scratch"],
+      "writeDenyPaths": ["~/scratch/protected.txt"],
+      "readDenyPaths": ["~/private"],
+      "readAllowPaths": ["~/private/readable.txt"],
+      "networkAllow": ["registry.npmjs.org", "*.example.com"],
+      "networkPorts": [443],
+      "envPassthrough": ["CI"],
+      "bypassAllowedCommands": ["npm test", "git push:*"]
+    }
+  }
+}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `enabled` | 默认 `false`；设为 `true` 后，沙箱可用时 Bash 默认在沙箱内执行 |
+| `onUnavailable` | 默认 `open`；沙箱不可用时 `open` 以宿主方式执行并在结果与审批中标注未隔离，`closed` 在启动命令前拒绝执行并返回 `TOOL_EXECUTION_ERROR` |
+| `writePaths` | 追加可写路径；相对路径从工作区解析，`~` 表示家目录，配置目录会放开其子树。工作区、`$TMPDIR`（存在时）和每次调用的临时目录始终可写 |
+| `writeDenyPaths` | 在写允许之后生效的拒绝路径；即使目标位于工作区或 `writePaths` 中也会拒绝，目标尚不存在时仍保留拒绝 |
+| `readDenyPaths` | 沙箱内默认拒读的路径；目标先按真实路径解析，符号链接不能绕过 |
+| `readAllowPaths` | 在读拒绝之后按配置路径及其子树重新放行；配置到单个文件时只放开该文件，同目录未列出内容仍拒读 |
+| `networkAllow` | 精确域名或 `*.` 子域白名单；为空时不启动代理，本次调用没有网络 |
+| `networkPorts` | 允许代理连接的 TCP 端口，默认 `[443]` |
+| `envPassthrough` | 额外传入沙箱的环境变量名；沙箱只保留最小环境变量集合和代理变量 |
+| `bypassAllowedCommands` | 允许 `disableSandbox` 豁免的命令模式；整条命令的每个简单命令都必须命中 |
+
+`permissions.sandbox` 的数组字段在用户级、项目级和本地 settings 中取并集并去重，项目层不能借覆盖移除上层保护；`enabled` 与 `onUnavailable` 由更具体的层覆盖。
+
+沙箱内的读取默认允许，但固定拒读内置敏感路径，例如 `~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.kube`、`~/.git-credentials`、`~/.netrc`、`~/.npmrc`、浏览器配置、`~/Documents`、`~/Desktop`、`~/Downloads` 和 `~/.qhy-coding-agents`，完整列表见 [ADR 0005](docs/adr/0005-bash-sandbox.md)。`readDenyPaths` 追加拒绝，`readAllowPaths` 在其后按真实路径及其子树放行；配置到单个文件时只放开该文件，同目录未列出内容仍拒读。
+
+沙箱内的写入默认拒绝，只允许工作区、`$TMPDIR`（存在时）、本次调用独立的 0700 临时目录以及 `writePaths`。`writeDenyPaths` 与内置防篡改路径都在写允许之后拒绝；内置路径本身始终拒写，包括工作区内的 `.agent/settings.json`、`.agent/settings.local.json`、`.claude/settings.json`、`.claude/settings.local.json`、`.claude/skills/**`、`.agents/skills/**`、`.git/hooks/**`、`.git/config` 和 `.github/workflows/**`。尚不存在的防篡改目标也会保留拒绝，避免先创建配置文件再借下次加载提权。路径在生成计划时按真实路径解析；读允许和写允许跳过不存在的目标，写拒绝则按最近一个已存在祖先解析真实路径后拼回缺失尾部。
+
+沙箱内网络默认全部拒绝。`networkAllow` 非空且沙箱可用时，程序为本次调用启动一个只监听本机随机端口的 CONNECT 代理，并在 Seatbelt profile 中只放行该端口。代理把域名与端口限制为 `networkAllow`/`networkPorts`，自行解析 DNS；任一解析结果落入回环、私网、链路本地或云 metadata 等危险地址时拒绝，避免 DNS rebinding。代理只建立原始 TCP 隧道，不终结 TLS、不安装 CA，也不检查隧道内容。代理启动失败时本次调用没有网络，不会退回直连。被拒绝的目标会以 `<sandbox_violations>` 附加到 `stderr`，并保留 `invalid-target`、`port-not-allowed`、`host-not-allowed`、`dns-failed` 或 `dangerous-address` 原因码；上游不可达不是策略违规，不产生该记录。代理与调用临时目录在成功、失败、超时和取消后都会关闭或删除。
+
+模型可以在 Bash 参数中传入 `disableSandbox: true` 申请在沙箱外执行。它只是申请：沙箱关闭时被忽略；沙箱不可用时未适用；只有在沙箱可用且整条命令的每个简单命令都命中 `bypassAllowedCommands` 时才获准。任一简单命令未命中、排除表为空或命令无法可靠解析时，豁免未获准，命令仍在沙箱内执行。豁免只决定是否隔离，不绕过 `permissions.deny`、`permissions.ask`、`permissions.allow` 和逐次审批。人工审批和模型审批都会显示执行模式、豁免结果和不可用说明，分别对应 `sandboxExecution`、`sandboxBypass`、`sandboxNotice`；执行结果中的 `sandboxed` 与可选 `notice` 表示实际执行模式。
+
+`command` 必须为非空命令。省略 `cwd` 时从配置工作区启动；相对 `cwd` 从工作区解析。审批前解析实际目录并检查其可用；工作区外目录以及指向外部位置的符号链接都要求逐次审批。人工审批展示原始完整参数和实际启动目录；启动前再次核验该目录，变化或不可用时拒绝执行并要求重新提交。Bash 权限规则匹配命令，不会单独放行工作区外的启动目录。`cwd` 只约束启动位置，即使沙箱内允许读取工作区外目录，也不代表允许写入。
+
+沙箱内 shell 只继承 `PATH`、`HOME`、`TMPDIR`、`LANG`、`LC_ALL`、`TERM`、`SHELL`、`USER`、`LOGNAME`、`TZ`、`envPassthrough` 与代理变量，不会继承其余 CLI 环境；宿主模式则继承 CLI 环境。两种模式都不保留上次调用的 `cd`、环境修改或其他 shell 状态，不接受 `env` 或其他模型自定义环境参数。Bash 默认进入所选审批，固定规则使用精确工具名称 `Bash`。等待或拒绝期间不会启动命令。
 
 例如，将以下字段加入运行配置，缩短单次命令上限：
 
@@ -186,11 +231,13 @@ pnpm dev --workspace ./demo
 }
 ```
 
-默认单命令上限为 30 秒，计时从实际启动命令开始；人工思考时间不消耗整轮执行预算。单命令超时返回普通调用失败，同批后续调用继续；整轮超时、Ctrl+C 或 SIGTERM 停止当前轮次，不启动后续工具或模型请求。超时和取消以 SIGKILL 终止所管理的命令进程组，并等待命令结束。已有文件和其他宿主副作用不会回滚；不提供后台任务管理。
+默认单命令上限为 30 秒，计时从实际启动命令开始；人工思考时间不消耗整轮执行预算。单命令超时返回普通调用失败，同批后续调用继续；整轮超时、Ctrl+C 或 SIGTERM 停止当前轮次，不启动后续工具或模型请求。超时和取消以 SIGKILL 终止所管理的命令进程组，并等待命令结束。已有文件和其他副作用不会回滚；不提供后台任务管理。
 
-工具结果的 `output` 包含 `stdout`、`stderr`、`exitCode`、`signal` 和 `truncated`。输出按 UTF-8 文本返回，stdout 与 stderr 合计最多 64 KiB；超限标记 `truncated: true`，仍持续消费流以避免管道堵塞，截断处不返回残缺字符。结果不会直接打印到普通进度或日志，主模型可根据它回答用户。
+工具结果的 `output` 包含 `stdout`、`stderr`、`exitCode`、`signal`、`truncated`、`sandboxed` 和可选 `notice`。输出按 UTF-8 文本返回，stdout 与 stderr 合计最多 64 KiB；超限标记 `truncated: true`，仍持续消费流以避免管道堵塞，截断处不返回残缺字符。结果不会直接打印到普通进度或日志，主模型可根据它回答用户。
 
-退出码为 0 时返回 `is_error: false`；非零退出、启动失败和单命令超时返回 `is_error: true`、`TOOL_EXECUTION_ERROR` 及可用输出。超时结果保留终止信号，错误消息说明超时；取消和整轮超时走轮次停止通路。常规验证通过本地模型夹具和受控进程完成，不能代替最终人工 QA。
+退出码为 0 时返回 `is_error: false`；非零退出、启动失败、单命令超时和 fail-closed 拒绝返回 `is_error: true`、`TOOL_EXECUTION_ERROR` 及可用输出。沙箱内出现 `Operation not permitted` 时提示为策略拦截，便于区分命令自身错误。超时结果保留终止信号，错误消息说明超时；取消和整轮超时走轮次停止通路。
+
+沙箱只约束 Bash 及其子进程。`read_file`、`write_file`、远程 MCP、审查模型和 CLI 其他进程不在其内；沙箱关闭、按 fail-open 回退或豁免获准时，Bash 仍以宿主用户权限运行。常规验证通过本地模型夹具、受控进程和 macOS Seatbelt 集成测试完成，Linux 等平台只验证不可用路径，不能代替最终人工 QA。
 
 ## 工具策略与审批
 
@@ -210,9 +257,9 @@ pnpm dev --workspace ./demo
 
 权限按工具能力独立生效：例如 `Read(src/**)` 不会授权 `Write(src/**)`，`Bash(pnpm test)` 也不会授权其他命令。匹配规则的动作优先级为 `deny`、`ask`、`allow`；未匹配时，工作区内读取、搜索、`runtimeInfo` 和 Agent 默认允许，写入、Bash、MCP 默认进入当前审批，工作区外读取默认需要审批。显式 `allow` 可免除相应逐次审批，`deny` 不可由审批放行。Glob/Grep 对被拒绝路径予以排除，对需审批路径暂停该次搜索并在人工审批界面展示范围。
 
-设置分层时，`permissions.allow`、`permissions.ask`、`permissions.deny` 各自跨层合并并去重；其他对象字段递归合并，其他数组由更具体层整体替换。旧版 `approval.rules` 不再提供运行授权；请迁移到 `permissions`，无效或未迁移的旧规则不会覆盖默认权限。
+设置分层时，`permissions.allow`、`permissions.ask`、`permissions.deny` 与 `permissions.sandbox` 的数组字段各自跨层合并并去重；其他对象字段递归合并，其他数组由更具体层整体替换。旧版 `approval.rules` 不再提供运行授权；请迁移到 `permissions`，无效或未迁移的旧规则不会覆盖默认权限。
 
-Explore 只提供 `glob`、`grep`、`read_file`，并使用同一份权限配置；它始终不能写文件、运行 Bash、调用 MCP 或再次委派。general-purpose 子 Agent 也沿用相同的 `permissions` 与审批策略，并有自己的文件读取基线；它不能继续创建子 Agent。Agent 委派本身可用 `Agent` 规则控制。工具级权限与逐次审批只决定对应调用能否继续，不能隔离进程、限制 Bash 的网络或文件系统访问，也不会撤销已发生的外部副作用。
+Explore 只提供 `glob`、`grep`、`read_file`，并使用同一份权限配置；它始终不能写文件、运行 Bash、调用 MCP 或再次委派。general-purpose 子 Agent 也沿用相同的 `permissions`、沙箱配置与审批策略，并有自己的文件读取基线；它不能继续创建子 Agent。Agent 委派本身可用 `Agent` 规则控制。工具级权限与逐次审批只决定对应调用能否继续，不能替代隔离：Bash 的读写与网络限制由 `permissions.sandbox` 提供（v1 仅 macOS），且只覆盖沙箱内执行的 Bash；沙箱关闭、fail-open 回退、豁免获准的 Bash、远程 MCP、审查模型及文件工具均不受其约束。任何审批都不会撤销已发生的外部副作用。
 
 可在 settings 中添加 `approval`，省略时采用人工审批：
 
@@ -227,7 +274,9 @@ Explore 只提供 `glob`、`grep`、`read_file`，并使用同一份权限配置
 
 `approval.rules` 是旧配置字段，不再生效；使用 `permissions.allow`、`permissions.ask` 和 `permissions.deny` 表达规则。权限命中顺序为 `deny`、`ask`、`allow`。未知工具或无效参数在审批前拒绝。修改参数或再次调用都需要重新判断，不复用上次批准。
 
-每次模型审批使用独立请求，提供专用审查提示、本次工具名称和完整参数，以及受控会话上下文：工作区与工具目标、当前权限规则、有效历史中保留的摘要和用户消息、先前工具调用的参数与状态。不会发送工具执行结果，也不给审查模型提供工具。上下文可能不完整，审查不能核验完整用户意图，不提供操作系统隔离。审查只接受 `approve` 或 `deny`。公共 `runAgent` 另提供可等待的 `approvalControl(call, signal)`，返回 `approve` 或 `deny`；固定策略优先，控制接口与仅用于观察的 `onToolEvent` 分离，答复不改变已批准的参数。
+Bash 调用在审批前已生成沙箱执行计划，人工和模型审批详情包含 `sandboxExecution`、`sandboxBypass` 与 `sandboxNotice`，用于说明沙箱内、沙箱外或拒绝执行以及豁免结果。`disableSandbox: true` 只是豁免申请，未获准时仍在沙箱内执行；固定 `deny`、`ask`、`allow` 顺序和逐次审批不会因豁免改变。
+
+每次模型审批使用独立请求，提供专用审查提示、本次工具名称和完整参数，以及受控会话上下文：工作区与工具目标、当前权限规则、有效历史中保留的摘要和用户消息、先前工具调用的参数与状态。不会发送工具执行结果，也不给审查模型提供工具。上下文可能不完整，审查不能核验完整用户意图；审查模型自身不在 Bash 沙箱内。审查只接受 `approve` 或 `deny`。公共 `runAgent` 另提供可等待的 `approvalControl(call, signal)`，返回 `approve` 或 `deny`；固定策略优先，控制接口与仅用于观察的 `onToolEvent` 分离，答复不改变已批准的参数。
 
 默认复用主模型名称、地址和凭据；也可设置独立审查模型（凭据仅引用环境变量）：
 

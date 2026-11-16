@@ -55,6 +55,31 @@ const exploreConfigSchema = z.strictObject({
   loadRootAgents: z.boolean().default(false),
 });
 
+/** 沙箱内的路径、域名、环境变量与命令条目；空字符串没有可执行含义。 */
+const sandboxEntrySchema = z.string().trim().min(1);
+const sandboxConfigSchema = z.strictObject({
+  enabled: z.boolean().default(false),
+  onUnavailable: z.enum(['open', 'closed']).default('open'),
+  writePaths: z.array(sandboxEntrySchema).default([]),
+  writeDenyPaths: z.array(sandboxEntrySchema).default([]),
+  readDenyPaths: z.array(sandboxEntrySchema).default([]),
+  readAllowPaths: z.array(sandboxEntrySchema).default([]),
+  networkAllow: z.array(sandboxEntrySchema).default([]),
+  // 端口范围按可连接的 TCP 端口校验；默认只放行 HTTPS。
+  networkPorts: z.array(z.number().int().min(1).max(65_535)).default([443]),
+  envPassthrough: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/)).default([]),
+  bypassAllowedCommands: z.array(sandboxEntrySchema).default([]),
+});
+
+export type SandboxConfig = z.infer<typeof sandboxConfigSchema>;
+export const DEFAULT_SANDBOX = sandboxConfigSchema.parse({});
+
+/** 沙箱数组字段在三层 settings 中始终取并集，项目层不能借覆盖移除上层保护。 */
+const sandboxArrayKeys = [
+  'writePaths', 'writeDenyPaths', 'readDenyPaths', 'readAllowPaths',
+  'networkAllow', 'networkPorts', 'envPassthrough', 'bypassAllowedCommands',
+] as const;
+
 const permissionRuleSchema = z.string().trim().min(1).refine((rule) => {
   const match = /^(Read|Write|Glob|Grep|Bash|MCP|Agent|RuntimeInfo)(?:\(([^()]+)\))?$/u.exec(rule);
   if (!match) return false;
@@ -99,16 +124,27 @@ export const configSchema = z.strictObject({
     allow: z.array(permissionRuleSchema).default([]),
     ask: z.array(permissionRuleSchema).default([]),
     deny: z.array(permissionRuleSchema).default([]),
-  }).optional(),
+    // prefault 会继续解析空对象，从而落实沙箱各字段默认值；default 只返回原值。
+    sandbox: sandboxConfigSchema.prefault({}),
+  }).prefault({}),
 });
 
-export type ModelConfig = z.infer<typeof configSchema>;
+type ParsedModelConfig = z.infer<typeof configSchema>;
+/**
+ * 会话中保存的模型配置可能来自旧版本，permissions 允许缺省；
+ * 从 settings 解析出的配置始终带有 permissions.sandbox 默认值。
+ */
+export type ModelConfig = Omit<ParsedModelConfig, 'permissions'> & {
+  permissions?: ParsedModelConfig['permissions'];
+};
 export type ResolvedConfig = ModelConfig & {
   apiKey: string;
   approvalApiKey?: string;
   mcpHeaders?: Record<string, Record<string, string>>;
   migrationWarnings?: string[];
 };
+/** 从 settings 解析出的配置始终带 permissions 与沙箱默认值。 */
+export type LoadedConfig = ResolvedConfig & { permissions: ParsedModelConfig['permissions'] };
 
 interface ConfigOptions {
   cwd: string;
@@ -120,7 +156,7 @@ interface ConfigOptions {
 const permissionKeys = ['allow', 'ask', 'deny'] as const;
 const legacyConfigName = 'agent.config.json';
 
-export async function loadConfig(options: ConfigOptions): Promise<ResolvedConfig> {
+export async function loadConfig(options: ConfigOptions): Promise<LoadedConfig> {
   const home = options.home ?? options.env.HOME ?? options.env.USERPROFILE ?? homedir();
   const userSettingsPath = join(home, '.agent', 'settings.json');
   const userSettings = await readSettings(userSettingsPath, false);
@@ -173,7 +209,7 @@ export async function loadConfig(options: ConfigOptions): Promise<ResolvedConfig
     ...(warnings.length === 0 ? {} : { migrationWarnings: warnings }) };
 }
 
-export async function restoreSessionConfig(config: ModelConfig, env: NodeJS.ProcessEnv): Promise<ResolvedConfig> {
+export async function restoreSessionConfig(config: ModelConfig, env: NodeJS.ProcessEnv): Promise<LoadedConfig> {
   try {
     return await loadConfig({ cwd: config.workspace, workspace: config.workspace, env });
   } catch (error) {
@@ -228,12 +264,28 @@ function mergeSettings(base: Record<string, unknown>, overlay: Record<string, un
         const right = Array.isArray(value[permissionKey]) ? value[permissionKey] as unknown[] : [];
         if (permissionKey in previous || permissionKey in value) merged[permissionKey] = [...new Set([...left, ...right])];
       }
+      if ('sandbox' in previous || 'sandbox' in value) {
+        merged.sandbox = mergeSandbox(
+          isRecord(previous.sandbox) ? previous.sandbox : {},
+          isRecord(value.sandbox) ? value.sandbox : {},
+        );
+      }
       result.permissions = merged;
     } else if (isRecord(value) && isRecord(result[key])) {
       result[key] = mergeSettings(result[key] as Record<string, unknown>, value);
     } else {
       result[key] = value;
     }
+  }
+  return result;
+}
+
+function mergeSandbox(base: Record<string, unknown>, overlay: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...base, ...overlay };
+  for (const key of sandboxArrayKeys) {
+    const left = Array.isArray(base[key]) ? base[key] as unknown[] : [];
+    const right = Array.isArray(overlay[key]) ? overlay[key] as unknown[] : [];
+    if (key in base || key in overlay) result[key] = [...new Set([...left, ...right])];
   }
   return result;
 }
