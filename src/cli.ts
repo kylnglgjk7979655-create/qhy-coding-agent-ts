@@ -15,6 +15,7 @@ import type { FileRewindPlan } from './services/session/file-checkpoints.js';
 import { AgentError, publicError } from './utils/errors.js';
 import { CliInput } from './cli/cli-input.js';
 import { CommandRegistry } from './cli/commands.js';
+import { ToolActivityRenderer } from './cli/tool-activity.js';
 import { loadSkillCatalogue } from './services/skills/skill-registry.js';
 import type { SkillCatalogue } from './services/skills/skill-registry.js';
 import type { ApprovalControl } from './tools/tool-approval.js';
@@ -531,6 +532,9 @@ async function runTurn(
   let skillBodies: Record<string, string> = {};
   let bashFailed = false;
   let manualCompaction = false;
+  // 交互终端按模型步聚合工具活动；非交互管道继续使用下方逐行事件。
+  const toolActivity = new ToolActivityRenderer(process.stdout);
+  const toolInputs = new Map<string, { toolName: string; input: unknown }>();
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
   log({
@@ -566,6 +570,8 @@ async function runTurn(
       ) } : {}),
       onText: async (chunk) => {
         if (!smokeTool && roundId) await appendRoundText(userHome, conversationId, roundId, chunk);
+        // 模型开始输出前固定工具块，后续文本不会再触发块内重绘。
+        toolActivity.flush();
         process.stdout.write(chunk);
       },
       ...(!smokeTool ? { transcriptPath: sessionRecordPath(userHome, conversationId) } : {}),
@@ -573,6 +579,7 @@ async function runTurn(
       getRecentFiles: () => recentFiles.list(),
       ...(getTaskStatuses ? { getTaskStatuses } : {}),
       onToolCallStart: async ({ callId, toolName, input }) => {
+        toolInputs.set(callId, { toolName, input });
         if (!smokeTool && roundId) {
           await appendRoundMessages(userHome, conversationId, roundId, [{
             role: 'assistant', content: [{ type: 'tool-call', toolCallId: callId, toolName, input }],
@@ -580,6 +587,8 @@ async function runTurn(
         }
       },
       onStepMessages: async (content) => {
+        // 本步所有工具结果已确定，结束活动块并保留最终状态。
+        toolActivity.flush();
         if (smokeTool || !roundId) return;
         const results = content.filter((part): part is Record<string, unknown> => typeof part === 'object' && part !== null && (part as { type?: string }).type === 'tool-result');
         if (results.length > 0) await appendRoundMessages(userHome, conversationId, roundId, [{ role: 'tool', content: results } as unknown as ModelMessage]);
@@ -601,8 +610,18 @@ async function runTurn(
       onCheckpointError: () => {
         reportCheckpointWarning('checkpoint.backup_failed', 'write_file 原状态备份失败，继续写入。', { conversationId });
       },
-      onToolEvent: ({ toolName, description, status }) => {
+      onToolEvent: ({ callId, toolName, description, status }) => {
         if (toolName === 'Bash' && status === 'failed') bashFailed = true;
+        if (toolActivity.enabled) {
+          const input = toolInputs.get(callId)?.input;
+          if (status === 'started') toolActivity.start(callId, toolName, input);
+          else {
+            toolActivity.finish(callId, toolName, input, status);
+            toolInputs.delete(callId);
+          }
+          return;
+        }
+        toolInputs.delete(callId);
         const label = {
           started: '开始',
           succeeded: '成功',
@@ -639,6 +658,7 @@ async function runTurn(
       });
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }
+    toolActivity.flush();
     if (bashFailed) process.stdout.write('\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n');
     process.stdout.write('\n');
     log({
@@ -651,6 +671,7 @@ async function runTurn(
     });
     return nextHistory;
   } catch (error) {
+    toolActivity.flush();
     const failure = publicError(error);
     const interrupted = failure.code === 'CANCELLED' && failure.message === 'Interrupt by user';
     if (interrupted && !smokeTool && roundId) {

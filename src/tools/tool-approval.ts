@@ -56,8 +56,13 @@ export async function approveToolCall(
   const bashRequiresApproval = call.toolName === 'Bash' && call.details?.bashRequiresApproval === 'true';
   const readOutsideWorkspace = call.toolName === 'read_file' && readAction === undefined && !isReadTargetInWorkspace(config, call);
   const permissionAction = mcpAction ?? basicToolAction ?? readAction ?? writeAction ?? searchAction;
-  const permissionRequiresApproval = permissionAction === 'ask' || readOutsideWorkspace || searchOutsideWorkspace || searchAsks
-    || bashActions.includes('ask') || bashRequiresApproval;
+  // 显式 ask/范围规则每次重新确认；会话批准只能跳过 readOutsideWorkspace 这类工具默认审批。
+  const explicitAsk = permissionAction === 'ask' || searchAsks || bashActions.includes('ask');
+  const permissionRequiresApproval = explicitAsk || readOutsideWorkspace || searchOutsideWorkspace || bashRequiresApproval;
+  const controlledCall: ToolApprovalRequest = {
+    ...structuredClone(call),
+    approvalKind: explicitAsk ? 'explicit' : 'default',
+  };
   if (permissionAction === 'deny' || bashDenied) return false;
   if (call.toolName === 'Bash' && bashAllowed && !permissionRequiresApproval) return true;
   // 范围要求审批时，不能被另一条宽泛 allow 跳过。
@@ -72,7 +77,7 @@ export async function approveToolCall(
     const timer = setTimeout(() => timeout.abort(), config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
     const humanSignal = AbortSignal.any([signal, timeout.signal]);
     try {
-      const decision = await waitForDecision(control, structuredClone(call), humanSignal);
+      const decision = await waitForDecision(control, controlledCall, humanSignal);
       signal.throwIfAborted();
       return !timeout.signal.aborted && decision === 'approve';
     } catch {
@@ -91,7 +96,7 @@ export async function approveToolCall(
     let decision: string;
     if (control) {
       // 可等待的控制接口独立于仅用于观察的执行事件，且不能延长审批上限。
-      decision = await waitForDecision(control, structuredClone(call), reviewSignal);
+      decision = await waitForDecision(control, controlledCall, reviewSignal);
     } else {
       const review = config.approval.model;
       const baseURL = review?.baseURL ?? config.baseURL;
