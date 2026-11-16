@@ -2,12 +2,22 @@ import { InvalidToolInputError, NoSuchToolError, asSchema, tool } from 'ai';
 import type { FlexibleSchema, ToolExecutionOptions, ToolSet } from 'ai';
 import { AgentError } from '../utils/errors.js';
 
+/** 工具错误码的完整枚举；Hook 的 error_code 只允许取这些值，不接受自由字符串。 */
+export const TOOL_ERROR_CODES = [
+  'INVALID_TOOL_ARGUMENTS',
+  'UNKNOWN_TOOL',
+  'TOOL_EXECUTION_ERROR',
+  'PERMISSION_DENIED',
+] as const;
+
+export type ToolErrorCode = (typeof TOOL_ERROR_CODES)[number];
+
 export interface ToolExecutionEvent {
   callId: string;
   toolName: string;
   status: 'started' | 'succeeded' | 'failed' | 'rejected';
   description?: string;
-  errorCode?: 'INVALID_TOOL_ARGUMENTS' | 'UNKNOWN_TOOL' | 'TOOL_EXECUTION_ERROR' | 'PERMISSION_DENIED';
+  errorCode?: ToolErrorCode;
 }
 
 /** PreToolUse 的聚合结论；deny 已在审批前短路，因此审批请求只会携带 allow 或 ask。 */
@@ -38,7 +48,6 @@ export interface ToolApprovalRequest {
   hookPermission?: { decision: 'allow' | 'ask'; reason?: string };
 }
 
-type ToolErrorCode = NonNullable<ToolExecutionEvent['errorCode']>;
 type ToolFailure = { is_error: true; error: { code: ToolErrorCode; message: string } };
 function permissionDeniedResult(): ToolFailure {
   return { is_error: true, error: { code: 'PERMISSION_DENIED', message: '本次工具调用未获权限批准。' } };
@@ -146,6 +155,14 @@ export class ToolRegistry {
       input: unknown;
       /** 与返回给模型的工具成功信封一致。 */
       response: { is_error: false; output: unknown };
+    }, signal?: AbortSignal) => Promise<void> | void;
+    /** execute 抛错后运行；权限拒绝、参数错误与未知工具不触发，回调失败不改变错误码。 */
+    postToolUseFailure?: (call: {
+      callId: string;
+      toolName: string;
+      input: unknown;
+      error: string;
+      errorCode: ToolErrorCode;
     }, signal?: AbortSignal) => Promise<void> | void;
     approve?: (call: ToolApprovalRequest, signal?: AbortSignal) => Promise<boolean>;
   }) {}
@@ -267,8 +284,23 @@ export class ToolRegistry {
           } catch (error) {
             execution.abortSignal?.throwIfAborted();
             const message = error instanceof Error ? error.message : '工具执行失败。';
-            this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'failed', errorCode: 'TOOL_EXECUTION_ERROR' });
-            return { is_error: true as const, error: { code: 'TOOL_EXECUTION_ERROR' as const, message },
+            // execute 抛错是 v1 唯一会触发 PostToolUseFailure 的路径；错误码来自固定枚举。
+            const errorCode = 'TOOL_EXECUTION_ERROR' as const;
+            this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'failed', errorCode });
+            try {
+              await this.options.postToolUseFailure?.({
+                callId: execution.toolCallId,
+                toolName: name,
+                input: prepared.input,
+                error: message,
+                errorCode,
+              }, execution.abortSignal);
+            } catch {
+              if (!execution.abortSignal?.aborted) {
+                process.stderr.write('[hook] PostToolUseFailure: 执行失败（已忽略，不影响工具）\n');
+              }
+            }
+            return { is_error: true as const, error: { code: errorCode, message },
               ...(error instanceof ToolExecutionError ? { output: error.output } : {}) };
           }
         } finally {

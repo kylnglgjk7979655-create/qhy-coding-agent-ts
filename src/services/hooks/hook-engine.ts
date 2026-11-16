@@ -237,27 +237,28 @@ export function userPromptSubmitContextMessages(
 }
 
 /**
- * PostToolUse 的反馈消息：exit 2 / decision block 的理由与 additionalContext 都只作为反馈。
+ * 工具事件（PostToolUse / PostToolUseFailure）的反馈消息：
+ * exit 2 / decision block 的理由与 additionalContext 都只作为反馈。
  * 普通 stdout 只进日志；反馈不改变已经返回给模型的工具结果，也不撤销副作用。
  */
-export function postToolUseFeedbackMessages(
+export function toolEventFeedbackMessages(
   result: HookEventResult,
   tracker: HookInjectionTracker,
 ): ModelMessage[] {
   const messages: ModelMessage[] = [];
   for (const run of result.runs) {
     if (!tracker.claim(run.runId)) continue;
-    const feedback = postToolUseFeedback(run.result);
+    const feedback = toolEventFeedback(run.result);
     if (feedback === undefined || feedback.trim().length === 0) continue;
     messages.push({
       role: 'user',
-      content: `<hook-feedback event="PostToolUse" hook="${run.event}:${run.order}">\n${truncateHookText(feedback)}\n</hook-feedback>`,
+      content: `<hook-feedback event="${run.event}" hook="${run.event}:${run.order}">\n${truncateHookText(feedback)}\n</hook-feedback>`,
     });
   }
   return messages;
 }
 
-function postToolUseFeedback(result: HookResult): string | undefined {
+function toolEventFeedback(result: HookResult): string | undefined {
   const parts: string[] = [];
   if (result.outcome === 'blocking') {
     parts.push(result.reason ?? 'Hook 请求阻止该事件。');

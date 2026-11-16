@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { runControlledProcess } from '../process/controlled-process.js';
+import type { ToolErrorCode } from '../../tools/tool-registry.js';
 import { defaultHookTimeoutMs, type HookCommand, type HookEvent, type SessionStartSource } from './hooks-config.js';
 
 /** v1 Hook 协议版本；不写入 stdin，仅由 ADR 与后续兼容判断使用。 */
@@ -53,6 +54,16 @@ export interface PostToolUseHookInput extends HookInput {
   tool_name: string;
   tool_input: unknown;
   tool_response: { is_error: false; output: unknown };
+  tool_use_id: string;
+}
+
+/** 工具执行抛错后的输入；error_code 只取工具错误码枚举，v1 当前只会是 TOOL_EXECUTION_ERROR。 */
+export interface PostToolUseFailureHookInput extends HookInput {
+  hook_event_name: 'PostToolUseFailure';
+  tool_name: string;
+  tool_input: unknown;
+  error: string;
+  error_code: ToolErrorCode;
   tool_use_id: string;
 }
 

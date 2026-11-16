@@ -21,9 +21,9 @@ import { appendRecentSkillLoads, collectSkillInjections, insertSkillInjections }
 import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import type { SkillInjection } from '../services/skills/skill-injection.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
-import { HookInjectionTracker, describeHookRun, evaluatePreToolUse, postToolUseFeedbackMessages, runHookEvent } from '../services/hooks/hook-engine.js';
+import { HookInjectionTracker, describeHookRun, evaluatePreToolUse, runHookEvent, toolEventFeedbackMessages } from '../services/hooks/hook-engine.js';
 import type { HookEventResult } from '../services/hooks/hook-engine.js';
-import type { PostToolUseHookInput, PreToolUseHookInput } from '../services/hooks/hook-runner.js';
+import type { PostToolUseFailureHookInput, PostToolUseHookInput, PreToolUseHookInput } from '../services/hooks/hook-runner.js';
 import type { BackgroundAgentTasks, BackgroundTaskStatusEntry } from '../tools/AgentTool/background-agent-tasks.js';
 
 export type { ApprovalControl } from '../tools/tool-approval.js';
@@ -56,7 +56,7 @@ function modelStreamError(error: unknown): AgentError {
 }
 
 /**
- * 按工具结果在消息中的顺序消费 PostToolUse 结果，生成隐藏反馈消息。
+ * 按工具结果在消息中的顺序消费 PostToolUse / PostToolUseFailure 结果，生成隐藏反馈消息。
  * 找不到对应工具结果时仍按暂存顺序追加，避免反馈丢失；每次都清空暂存。
  */
 function takeToolFeedbackMessages(
@@ -73,11 +73,11 @@ function takeToolFeedbackMessages(
       const result = pending.get(part.toolCallId);
       if (result === undefined) continue;
       emitted.add(part.toolCallId);
-      feedback.push(...postToolUseFeedbackMessages(result, tracker));
+      feedback.push(...toolEventFeedbackMessages(result, tracker));
     }
   }
   for (const [callId, result] of pending) {
-    if (!emitted.has(callId)) feedback.push(...postToolUseFeedbackMessages(result, tracker));
+    if (!emitted.has(callId)) feedback.push(...toolEventFeedbackMessages(result, tracker));
   }
   pending.clear();
   return feedback;
@@ -260,6 +260,44 @@ export async function runAgent(
           });
         } catch {
           process.stderr.write('[hook] PostToolUse: 执行失败（已忽略，不影响工具）\n');
+          return;
+        }
+        for (const run of result.runs) {
+          const message = describeHookRun(run);
+          if (message !== undefined) process.stderr.write(`${message}\n`);
+        }
+        if (result.runs.length > 0) pendingToolFeedback.set(call.callId, result);
+      } finally {
+        resumeDeadline();
+      }
+    },
+    postToolUseFailure: async (call, toolSignal) => {
+      if (config.hooks === undefined || config.disableAllHooks
+        || options.sessionId === undefined || options.transcriptPath === undefined) return;
+      // 只有 execute 抛错会走到这里；反馈与 PostToolUse 共用工具结果后的注入位置。
+      try {
+        pauseDeadline();
+        const hookInput: PostToolUseFailureHookInput = {
+          session_id: options.sessionId,
+          transcript_path: options.transcriptPath,
+          cwd: config.workspace,
+          approval_mode: config.approval.mode === 'auto' ? 'model' : 'human',
+          hook_event_name: 'PostToolUseFailure',
+          tool_name: call.toolName,
+          tool_input: call.input,
+          error: call.error,
+          error_code: call.errorCode,
+          tool_use_id: call.callId,
+        };
+        let result: HookEventResult;
+        try {
+          result = await runHookEvent(config.hooks, 'PostToolUseFailure', hookInput, {
+            cwd: config.workspace,
+            env: process.env,
+            signal: toolSignal ?? signal,
+          });
+        } catch {
+          process.stderr.write('[hook] PostToolUseFailure: 执行失败（已忽略，不影响工具）\n');
           return;
         }
         for (const run of result.runs) {
