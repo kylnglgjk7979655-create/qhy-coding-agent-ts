@@ -114,7 +114,7 @@ cd "$QA_ROOT"
 ```sh
 REPO=/绝对路径/qhy-coding-agent-ts
 CLI_NODE="$(cd "$REPO" && pnpm exec node -p process.execPath)"
-QA_ROOT="$(mktemp -d)"
+export QA_ROOT="$(mktemp -d)"
 mkdir -p "$QA_ROOT/work/.agent" "$QA_ROOT/qa-home/.ssh" "$QA_ROOT/qa-home/private" \
   "$QA_ROOT/qa-home/scratch" "$QA_ROOT/outside" "$QA_ROOT/limited-bin"
 printf 'inside-read' > "$QA_ROOT/work/note.txt"
@@ -142,7 +142,7 @@ sandbox-exec -p '(version 1) (allow default)' /usr/bin/true && echo SEATBELT_REA
       "readAllowPaths": ["~/private/readable.txt"],
       "networkAllow": ["example.com", "127.0.0.1"],
       "networkPorts": [443],
-      "envPassthrough": ["QA_PASSTHROUGH"],
+      "envPassthrough": ["QA_PASSTHROUGH", "QA_ROOT"],
       "bypassAllowedCommands": ["printenv QA_HOST_ONLY"]
     }
   }
@@ -179,7 +179,7 @@ HOME="$QA_ROOT/qa-home" "$CLI_NODE" "$REPO/dist/cli.js" --workspace "$QA_ROOT/wo
 ### 网络代理
 
 - [ ] **SBX-14 代理变量**：执行 `printf '%s' "$HTTPS_PROXY"`；输出为 `http://localhost:<随机端口>`，且 `$HTTP_PROXY`、`$ALL_PROXY` 使用同一端口。
-- [ ] **SBX-15 白名单目标**：执行 `curl -sS -o /dev/null -w '%{http_code}' https://example.com`；在可联网环境返回非错误状态码。若验收环境无法访问公网，记录为“受环境阻塞”，不得标记通过。
+- [ ] **SBX-15 白名单目标**：执行 `curl -fsS -o "$QA_ROOT/work/sbx-15-response.txt" -w '%{http_code}' https://example.com`；在可联网环境退出码为 0、输出非错误 HTTP 状态码，并在工作区生成响应文件。若验收环境无法访问公网，记录为“受环境阻塞”，不得标记通过。
 - [ ] **SBX-16 域名拒绝**：执行 `curl -sS https://denied.example`；命令失败，`stderr` 出现 `<sandbox_violations>` 和 `host-not-allowed`，不产生对其他目标的直连。
 - [ ] **SBX-17 端口拒绝**：执行 `curl -sS https://example.com:8443`；命令失败，违规汇总包含 `port-not-allowed`。
 - [ ] **SBX-18 危险地址拒绝**：执行 `curl -k -sS https://127.0.0.1`；命令失败，违规汇总包含 `dangerous-address`，代理不建立到回环地址的隧道。

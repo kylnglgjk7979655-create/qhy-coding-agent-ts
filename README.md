@@ -172,7 +172,7 @@ pnpm dev --workspace ./demo
 
 ## Bash 与操作系统沙箱
 
-Bash 在支持 POSIX 进程组的系统（Linux/macOS）上使用 PATH 中的 `bash`，每次调用启动独立 shell。沙箱 v1 只支持 macOS Seatbelt：`permissions.sandbox.enabled` 默认 `false`；启用后，程序在每次调用前探测 `sandbox-exec` 能否执行最小 profile，只有探测成功才进入沙箱。Linux、Windows 及其他平台没有沙箱实现，按“沙箱不可用”处理，不能声称具备操作系统隔离。
+Bash 在支持 POSIX 进程组的系统（Linux/macOS）上使用 PATH 中的 `bash`，每次调用启动独立 shell。沙箱 v1 只支持 macOS Seatbelt：`permissions.sandbox.enabled` 默认 `false`；启用后，程序在每个 CLI 进程内探测一次 `sandbox-exec` 能否执行最小 profile 并缓存结果，只有探测成功才进入沙箱。Linux、Windows 及其他平台没有沙箱实现，按“沙箱不可用”处理，不能声称具备操作系统隔离。
 
 启用沙箱时，可在 settings 中使用以下配置：
 
