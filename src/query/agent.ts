@@ -11,7 +11,7 @@ import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
 import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
 import type { ApprovalControl } from '../tools/tool-approval.js';
-import { configWithApprovalMode, selectApprovalControl } from '../tools/approval-mode.js';
+import { resolveApproval } from '../tools/approval-mode.js';
 import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.js';
 import { registerBuiltInTools } from '../tools/register-built-in-tools.js';
 import { bashSandboxGuidance } from '../tools/BashTool/sandbox-guidance.js';
@@ -154,10 +154,9 @@ export async function runAgent(
     approve: async (call) => {
       signal.throwIfAborted();
       // 每个调用进入审批前读取当前模式；切换前已开始的等待继续使用其原有路径。
-      const mode = options.approvalMode?.() ?? config.approval.mode;
-      const control = selectApprovalControl(mode, options.approvalControl, options.humanApprovalControl);
+      const approval = resolveApproval(config, options.approvalMode, options.approvalControl, options.humanApprovalControl);
       try {
-        return await approveToolCall(configWithApprovalMode(config, mode), call, signal, control, { pause: pauseDeadline, resume: resumeDeadline }, preparedHistory);
+        return await approveToolCall(approval.config, call, signal, approval.control, { pause: pauseDeadline, resume: resumeDeadline }, preparedHistory);
       } catch (error) {
         if (!signal.aborted) {
           frameworkError = error instanceof AgentError ? error : new AgentError('APPROVAL_ERROR', '工具审批故障，已停止本轮。');

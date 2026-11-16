@@ -310,7 +310,7 @@ Bash 调用在审批前已生成沙箱执行计划，人工和模型审批详情
 
 `approval.mode` 接受 `default`（默认人工审批）和 `auto`（独立模型审批）。`ask` 在两种模式下分别交给人工或模型审批。人工模式逐次展示工具名称、调用 ID 和完整参数，例如 `[人工审批 1] write_file`。输入 `approve 1` 批准，或 `deny 1` 拒绝；数字须与当前提示一致。答复只对应本次调用，不能用旧编号批准后续调用。无效输入（包括新的用户需求）不会被当作批准；请完成审批后再提交新需求。进入等待前已经排队的需求仍作为后续对话处理，不能成为审批答复。
 
-交互会话中输入 `/permission-mode` 可查看当前审批模式，输入 `/permission-mode default` 或 `/permission-mode auto` 可切换。启动时也可用 `--permission-mode default|auto` 指定本次进程的初始模式，与 Claude Code 的同名启动参数对应；取值沿用本项目的审批语义，只接受 `default` 和 `auto`。切换只作用于当前 CLI 进程，不写入 settings 或会话记录，重启后仍使用 settings 中的 `approval.mode`。切换只影响之后进入审批的工具调用；已经等待中的人工或模型审批按启动时的模式完成，不会因为切到 `auto` 而被自动批准。权限规则及逐次审批语义不因切换改变。
+交互会话中输入 `/permission-mode` 可查看当前审批模式，输入 `/permission-mode default` 或 `/permission-mode auto` 可切换。启动时也可用 `--permission-mode default|auto` 指定本次进程的初始模式，与 Claude Code 的同名启动参数对应；取值沿用本项目的审批语义，只接受 `default` 和 `auto`。切换只作用于当前 CLI 进程，不写入 settings 或会话记录，重启后仍使用 settings 中的 `approval.mode`。切换只影响之后进入审批的工具调用；已经等待中的人工或模型审批按进入审批时的模式完成，不会因为切到 `auto` 而被自动批准。权限规则及逐次审批语义不因切换改变。
 
 人工等待独立上限 `approval.humanTimeoutMs` 默认五分钟（300,000ms），范围为 1–3,600,000 毫秒；它与模型审批上限分别配置。非交互管道、输入关闭或等待超时直接拒绝本次调用，其他普通调用继续，不请求模型代为审批。人工等待不消耗整轮执行预算；批准或拒绝后继续使用等待前的剩余时间，多次等待不会重置已消耗时间。Ctrl+C、SIGTERM 和公共入口的父级取消信号仍能立即中断等待并停止本轮。公共入口在人工模式下未提供 `approvalControl` 时直接拒绝。
 

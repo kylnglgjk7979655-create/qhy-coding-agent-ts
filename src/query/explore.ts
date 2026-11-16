@@ -14,7 +14,7 @@ import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.
 import { readWorkspaceFile } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
 import type { ApprovalControl } from '../tools/tool-approval.js';
-import { configWithApprovalMode, selectApprovalControl } from '../tools/approval-mode.js';
+import { resolveApproval } from '../tools/approval-mode.js';
 
 const exploreInstructions = [
   '你是只读 Explore 调查 Agent。使用独立的新对话，只调查用户指定的工作区问题。',
@@ -55,9 +55,8 @@ export async function runExplore(
   const approvalSignal = signal ?? new AbortController().signal;
   const registry = new ToolRegistry({
     approve: (call) => {
-      const mode = approvalMode?.() ?? config.approval.mode;
-      const control = selectApprovalControl(mode, approvalControl, humanApprovalControl);
-      return approveToolCall(configWithApprovalMode(config, mode), call, approvalSignal, control, undefined, approvalHistory);
+      const approval = resolveApproval(config, approvalMode, approvalControl, humanApprovalControl);
+      return approveToolCall(approval.config, call, approvalSignal, approval.control, undefined, approvalHistory);
     },
   });
   const context: BuiltInToolContext = {

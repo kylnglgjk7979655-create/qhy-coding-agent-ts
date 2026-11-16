@@ -2,6 +2,8 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { parseApprovalModeCommand, selectApprovalControl } from '../src/tools/approval-mode.js';
+import type { ApprovalControl } from '../src/tools/tool-approval.js';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureRequest, FixtureResponse, FixtureToolCall } from './helpers/local-openai-fixture.js';
@@ -149,11 +151,61 @@ describe('审批模式命令', () => {
     expect(await settingsMode()).toBe('default');
   });
 
-  it.skipIf(process.platform === 'win32')('重启后恢复 settings 模式，进程内的切换不持久化', async () => {
-    await setup((request) => request.messages.some(({ role }) => role === 'tool')
-      ? { content: '写入完成' }
-      : { calls: [writeCall('restart', 'note.txt')] }, () => ({ content: 'approve' }));
-    const first = await run('/permission-mode auto\n第一次写入\n/exit\n').done;
+  it.skipIf(process.platform === 'win32')('等待中的模型审批不被切换改判人工，之后进入审批的调用使用 default', async () => {
+    let reviewEntered!: () => void;
+    let releaseReview!: () => void;
+    const entered = new Promise<void>((resolve) => { reviewEntered = resolve; });
+    const gate = new Promise<void>((resolve) => { releaseReview = resolve; });
+    await setup((_request, index) => index === 1
+      ? { calls: [writeCall('pending', 'pending.txt')] }
+      : index === 2
+        ? { calls: [writeCall('after', 'after.txt')] }
+        : { content: '完成两处写入' }, async () => {
+      reviewEntered();
+      await gate;
+      return { content: 'approve' };
+    }, { approval: { mode: 'auto', humanTimeoutMs: 5000 } });
+    const running = runInteractive();
+    await running.waitFor('> ');
+    running.send('第一次写入\n');
+    await Promise.race([entered, running.done.then((result) => {
+      throw new Error(`等待模型审批前进程退出 ${result.code}：${running.output()}`);
+    })]);
+    expect(running.output()).not.toContain('[人工审批');
+    expect(fixture!.approvalRequests).toHaveLength(1);
+
+    running.send('/permission-mode default\n');
+    await running.waitFor('当前审批模式：default（人工审批）');
+    // 已进入模型审查的调用继续由模型决定，不会改派人工。
+    expect(running.output()).not.toContain('[人工审批');
+    releaseReview();
+
+    // 之后进入审批的第二次写入改用人工审批，编号从 1 开始。
+    await running.waitFor('approve 1');
+    expect(running.output()).not.toContain('[人工审批 2]');
+    expect(fixture!.approvalRequests).toHaveLength(1);
+    await expect(readFile(join(cwd, 'pending.txt'), 'utf8')).resolves.toBe('内容-pending');
+    expect(await readFile(join(cwd, 'after.txt'), 'utf8').catch(() => '')).toBe('');
+
+    running.send('approve 1\n');
+    await running.waitFor('完成两处写入');
+    running.end('/exit\n');
+    const result = await running.done;
+
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(await readFile(join(cwd, 'after.txt'), 'utf8')).toBe('内容-after');
+    expect(await settingsMode()).toBe('auto');
+  });
+
+  it.skipIf(process.platform === 'win32')('重启并恢复同一会话后使用 settings 模式，进程内的切换不持久化', async () => {
+    await setup((request) => {
+      const last = request.messages.at(-1);
+      if (last?.role !== 'user') return { content: '写入完成' };
+      return last.content.includes('再次写入')
+        ? { calls: [writeCall('resumed', 'note-resumed.txt')] }
+        : { calls: [writeCall('restart', 'note.txt')] };
+    }, () => ({ content: 'approve' }));
+    const first = await run('/permission-mode auto\n第一次写入\n/exit\n', ['--conversation-id', 'restarted']).done;
     expect(first.code, first.stdout + first.stderr).toBe(0);
     expect(first.stdout).not.toContain('人工审批');
     expect(fixture!.approvalRequests).toHaveLength(1);
@@ -169,8 +221,9 @@ describe('审批模式命令', () => {
     second.end('/exit\n');
     const result = await second.done;
     expect(result.code, result.stdout + result.stderr).toBe(0);
-    // 新进程重新从 settings 取得 default，必须人工审批。
+    // 新进程恢复同一会话后重新从 settings 取得 default，必须人工审批。
     expect(second.output()).toContain('approve 1');
+    expect(await readFile(join(cwd, 'note-resumed.txt'), 'utf8')).toBe('内容-resumed');
     expect(await settingsMode()).toBe('default');
   });
 
@@ -192,5 +245,28 @@ describe('审批模式命令', () => {
 
     expect(result.code).not.toBe(0);
     expect(result.stdout + result.stderr).toContain('--permission-mode');
+  });
+});
+
+describe('审批模式命令解析', () => {
+  it('只把查看、default 与 auto 识别为有效命令', () => {
+    expect(parseApprovalModeCommand('/permission-mode')).toEqual({});
+    expect(parseApprovalModeCommand('  /permission-mode auto  ')).toEqual({ mode: 'auto' });
+    expect(parseApprovalModeCommand('/permission-mode default')).toEqual({ mode: 'default' });
+    expect(parseApprovalModeCommand('/permission-mode acceptEdits')).toEqual({ invalid: 'acceptEdits' });
+    expect(parseApprovalModeCommand('/permission-mode auto extra')).toEqual({ invalid: 'auto extra' });
+    expect(parseApprovalModeCommand('/permission-modex')).toBeUndefined();
+    expect(parseApprovalModeCommand('/permissions')).toBeUndefined();
+    expect(parseApprovalModeCommand('你好')).toBeUndefined();
+  });
+
+  it('default 优先人工控制，auto 只使用通用控制', () => {
+    const human: ApprovalControl = async () => 'approve';
+    const generic: ApprovalControl = async () => 'deny';
+    expect(selectApprovalControl('default', generic, human)).toBe(human);
+    expect(selectApprovalControl('default', generic, undefined)).toBe(generic);
+    expect(selectApprovalControl('default', undefined, undefined)).toBeUndefined();
+    expect(selectApprovalControl('auto', generic, human)).toBe(generic);
+    expect(selectApprovalControl('auto', undefined, human)).toBeUndefined();
   });
 });

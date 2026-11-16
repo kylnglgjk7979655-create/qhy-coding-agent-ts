@@ -27,8 +27,8 @@ export interface ApprovalModeCommand {
 }
 
 /**
- * 解析与 Claude Code `--permission-mode` 对应的会话命令：
- * `/permission-mode` 查看当前模式，`/permission-mode default|auto` 切换。
+ * 解析审批模式会话命令：`/permission-mode` 查看当前模式，`/permission-mode default|auto` 切换。
+ * 启动参数与 Claude Code 的 `--permission-mode` 同名，但模式取值沿用本项目的审批语义。
  */
 export function parseApprovalModeCommand(input: string): ApprovalModeCommand | undefined {
   const match = /^\/permission-mode(?:\s+(.*))?$/u.exec(input.trim());
@@ -55,4 +55,21 @@ export function selectApprovalControl(
   humanApprovalControl: ApprovalControl | undefined,
 ): ApprovalControl | undefined {
   return mode === 'default' ? (humanApprovalControl ?? approvalControl) : approvalControl;
+}
+
+/**
+ * 每次工具调用进入审批时读取当前模式，并解析本次判定使用的配置与控制。
+ * 模式省略时沿用配置模式；返回的配置是仅用于本次判定的副本，不写回原配置或会话记录。
+ */
+export function resolveApproval(
+  config: ResolvedConfig,
+  approvalMode: (() => ApprovalMode) | undefined,
+  approvalControl: ApprovalControl | undefined,
+  humanApprovalControl: ApprovalControl | undefined,
+): { config: ResolvedConfig; control: ApprovalControl | undefined } {
+  const mode = approvalMode?.() ?? config.approval.mode;
+  return {
+    config: configWithApprovalMode(config, mode),
+    control: selectApprovalControl(mode, approvalControl, humanApprovalControl),
+  };
 }
