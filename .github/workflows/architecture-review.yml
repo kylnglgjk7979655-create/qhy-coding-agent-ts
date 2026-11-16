@@ -1,0 +1,96 @@
+name: Architecture Review
+on:
+  schedule:
+    # 每天北京时间 22:10（UTC 14:10）。GitHub 的定时任务可能延迟。
+    - cron: '10 14 * * *'
+  workflow_dispatch:
+concurrency:
+  group: architecture-review-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      AGENT_MODEL: ${{ vars.AGENT_MODEL }}
+      ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
+    outputs:
+      proceed: ${{ steps.history.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: 检查积压并读取历史提案
+        id: history
+        env:
+          HISTORY_FILE: ${{ runner.temp }}/architecture-history.json
+        run: |
+          set -euo pipefail
+          gh issue list --state all --label 'source:architecture-review' --limit 1000 --json number,title,body,state,url > "$HISTORY_FILE"
+          open=$(gh issue list --state open --label 'source:architecture-review' --limit 10 --json number --jq 'length')
+          if [ "$open" -ge 10 ]; then
+            echo 'proceed=false' >> "$GITHUB_OUTPUT"
+            echo "已有 $open 个未关闭的巡检提案，本次跳过。" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'proceed=true' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: ./.github/actions/setup
+        if: steps.history.outputs.proceed == 'true'
+      - name: 安装 Claude Code 并准备配置
+        if: steps.history.outputs.proceed == 'true'
+        run: |
+          npm install -g @anthropic-ai/claude-code@2.1.323
+          printf '{"hasCompletedOnboarding":true}\n' > "$HOME/.claude.json"
+      - name: 生成巡检提案
+        if: steps.history.outputs.proceed == 'true'
+        env:
+          HISTORY_FILE: ${{ runner.temp }}/architecture-history.json
+          OUTPUT_DIR: ${{ runner.temp }}/architecture-review
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+        run: pnpm exec tsx .sandcastle/agent-workflows/architecture-review/architecture-review.ts
+      - uses: actions/upload-artifact@v4
+        if: steps.history.outputs.proceed == 'true'
+        with:
+          name: architecture-review-result
+          path: ${{ runner.temp }}/architecture-review/architecture-review.json
+          if-no-files-found: error
+  publish:
+    needs: review
+    if: needs.review.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: architecture-review-result
+          path: ${{ runner.temp }}/architecture-review
+      - name: 发布提案或记录跳过原因
+        env:
+          RESULT: ${{ runner.temp }}/architecture-review/architecture-review.json
+        run: |
+          set -euo pipefail
+          status=$(jq -r '.status' "$RESULT")
+          if [ "$status" = skipped ]; then
+            echo '## 巡检跳过' >> "$GITHUB_STEP_SUMMARY"
+            jq -r '.reason' "$RESULT" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$status" = proposed ]; then
+            gh label create 'source:architecture-review' --color 5319E7 --description '自动架构巡检提出的 PRD' --force
+            jq -r '.body' "$RESULT" > "$RUNNER_TEMP/prd.md"
+            issue_url=$(gh issue create --title "$(jq -r '.title' "$RESULT")" --body-file "$RUNNER_TEMP/prd.md" --label 'source:architecture-review')
+            echo "## 巡检提案" >> "$GITHUB_STEP_SUMMARY"
+            echo "$issue_url" >> "$GITHUB_STEP_SUMMARY"
+            jq -r '.oneLineSummary, "", "考虑的候选项：", (.candidatesConsidered[] | "- " + .)' "$RESULT" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "未知巡检状态: $status" >&2
+            exit 1
+          fi
