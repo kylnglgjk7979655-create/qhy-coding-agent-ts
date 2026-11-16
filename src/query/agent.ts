@@ -22,6 +22,8 @@ import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import type { SkillInjection } from '../services/skills/skill-injection.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
 import type { BackgroundAgentTasks, BackgroundTaskStatusEntry } from '../tools/AgentTool/background-agent-tasks.js';
+import { AgentObservations } from '../services/observability/agent-observations.js';
+import type { TracingScope } from '../services/observability/langfuse.js';
 
 export type { ApprovalControl } from '../tools/tool-approval.js';
 export type { ToolApprovalRequest } from '../tools/tool-registry.js';
@@ -96,6 +98,8 @@ export async function runAgent(
     recentSkillLoads?: readonly string[];
     /** 先前成功加载的正文快照，避免同规范名记录在恢复时被重新解析为另一来源。 */
     skillBodies?: Readonly<Record<string, string>>;
+    /** 本轮 Langfuse 跟踪；子 Agent 的 scope 指向其 subagent span。 */
+    tracing?: TracingScope;
   },
 ): Promise<RunResult> {
   if (options.smokeTool && config.maxSteps < 2) {
@@ -143,13 +147,15 @@ export async function runAgent(
     activeSince = performance.now();
     timer = setTimeout(() => deadline.abort(), remainingMs);
   }
+  const observations = new AgentObservations(options.tracing);
   const registry = new ToolRegistry({
     ...(options.onToolEvent ? { onToolEvent: options.onToolEvent } : {}),
     ...(options.onToolCallStart ? { beforeTool: options.onToolCallStart } : {}),
     approve: async (call) => {
       signal.throwIfAborted();
       try {
-        return await approveToolCall(config, call, signal, options.approvalControl, { pause: pauseDeadline, resume: resumeDeadline }, preparedHistory);
+        return await observations.traceApproval(call, (tracing) =>
+          approveToolCall(config, call, signal, options.approvalControl, { pause: pauseDeadline, resume: resumeDeadline }, preparedHistory, tracing));
       } catch (error) {
         if (!signal.aborted) {
           frameworkError = error instanceof AgentError ? error : new AgentError('APPROVAL_ERROR', '工具审批故障，已停止本轮。');
@@ -174,6 +180,7 @@ export async function runAgent(
     bashOperations,
     ...(options.onFileRead ? { onFileRead: options.onFileRead } : {}),
     ...(options.skills === undefined ? {} : { skills: options.skills }),
+    ...(options.tracing === undefined ? {} : { tracing: options.tracing }),
   });
   let closeMCP: (() => Promise<void>) | undefined;
   try {
@@ -243,6 +250,13 @@ export async function runAgent(
         frameworkError ??= modelStreamError(error);
         frameworkAbort.abort(frameworkError);
       },
+      // 步骤在产生结果前失败时不会被 onLanguageModelCallEnd 覆盖，需显式结束对应 generation。
+      onStepError: ({ callId, error }) => observations.failModelCall(callId, error),
+      onAbort: () => observations.abortPending(),
+      onLanguageModelCallStart: (event) => observations.startModelCall(event),
+      onLanguageModelCallEnd: (event) => observations.endModelCall(event),
+      onToolExecutionStart: (event) => observations.startTool(event),
+      onToolExecutionEnd: (event) => observations.endTool(event),
       // Avoid automatic retries hiding auth failures or extending the deadline.
       maxRetries: 0,
       prepareStep: async ({ stepNumber, messages, responseMessages }) => {
@@ -294,6 +308,7 @@ export async function runAgent(
           ...(options.getRecentFiles ? { recentFiles: options.getRecentFiles() } : {}),
           ...(options.getTaskStatuses ? { getTaskStatuses: options.getTaskStatuses } : {}),
           ...(restore === undefined ? {} : { restore }),
+          ...(options.tracing === undefined ? {} : { tracing: options.tracing }),
         });
         preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;

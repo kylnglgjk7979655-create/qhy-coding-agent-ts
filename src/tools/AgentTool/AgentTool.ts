@@ -8,6 +8,31 @@ import type { ApprovalControl } from '../tool-approval.js';
 import type { BackgroundAgentTasks } from './background-agent-tasks.js';
 import type { WorkspaceFileSnapshot } from '../workspace-files.js';
 import type { SkillCatalogue } from '../../services/skills/skill-registry.js';
+import { AgentError } from '../../utils/errors.js';
+import { childScope, childSpan } from '../../services/observability/langfuse.js';
+import type { ObservationHandle, ObservationStatus, TracingScope } from '../../services/observability/langfuse.js';
+
+function failureStatus(error: unknown): ObservationStatus {
+  return error instanceof AgentError && error.code === 'CANCELLED' ? 'cancelled' : 'failed';
+}
+
+function subagentTracing(
+  tracing: TracingScope | undefined,
+  type: string,
+  details: { description: string; prompt: string; model: string; toolCallId: string; background: boolean },
+): { span: ObservationHandle | undefined; scope: TracingScope | undefined } {
+  const span = childSpan(tracing, {
+    name: `subagent.${type}`,
+    input: { description: details.description, prompt: details.prompt },
+    metadata: {
+      subagentType: type,
+      model: details.model,
+      toolCallId: details.toolCallId,
+      background: details.background,
+    },
+  });
+  return { span, scope: childScope(tracing, span) };
+}
 
 export function registerAgentTool(
   registry: ToolRegistry,
@@ -19,6 +44,7 @@ export function registerAgentTool(
     onCheckpointError?: (path: string) => void;
   } = {},
   skills?: SkillCatalogue,
+  tracing?: TracingScope,
 ): void {
   registry.register({
     name: 'agent',
@@ -45,44 +71,80 @@ export function registerAgentTool(
         if (description.toLowerCase() === 'cancel' && taskIds.length === 1) return backgroundTasks.cancel(taskIds[0]!);
         throw new ToolExecutionError('task-manager 的 description 使用 status、wait 或 cancel；prompt 填一个任务 ID，wait 可用逗号分隔多个 ID。', undefined);
       }
+      const childTrace = subagentTracing(tracing, type, {
+        description, prompt, model: model ?? config.model, toolCallId: execution.toolCallId, background: background === true,
+      });
+      const { span, scope } = childTrace;
       if (type === 'general-purpose') {
-        if (background === true) {
-          if (!backgroundTasks) throw new ToolExecutionError('当前调用没有绑定主会话，无法启动后台子 Agent。', undefined);
-          const launched = backgroundTasks.launch(execution.toolCallId, description, async (signal) => {
-            const result = await runAgent(config, `任务说明：${description}\n任务：${prompt}`, {
-              smokeTool: false,
-              generalPurposeSubagent: true,
-              signal,
-              ...(fileWriteCallbacks.onBeforeWrite === undefined ? {} : { onBeforeWrite: fileWriteCallbacks.onBeforeWrite }),
-              ...(fileWriteCallbacks.onCheckpointError === undefined ? {} : { onCheckpointError: fileWriteCallbacks.onCheckpointError }),
-              ...(approvalControl === undefined ? {} : { approvalControl }),
-              ...(model === undefined ? {} : { modelOverride: model }),
-              ...(skills === undefined ? {} : { skills }),
-            });
-            return { report: result.text, usage: result.usage };
+        const run = async (signal?: AbortSignal) => {
+          const result = await runAgent(config, `任务说明：${description}\n任务：${prompt}`, {
+            smokeTool: false,
+            generalPurposeSubagent: true,
+            ...(signal === undefined ? {} : { signal }),
+            ...(fileWriteCallbacks.onBeforeWrite === undefined ? {} : { onBeforeWrite: fileWriteCallbacks.onBeforeWrite }),
+            ...(fileWriteCallbacks.onCheckpointError === undefined ? {} : { onCheckpointError: fileWriteCallbacks.onCheckpointError }),
+            ...(approvalControl === undefined ? {} : { approvalControl }),
+            ...(model === undefined ? {} : { modelOverride: model }),
+            ...(skills === undefined ? {} : { skills }),
+            ...(scope === undefined ? {} : { tracing: scope }),
           });
+          return { report: result.text, usage: result.usage };
+        };
+        if (background === true) {
+          if (!backgroundTasks) {
+            span?.end({ status: 'failed', error: { code: 'TOOL_EXECUTION_ERROR', message: '当前调用没有绑定主会话，无法启动后台子 Agent。' } });
+            throw new ToolExecutionError('当前调用没有绑定主会话，无法启动后台子 Agent。', undefined);
+          }
+          let launched: { taskId: string; launchCallId: string };
+          try {
+            launched = backgroundTasks.launch(execution.toolCallId, description, async (signal) => {
+              try {
+                const result = await run(signal);
+                span?.end({ output: result.report, status: 'succeeded' });
+                // 后台任务可能晚于主轮次结束；在任务收尾时独立刷新，避免事件滞留内存。
+                void tracing?.tracer.flush();
+                return result;
+              } catch (error) {
+                span?.end({ status: failureStatus(error), error: { code: 'SUBAGENT_ERROR', message: error instanceof Error ? error.message : '后台子 Agent 执行失败。' } });
+                void tracing?.tracer.flush();
+                throw error;
+              }
+            });
+          } catch (error) {
+            span?.end({ status: 'failed', error: { code: 'TOOL_EXECUTION_ERROR', message: error instanceof Error ? error.message : '无法启动后台子 Agent。' } });
+            throw error;
+          }
           return {
             ...launched,
             status: 'running',
             collaborationHint: `后台任务仍在运行；避免重复启动。使用 agent(subagent_type="task-manager", description="status|wait|cancel", prompt="任务 ID") 管理任务；wait 可在 prompt 中用逗号分隔多个 ID。`,
           };
         }
-        const result = await runAgent(config, `任务说明：${description}\n任务：${prompt}`, {
-          smokeTool: false,
-          generalPurposeSubagent: true,
-          ...(fileWriteCallbacks.onBeforeWrite === undefined ? {} : { onBeforeWrite: fileWriteCallbacks.onBeforeWrite }),
-          ...(fileWriteCallbacks.onCheckpointError === undefined ? {} : { onCheckpointError: fileWriteCallbacks.onCheckpointError }),
-          ...(approvalControl === undefined ? {} : { approvalControl }),
-          ...(model === undefined ? {} : { modelOverride: model }),
-          ...(execution.abortSignal === undefined ? {} : { signal: execution.abortSignal }),
-          ...(skills === undefined ? {} : { skills }),
-        });
-        return { report: result.text };
+        try {
+          const result = await run(execution.abortSignal);
+          span?.end({ output: result.report, status: 'succeeded' });
+          return { report: result.report };
+        } catch (error) {
+          span?.end({ status: failureStatus(error), error: { code: 'SUBAGENT_ERROR', message: error instanceof Error ? error.message : '子 Agent 执行失败。' } });
+          throw error;
+        }
       }
-      if (background === true) throw new ToolExecutionError('Explore 暂不支持后台模式。', undefined);
-      if (type !== 'explore') throw new ToolExecutionError(`未知子智能体类型“${subagent_type}”；可用类型：general-purpose、Explore。`, undefined);
-      const report = await runExplore(config, description, prompt, model, execution.abortSignal, approvalControl, skills);
-      return { report };
+      if (background === true) {
+        span?.end({ status: 'rejected', error: { code: 'TOOL_EXECUTION_ERROR', message: 'Explore 暂不支持后台模式。' } });
+        throw new ToolExecutionError('Explore 暂不支持后台模式。', undefined);
+      }
+      if (type !== 'explore') {
+        span?.end({ status: 'rejected', error: { code: 'TOOL_EXECUTION_ERROR', message: `未知子智能体类型“${subagent_type}”。` } });
+        throw new ToolExecutionError(`未知子智能体类型“${subagent_type}”；可用类型：general-purpose、Explore。`, undefined);
+      }
+      try {
+        const report = await runExplore(config, description, prompt, model, execution.abortSignal, approvalControl, skills, scope);
+        span?.end({ output: report, status: 'succeeded' });
+        return { report };
+      } catch (error) {
+        span?.end({ status: failureStatus(error), error: { code: 'SUBAGENT_ERROR', message: error instanceof Error ? error.message : 'Explore 执行失败。' } });
+        throw error;
+      }
     },
   });
 }

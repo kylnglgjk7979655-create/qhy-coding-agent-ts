@@ -14,6 +14,8 @@ import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.
 import { readWorkspaceFile } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
 import type { ApprovalControl } from '../tools/tool-approval.js';
+import { AgentObservations } from '../services/observability/agent-observations.js';
+import type { TracingScope } from '../services/observability/langfuse.js';
 
 const exploreInstructions = [
   '你是只读 Explore 调查 Agent。使用独立的新对话，只调查用户指定的工作区问题。',
@@ -33,6 +35,7 @@ export async function runExplore(
   signal?: AbortSignal,
   approvalControl?: ApprovalControl,
   skills?: SkillCatalogue,
+  tracing?: TracingScope,
 ): Promise<string> {
   signal?.throwIfAborted();
   const provider = createOpenAI({
@@ -44,8 +47,13 @@ export async function runExplore(
   // Explore 没有会话记录；只在本运行内记录已注入的 Skill 调用。
   const injectedSkillCalls = new Set<string>();
   const approvalSignal = signal ?? new AbortController().signal;
+  const observations = new AgentObservations(tracing);
   const registry = new ToolRegistry({
-    approve: (call) => approveToolCall(config, call, approvalSignal, approvalControl, undefined, approvalHistory),
+    approve: (call) => {
+      approvalSignal.throwIfAborted();
+      return observations.traceApproval(call, (childTracing) =>
+        approveToolCall(config, call, approvalSignal, approvalControl, undefined, approvalHistory, childTracing));
+    },
   });
   const context: BuiltInToolContext = {
     config,
@@ -82,6 +90,12 @@ export async function runExplore(
     toolCallConcurrency: MAX_TOOL_CALL_CONCURRENCY,
     stopWhen: isStepCount(config.maxSteps),
     maxRetries: 0,
+    onStepError: ({ callId, error }) => observations.failModelCall(callId, error),
+    onAbort: () => observations.abortPending(),
+    onLanguageModelCallStart: (event) => observations.startModelCall(event),
+    onLanguageModelCallEnd: (event) => observations.endModelCall(event),
+    onToolExecutionStart: (event) => observations.startTool(event),
+    onToolExecutionEnd: (event) => observations.endTool(event),
     prepareStep: async ({ messages, responseMessages }) => {
       if (skills === undefined) {
         approvalHistory = [...messages];
