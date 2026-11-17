@@ -1,6 +1,7 @@
 import { InvalidToolInputError, NoSuchToolError, asSchema, tool } from 'ai';
 import type { FlexibleSchema, ToolExecutionOptions, ToolSet } from 'ai';
 import { AgentError } from '../utils/errors.js';
+import type { ToolPermissionFacts } from './tool-permission-policy.js';
 
 /** 工具错误码的完整枚举；Hook 的 error_code 只允许取这些值，不接受自由字符串。 */
 export const TOOL_ERROR_CODES = [
@@ -29,14 +30,19 @@ export interface ToolPreToolUseDecision {
   updatedInput?: unknown;
 }
 
+/** prepare 产物：执行输入、用户可见审批细节与类型化权限事实。 */
+export interface ToolPrepareResult<PreparedInput = unknown> {
+  input: PreparedInput;
+  details?: Record<string, string>;
+  /** 策略模块的唯一输入；展示文本不能替代权限事实。 */
+  permission: ToolPermissionFacts;
+  cleanup?: () => Promise<void> | void;
+}
+
 /** 注册时保留的校验与准备能力，供 PreToolUse 改写后重新校验并生成审批细节。 */
 interface RegisteredToolDefinition {
   validateInput: (value: unknown) => Promise<boolean>;
-  prepare?: (input: unknown) => Promise<{
-    input: unknown;
-    details?: Record<string, string>;
-    cleanup?: () => Promise<void> | void;
-  }>;
+  prepare?: (input: unknown) => Promise<ToolPrepareResult>;
 }
 
 export interface ToolApprovalRequest {
@@ -44,6 +50,8 @@ export interface ToolApprovalRequest {
   toolName: string;
   input: unknown;
   details?: Record<string, string>;
+  /** 工具在 prepare 阶段产出的权限事实；审批模块只消费该事实判断权限。 */
+  permission: ToolPermissionFacts;
   /** default 为工具默认审批，explicit 为显式 ask 或范围规则；会话批准只跳过 default。 */
   approvalKind?: 'default' | 'explicit';
   /** Hook 的 allow/ask 结论与理由；deny 不会进入审批。 */
@@ -56,9 +64,15 @@ function permissionDeniedResult(): ToolFailure {
 }
 
 /** 用注册时的 prepare 重新生成改写输入的审批细节与执行输入；失败时回退。 */
-async function prepareUpdatedInput(definition: RegisteredToolDefinition, input: unknown) {
+async function prepareUpdatedInput(
+  definition: RegisteredToolDefinition,
+  input: unknown,
+  staticPermission: ToolPermissionFacts | undefined,
+) {
   try {
-    return definition.prepare === undefined ? { input } : await definition.prepare(input);
+    return definition.prepare === undefined
+      ? { input, ...(staticPermission === undefined ? {} : { permission: staticPermission }) }
+      : await definition.prepare(input);
   } catch {
     process.stderr.write('[hook] PreToolUse: updatedInput 无法准备，已回退原输入（不影响工具）。\n');
     return undefined;
@@ -134,6 +148,22 @@ export class ToolExecutionError extends Error {
   constructor(message: string, readonly output: unknown) { super(message); }
 }
 
+/**
+ * 注册契约：无 prepare 的静态工具必须提供常量权限事实；
+ * 有 prepare 的工具在准备阶段返回随输入变化的事实。
+ */
+type ToolRegistration<Input, Output, PreparedInput> = {
+  name: string;
+  description: string;
+  inputSchema: FlexibleSchema<Input>;
+  concurrency?: 'parallel' | 'exclusive';
+  approvalDetails?: Record<string, string>;
+  execute: (input: PreparedInput, options: ToolExecutionOptions<unknown>) => Promise<Output> | Output;
+} & (
+  | { permission: ToolPermissionFacts; prepare?: undefined }
+  | { permission?: ToolPermissionFacts; prepare: (input: Input) => Promise<ToolPrepareResult<PreparedInput>> }
+);
+
 // SDK 负责参数校验、调用 ID 与结果配对；registry 按工具声明调度执行。
 export class ToolRegistry {
   private readonly registered = new Map<string, ToolSet[string]>();
@@ -169,23 +199,15 @@ export class ToolRegistry {
     approve?: (call: ToolApprovalRequest, signal?: AbortSignal) => Promise<boolean>;
   }) {}
 
-  register<Input, Output, PreparedInput = Input>(definition: {
-    name: string;
-    description: string;
-    inputSchema: FlexibleSchema<Input>;
-    concurrency?: 'parallel' | 'exclusive';
-    approvalDetails?: Record<string, string>;
-    prepare?: (input: Input) => Promise<{
-      input: PreparedInput;
-      details?: Record<string, string>;
-      /** 准备阶段占用资源时释放；审批拒绝或执行结束都会调用。 */
-      cleanup?: () => Promise<void> | void;
-    }>;
-    execute: (input: PreparedInput, options: ToolExecutionOptions<unknown>) => Promise<Output> | Output;
-  }): void {
-    const { name, description, inputSchema, execute, prepare, concurrency = 'exclusive', approvalDetails } = definition;
+  register<Input, Output, PreparedInput = Input>(definition: ToolRegistration<Input, Output, PreparedInput>): void {
+    const { name, description, inputSchema, execute, prepare, concurrency = 'exclusive', approvalDetails, permission } = definition;
     if (this.registered.has(name)) {
       throw new AgentError('CONFIG_ERROR', `工具名称重复注册：${name}。`);
+    }
+    const staticPermission = prepare === undefined ? permission : undefined;
+    if (prepare === undefined && staticPermission === undefined) {
+      // 缺少权限事实会让工具静默落入默认审批，因此在注册时即拒绝。
+      throw new AgentError('CONFIG_ERROR', `工具缺少权限事实：${name}。`);
     }
     const schema = asSchema(inputSchema);
     const validate = schema.validate;
@@ -210,9 +232,11 @@ export class ToolRegistry {
           ? { description: input.description }
           : {};
         execution.abortSignal?.throwIfAborted();
-        let prepared: { input: PreparedInput; details?: Record<string, string>; cleanup?: () => Promise<void> | void };
+        let prepared: ToolPrepareResult<PreparedInput>;
         try {
-          prepared = prepare ? await prepare(input) : { input: input as unknown as PreparedInput };
+          prepared = prepare
+            ? await prepare(input)
+            : { input: input as unknown as PreparedInput, permission: staticPermission! };
         } catch {
           execution.abortSignal?.throwIfAborted();
           this.report({ callId: execution.toolCallId, toolName: name, ...eventDetails, status: 'rejected', errorCode: 'INVALID_TOOL_ARGUMENTS' });
@@ -238,7 +262,7 @@ export class ToolRegistry {
           // 准备失败说明改写目标当前不可用，回退原输入继续正常审批。
           let approvalInput: unknown = input;
           if (hookDecision?.updatedInput !== undefined) {
-            const replacement = await prepareUpdatedInput(registered, hookDecision.updatedInput);
+            const replacement = await prepareUpdatedInput(registered, hookDecision.updatedInput, staticPermission);
             if (replacement !== undefined) {
               try { await prepared.cleanup?.(); } catch { /* 旧准备资源回收失败不影响改写。 */ }
               prepared = replacement as typeof prepared;
@@ -257,6 +281,7 @@ export class ToolRegistry {
             callId: execution.toolCallId,
             toolName: name,
             input: approvalInput,
+            permission: prepared.permission,
             ...(Object.keys(details).length > 0 ? { details } : {}),
             ...(hookPermission === undefined ? {} : { hookPermission }),
           }, execution.abortSignal)) {

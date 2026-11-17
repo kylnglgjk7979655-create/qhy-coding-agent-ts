@@ -19,6 +19,7 @@ function writeCall(toolName = 'write_file', callId = 'call-1'): ToolApprovalRequ
     toolName,
     input: { path: 'note.txt', content: 'content' },
     details: { requestedPath: 'note.txt', target: join('/tmp/qhy-approval-kind', 'note.txt') },
+    permission: { tool: 'write_file', requestedPath: 'note.txt', target: join('/tmp/qhy-approval-kind', 'note.txt') },
   };
 }
 
@@ -68,6 +69,7 @@ describe('人工审批来源标记', () => {
     const bashCall: ToolApprovalRequest = {
       callId: 'bash-1', toolName: 'Bash', input: { command: 'echo hi' },
       details: { bashCommands: JSON.stringify(['echo hi']) },
+      permission: { tool: 'Bash', commands: ['echo hi'], requiresExtraApproval: false },
     };
     const defaults: ToolApprovalRequest[] = [];
     await approveToolCall(

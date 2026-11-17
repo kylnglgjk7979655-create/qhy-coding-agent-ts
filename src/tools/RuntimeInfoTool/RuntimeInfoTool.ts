@@ -8,6 +8,7 @@ export function registerRuntimeInfoTool(registry: ToolRegistry, { config, probe 
     concurrency: 'parallel',
     description: '返回已配置的工作区绝对路径和本次运行探针。',
     inputSchema: z.object({}),
+    permission: { tool: 'runtimeInfo' },
     execute: () => ({ workspace: config.workspace, probe }),
   });
 }

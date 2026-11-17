@@ -3,7 +3,11 @@ import { approvalOptionsFor, SessionApprovals } from '../src/cli/approval-policy
 import type { ToolApprovalRequest } from '../src/tools/tool-registry.js';
 
 function call(toolName: string, approvalKind?: 'default' | 'explicit'): ToolApprovalRequest {
-  return { callId: `${toolName}-1`, toolName, input: {}, ...(approvalKind === undefined ? {} : { approvalKind }) };
+  return {
+    callId: `${toolName}-1`, toolName, input: {},
+    permission: { tool: 'Bash', commands: [], requiresExtraApproval: false },
+    ...(approvalKind === undefined ? {} : { approvalKind }),
+  };
 }
 
 describe('交互审批选项', () => {

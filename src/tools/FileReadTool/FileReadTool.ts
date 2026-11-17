@@ -19,7 +19,11 @@ export function registerFileReadTool(
       inputSchema: z.strictObject({ path: z.string().min(1) }),
       prepare: async ({ path }) => {
         const target = await resolveReadTarget(config.workspace, path);
-        return { input: { path, target }, details: { requestedPath: path, target } };
+        return {
+          input: { path, target },
+          details: { requestedPath: path, target },
+          permission: { tool: 'read_file', requestedPath: path, target },
+        };
       },
       execute: async ({ path, target }) => {
         const content = await readWorkspaceFile(
@@ -47,6 +51,7 @@ export function registerFileReadTool(
         return {
           input: { file_path, target, ...(offset === undefined ? {} : { offset }), ...(limit === undefined ? {} : { limit }) },
           details: { requestedPath: file_path, target },
+          permission: { tool: 'read_file', requestedPath: file_path, target },
         };
       },
       execute: async ({ file_path, target, offset, limit }) => {

@@ -52,6 +52,7 @@ export function registerBashTool(registry: ToolRegistry, { config, bashOperation
             ...sandboxApprovalDetails(plan),
             ...(plan.notice === undefined ? {} : { sandboxNotice: plan.notice }),
           },
+          permission: prepared.permission,
           // 审批拒绝或执行前失败时由 registry 回收本次调用的代理与临时目录；执行层已关闭时重复调用无副作用。
           cleanup: async () => {
             try {

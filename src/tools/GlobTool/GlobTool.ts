@@ -2,13 +2,16 @@ import { z } from 'zod';
 import { globWorkspace, inspectWorkspaceSearch, validateSearchRoot } from '../workspace-search.js';
 import type { BuiltInToolContext } from '../register-built-in-tools.js';
 import type { ToolRegistry } from '../tool-registry.js';
-import { searchPathPermissionAction } from '../tool-approval.js';
+import { searchPathAction } from '../tool-permission-policy.js';
 
 export function registerGlobTool(
   registry: ToolRegistry,
   { config }: BuiltInToolContext,
   names: readonly ('glob' | 'Glob')[] = ['glob', 'Glob'],
 ): void {
+  const rules = {
+    allow: config.permissions?.allow ?? [], ask: config.permissions?.ask ?? [], deny: config.permissions?.deny ?? [],
+  };
   const register = (name: string): void => {
     registry.register({
       name,
@@ -17,18 +20,24 @@ export function registerGlobTool(
       inputSchema: z.strictObject({ pattern: z.string().min(1), path: z.string().min(1).optional() }),
       prepare: async (input) => {
         const target = await validateSearchRoot(config.workspace, input.path);
-        const permission = (path: string) => searchPathPermissionAction(config, 'glob', path);
+        const permission = (path: string) => searchPathAction({
+          rules, workspace: config.workspace, capability: 'Glob', path,
+        });
         const rootDenied = permission(target) === 'deny';
         const scope = rootDenied ? { asks: [], excluded: [] } : await inspectWorkspaceSearch(config.workspace, input.path, permission);
-        return { input: { ...input, approvedSearchAsks: scope.asks, approvedSearchRoot: target }, details: {
-          requestedPath: input.path ?? '.', target,
-          ...(scope.asks.length ? { searchAsk: JSON.stringify(scope.asks) } : {}),
-        } };
+        return {
+          input: { ...input, approvedSearchAsks: scope.asks, approvedSearchRoot: target },
+          details: {
+            requestedPath: input.path ?? '.', target,
+            ...(scope.asks.length ? { searchAsk: JSON.stringify(scope.asks) } : {}),
+          },
+          permission: { tool: 'glob', requestedPath: input.path ?? '.', target, searchAsks: scope.asks },
+        };
       },
       execute: (input) => globWorkspace(
         config.workspace,
         input,
-        (path) => searchPathPermissionAction(config, 'glob', path),
+        (path) => searchPathAction({ rules, workspace: config.workspace, capability: 'Glob', path }),
         input.approvedSearchAsks,
         input.approvedSearchRoot,
       ),

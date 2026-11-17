@@ -89,6 +89,7 @@ export async function registerRemoteMCP(config: ResolvedConfig, registry: ToolRe
         registry.register({
           name, description: typeof remote.description === 'string' ? remote.description : '远程 MCP 工具。', inputSchema: remote.inputSchema,
           approvalDetails: { mcpServer: server.name, mcpTool: remoteName },
+          permission: { tool: 'mcp', server: server.name, remoteTool: remoteName },
           execute: async (input, execution) => {
             signal.throwIfAborted();
             const callSignal = AbortSignal.any([signal, AbortSignal.timeout(config.mcp?.callTimeoutMs ?? 30_000)]);

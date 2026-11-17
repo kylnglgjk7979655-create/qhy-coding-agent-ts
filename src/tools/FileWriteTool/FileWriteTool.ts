@@ -11,7 +11,11 @@ export function registerFileWriteTool(registry: ToolRegistry, { config, fileWrit
     inputSchema: z.strictObject({ path: z.string().min(1), content: z.string() }),
     prepare: async ({ path, content }) => {
       const target = await resolveWriteTarget(config.workspace, path);
-      return { input: { path, content, target }, details: { requestedPath: path, target } };
+      return {
+        input: { path, content, target },
+        details: { requestedPath: path, target },
+        permission: { tool: 'write_file', requestedPath: path, target },
+      };
     },
     execute: async ({ path, content, target }) => {
       await writeControlledWorkspaceFile(
@@ -33,7 +37,11 @@ export function registerFileWriteTool(registry: ToolRegistry, { config, fileWrit
     inputSchema: z.strictObject({ file_path: z.string().min(1), content: z.string() }),
     prepare: async ({ file_path, content }) => {
       const target = await resolveWriteTarget(config.workspace, file_path);
-      return { input: { file_path, content, target }, details: { requestedPath: file_path, target } };
+      return {
+        input: { file_path, content, target },
+        details: { requestedPath: file_path, target },
+        permission: { tool: 'write_file', requestedPath: file_path, target },
+      };
     },
     execute: async ({ file_path, content, target }) => {
       // Claude 风格的 Write 允许直接创建或重写目标；同进程并发写入仍按读取基线检测冲突。

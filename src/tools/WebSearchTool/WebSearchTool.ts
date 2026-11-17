@@ -106,6 +106,7 @@ export function registerWebSearchTool(registry: ToolRegistry, { config }: BuiltI
       blocked_domains: z.array(z.string().trim().min(1)).max(20).optional(),
       max_results: z.number().int().min(1).max(20).optional(),
     }),
+    permission: { tool: 'webSearch' },
     execute: async ({ query, allowed_domains, blocked_domains, max_results }, execution) => {
       const envName = config.webSearch?.apiKeyEnv ?? 'TAVILY_API_KEY';
       // 凭据只在 loadConfig 时从注入的 env 读取，工具不再直接访问 process.env。

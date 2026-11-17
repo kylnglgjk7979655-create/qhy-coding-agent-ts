@@ -19,6 +19,7 @@ export function registerEditTool(registry: ToolRegistry, { config, fileWriteCall
       return {
         input: { file_path, old_string, new_string, replace_all, target },
         details: { requestedPath: file_path, target },
+        permission: { tool: 'edit', requestedPath: file_path, target },
       };
     },
     execute: async ({ file_path, old_string, new_string, replace_all, target }) => {

@@ -33,11 +33,20 @@ export async function prepareBashInput<Input extends { command: string; cwd?: st
     const cwd = await realpath(resolve(workspace, requestedCwd));
     if (!(await stat(cwd)).isDirectory()) throw new Error();
     const analysis = analyzeBashCommand(input.command);
-    return { input: { ...input, cwd, requestedCwd, approvedCwd: cwd }, details: {
-      cwd,
-      bashCommands: JSON.stringify(analysis.commands),
-      bashRequiresApproval: String(analysis.requiresApproval || !isWithinWorkspace(resolve(workspace), cwd)),
-    } };
+    return {
+      input: { ...input, cwd, requestedCwd, approvedCwd: cwd },
+      details: {
+        cwd,
+        bashCommands: JSON.stringify(analysis.commands),
+        bashRequiresApproval: String(analysis.requiresApproval || !isWithinWorkspace(resolve(workspace), cwd)),
+      },
+      permission: {
+        tool: 'Bash' as const,
+        commands: analysis.commands,
+        // 重定向、管道等复合语法与工作区外 cwd 都要求额外审批。
+        requiresExtraApproval: analysis.requiresApproval || !isWithinWorkspace(resolve(workspace), cwd),
+      },
+    };
   } catch {
     throw new Error('Bash 命令或工作目录无效、无法可靠解析，或无法访问。');
   }

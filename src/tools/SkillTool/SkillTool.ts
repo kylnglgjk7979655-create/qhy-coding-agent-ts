@@ -13,6 +13,7 @@ export function registerSkillTool(registry: ToolRegistry, skills: SkillCatalogue
     concurrency: 'parallel',
     description: '按规范名称、显示名称或别名加载已注册 Skill；结果只表示调用成功，正文由后续消息提供。',
     inputSchema: z.object({ name: z.string().trim().min(1) }),
+    permission: { tool: 'skill' },
     execute: ({ name }) => {
       const record = findCommand(skills.skills, name);
       if (record === undefined) throw new Error(`Unknown skill: ${name}`);
