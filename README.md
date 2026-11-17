@@ -238,7 +238,7 @@ pnpm dev --workspace ./demo
 }
 ```
 
-`provider` 目前只接受 `tavily`；`apiKeyEnv` 指向保存 API Key 的环境变量，默认 `TAVILY_API_KEY`，启动时从环境读取，凭据不会写入工具参数、日志或会话记录。省略 `baseURL` 时使用 `https://api.tavily.com`；如需本地夹具可配置 HTTP(S) 形式的服务地址。旧版本曾把凭据值写入会话记录；当前版本在加载或续聊该会话时会自动从 `events.jsonl` 和 `snapshot.json` 中清除 `webSearchApiKey` 字段，无法完整解析的日志保持原样并在下次加载时重试。长期不再打开的旧会话不会自动清理，若曾使用旧版本配置 Tavily，建议在搜索服务端轮换对应 key，或在删除会话目录时一并清理。`timeoutMs` 范围为 1–3,600,000 毫秒，`maxResults` 范围为 1–20，单次调用的 `max_results` 可覆盖默认值。`WebFetch` 与 `WebSearch` 未配置权限规则时默认进入当前审批。
+`provider` 目前只接受 `tavily`；`apiKeyEnv` 指向保存 API Key 的环境变量，默认 `TAVILY_API_KEY`，启动时从环境读取，凭据不会写入工具参数、日志或会话记录。省略 `baseURL` 时使用 `https://api.tavily.com`；如需本地夹具可配置 HTTP(S) 形式的服务地址。旧版本曾把凭据值写入会话记录；当前版本在恢复会话（`--conversation-id` 启动或在 `/resume` 中选中）时会自动从 `events.jsonl` 和 `snapshot.json` 中清除 `webSearchApiKey` 字段；无法完整解析的日志保持原样，未完成尾行会在下次追加事件时裁掉。仅列出会话不会触发清洗。长期不再打开的旧会话不会自动清理，若曾使用旧版本配置 Tavily，建议在搜索服务端轮换对应 key，或在删除会话目录时一并清理。`timeoutMs` 范围为 1–3,600,000 毫秒，`maxResults` 范围为 1–20，单次调用的 `max_results` 可覆盖默认值。`WebFetch` 与 `WebSearch` 未配置权限规则时默认进入当前审批。
 
 ## Bash 与操作系统沙箱
 

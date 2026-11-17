@@ -64,7 +64,7 @@ export interface SessionLoadWarning {
 export interface SessionLoadOptions {
   /** 恢复时发现未完成尾行或无效快照时回调；同一进程内可据此提示用户。 */
   onWarning?: (warning: SessionLoadWarning) => void;
-  /** 旧 record.json 是否在首次读取时转换为 JSONL；列目录等只读场景可关闭。 */
+  /** 旧 record.json 是否在首次读取时转换为 JSONL，并清洗旧事件与快照中的凭据；列目录等只读场景可关闭。 */
   convertLegacy?: boolean;
 }
 
@@ -891,6 +891,8 @@ async function scrubLegacySessionSecrets(home: string, conversationId: string): 
 
 async function scrubLegacyEventLog(home: string, conversationId: string): Promise<void> {
   const path = sessionEventsPath(home, conversationId);
+  // CLI 在获取会话锁之前就会加载会话；锁已存在时可能正在追加事件，锁外不扫描也不重写历史。
+  if (await hasSessionLock(path)) return;
   let raw: string;
   let before: Awaited<ReturnType<typeof stat>>;
   try {
@@ -923,7 +925,12 @@ async function scrubLegacyEventLog(home: string, conversationId: string): Promis
     const scrubbed = scrubStoredEventSecrets(stored);
     if (scrubbed === undefined) return;
     const serialized = JSON.stringify(scrubbed);
-    if (serialized !== line) changed = true;
+    // 内容未变的行保留原始字节：单行命中就整份重序列化，可能改变消息正文的数值精度或转义形式。
+    if (serialized === JSON.stringify(stored)) {
+      scrubbedLines.push(line);
+      continue;
+    }
+    changed = true;
     scrubbedLines.push(serialized);
   }
   if (!changed) return;
@@ -936,6 +943,8 @@ async function scrubLegacyEventLog(home: string, conversationId: string): Promis
     // 读取期间若有其他写入，放弃本次重写，避免覆盖新追加的事件。
     const after = await stat(path);
     if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) return;
+    // 扫描期间若有进程取得会话锁，可能已开始追加事件；放弃本次重写，避免覆盖新事件。
+    if (await hasSessionLock(path)) return;
     // 重写会移动后续事件的字节偏移；快照必须同时失效，恢复时从完整日志重建。
     await rm(sessionSnapshotPath(home, conversationId), { force: true });
     await rename(temporaryPath, path);
@@ -964,8 +973,25 @@ function scrubStoredEventSecrets(stored: StoredSessionEvent): StoredSessionEvent
       if (typeof round !== 'object' || round === null || Array.isArray(round)) return undefined;
       return { ...stored, data: { ...mutation, round: pruneRoundConfig(round as SessionRecord['rounds'][number]) } };
     }
+    case 'compaction': {
+      // 压缩事件携带完整轮次数组，旧版本可能在其中残留凭据。
+      const rounds = mutation.rounds;
+      if (!Array.isArray(rounds)) return undefined;
+      return { ...stored, data: { ...mutation, rounds: rounds.map((round) => pruneRoundConfig(round as SessionRecord['rounds'][number])) } };
+    }
     default:
       return stored;
+  }
+}
+
+/** 会话锁存在说明可能有进程（含本进程）正在写入；锁外不做重写，磁盘清洗推迟到下次恢复。 */
+async function hasSessionLock(path: string): Promise<boolean> {
+  try {
+    await stat(join(dirname(path), 'process.lock'));
+    return true;
+  } catch (error) {
+    // 无法确认锁状态时按已锁定处理，宁可推迟清洗也不覆盖并发写入。
+    return !isMissing(error);
   }
 }
 
@@ -978,6 +1004,8 @@ async function scrubLegacySnapshot(home: string, conversationId: string): Promis
     return;
   }
   if (!raw.includes(webSearchCredentialMarker)) return;
+  // 与事件日志一致：锁存在时另一个进程可能正在刷新快照，锁外不覆盖，留到下次恢复。
+  if (await hasSessionLock(path)) return;
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -991,6 +1019,7 @@ async function scrubLegacySnapshot(home: string, conversationId: string): Promis
   const temporaryPath = join(dirname(path), `.snapshot.${randomUUID()}.tmp`);
   try {
     await writeFile(temporaryPath, next, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    if (await hasSessionLock(path)) return;
     await rename(temporaryPath, path);
   } catch {
     // 快照只是恢复缓存；清洗失败不影响会话恢复。
@@ -1162,6 +1191,9 @@ function pruneSessionMutation(mutation: SessionMutation): SessionMutation {
     case 'round-start':
     case 'round-finish':
       return { ...mutation, round: pruneRoundConfig(mutation.round) };
+    case 'compaction':
+      // 压缩事件整体携带轮次数组，同样在落盘前剔除凭据。
+      return { ...mutation, rounds: mutation.rounds.map(pruneRoundConfig) };
     default:
       return mutation;
   }
