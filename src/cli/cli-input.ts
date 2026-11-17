@@ -14,6 +14,7 @@ export class CliInput {
   private closed = false;
   private sequence = 0;
   private selector: (() => void) | undefined;
+  private confirmation: { answer: (line: string) => void; close: () => void } | undefined;
   private compactRequested = false;
   private busy = false;
 
@@ -29,7 +30,10 @@ export class CliInput {
     });
     this.input.on('SIGINT', cancel);
     this.input.on('line', (line) => {
-      if (this.selector) {
+      if (this.confirmation) {
+        // 信任确认答复优先于对话消息和审批答复，避免启动输入被当成一次用户请求。
+        this.confirmation.answer(line);
+      } else if (this.selector) {
         // Enter is consumed by the active keyboard chooser, never as a chat or approval answer.
       } else if (this.localLineHandler?.(line.trim())) {
         // 审批等待或轮次执行中也可切换模式；只有空闲时才重新显示输入提示。
@@ -56,6 +60,8 @@ export class CliInput {
     });
     this.input.on('close', () => {
       this.closed = true;
+      this.confirmation?.close();
+      this.confirmation = undefined;
       this.selector?.();
       for (const approval of this.approvals.values()) approval.close();
       this.wakeNext?.();
@@ -125,6 +131,25 @@ export class CliInput {
     });
   }
 
+  /** 首次遇到未信任 Hook 时请求确认；只有交互终端会展示，非交互调用一律视为拒绝。 */
+  async confirmHookTrust(workspace: string, commands: string): Promise<boolean> {
+    if (this.closed || !process.stdin.isTTY || !process.stdout.isTTY) return false;
+    process.stdout.write(`\n[hook] 检测到未信任的 Hook 配置（工作区：${workspace}）。\n${commands}\n信任并启用这些 Hook 请输入 yes，其他输入将禁用本次运行的全部 Hook：\n> `);
+    return new Promise<boolean>((resolve) => {
+      let finished = false;
+      const finish = (accepted: boolean): void => {
+        if (finished) return;
+        finished = true;
+        this.confirmation = undefined;
+        resolve(accepted);
+      };
+      this.confirmation = {
+        answer: (line) => finish(/^(yes|y)$/i.test(line.trim())),
+        close: () => finish(false),
+      };
+    });
+  }
+
   enqueueNotification(conversationId: string, notification: BackgroundAgentTaskNotification): void {
     if (this.notifications.some(({ notification: queued }) => queued.taskId === notification.taskId)) return;
     this.notifications.push({ type: 'notification', conversationId, notification });
@@ -178,7 +203,7 @@ export class CliInput {
         close: () => finish('deny'),
       });
       signal.addEventListener('abort', abort, { once: true });
-      process.stdout.write(`\n[人工审批 ${number}] ${call.toolName}（调用 ${call.callId}；最多等待 ${this.humanTimeoutMs}ms）\n${JSON.stringify(call.input, null, 2)}\n${call.details?.target ? `实际文件目标：${call.details.target}\n` : ''}${call.details?.cwd ? `实际工作目录：${call.details.cwd}\n` : ''}${call.details?.searchAsk ? `需审批的搜索范围：${call.details.searchAsk}\n` : ''}${call.details?.sandboxExecution ? `沙箱执行模式：${call.details.sandboxExecution}\n` : ''}${call.details?.sandboxBypass ? `豁免申请：${call.details.sandboxBypass}\n` : ''}${call.details?.sandboxNotice ? `沙箱状态：${call.details.sandboxNotice}\n` : ''}批准请输入 approve ${number}，拒绝请输入 deny ${number}：\n`);
+      process.stdout.write(`\n[人工审批 ${number}] ${call.toolName}（调用 ${call.callId}；最多等待 ${this.humanTimeoutMs}ms）\n${JSON.stringify(call.input, null, 2)}\n${call.details?.target ? `实际文件目标：${call.details.target}\n` : ''}${call.details?.cwd ? `实际工作目录：${call.details.cwd}\n` : ''}${call.details?.searchAsk ? `需审批的搜索范围：${call.details.searchAsk}\n` : ''}${call.details?.sandboxExecution ? `沙箱执行模式：${call.details.sandboxExecution}\n` : ''}${call.details?.sandboxBypass ? `豁免申请：${call.details.sandboxBypass}\n` : ''}${call.details?.sandboxNotice ? `沙箱状态：${call.details.sandboxNotice}\n` : ''}${call.hookPermission?.reason ? `Hook 审批说明：${call.hookPermission.reason}\n` : ''}批准请输入 approve ${number}，拒绝请输入 deny ${number}：\n`);
     });
   };
 

@@ -16,6 +16,7 @@ import { registerAgentTool } from './AgentTool/AgentTool.js';
 import type { ApprovalControl } from './tool-approval.js';
 import type { BackgroundAgentTasks } from './AgentTool/background-agent-tasks.js';
 import type { SkillCatalogue } from '../services/skills/skill-registry.js';
+import type { ParentHookScope } from '../services/hooks/hook-scope.js';
 import type { TracingScope } from '../services/observability/langfuse.js';
 
 export interface BuiltInToolContext {
@@ -34,6 +35,8 @@ export interface BuiltInToolContext {
   onFileRead?: (target: string) => void;
   /** 主 Agent 与子 Agent 共享的 Skill 清单。 */
   skills?: SkillCatalogue;
+  /** 主会话的工具 Hook 范围；委派工具据此让子 Agent 沿用父会话标识。 */
+  hookScope?: ParentHookScope;
   /** 当前运行的跟踪 scope；子 Agent 工具据此创建独立 span。 */
   tracing?: TracingScope;
   fileWriteCallbacks: {

@@ -8,6 +8,7 @@ import type { ApprovalControl } from '../tool-approval.js';
 import type { BackgroundAgentTasks } from './background-agent-tasks.js';
 import type { WorkspaceFileSnapshot } from '../workspace-files.js';
 import type { SkillCatalogue } from '../../services/skills/skill-registry.js';
+import type { ParentHookScope } from '../../services/hooks/hook-scope.js';
 import { isCancellationError } from '../../utils/errors.js';
 import { childScope, childSpan } from '../../services/observability/langfuse.js';
 import type { ObservationHandle, ObservationStatus, TracingScope } from '../../services/observability/langfuse.js';
@@ -46,12 +47,14 @@ export interface AgentToolContext {
     onCheckpointError?: (path: string) => void;
   };
   skills?: SkillCatalogue;
+  /** 主会话的工具 Hook 范围；委派工具据此让子 Agent 沿用父会话标识。 */
+  hookScope?: ParentHookScope;
   /** 当前运行的跟踪 scope；子 Agent 工具据此创建独立 span。 */
   tracing?: TracingScope;
 }
 
 export function registerAgentTool(registry: ToolRegistry, context: AgentToolContext): void {
-  const { config, approvalControl, humanApprovalControl, approvalMode, backgroundTasks, fileWriteCallbacks, skills, tracing } = context;
+  const { config, approvalControl, humanApprovalControl, approvalMode, backgroundTasks, fileWriteCallbacks, skills, tracing, hookScope } = context;
   registry.register({
     name: 'agent',
     concurrency: 'parallel',
@@ -82,7 +85,7 @@ export function registerAgentTool(registry: ToolRegistry, context: AgentToolCont
       });
       const { span, scope } = childTrace;
       if (type === 'general-purpose') {
-        const run = async (signal?: AbortSignal) => {
+const run = async (signal?: AbortSignal) => {
           const result = await runAgent(config, `任务说明：${description}\n任务：${prompt}`, {
             smokeTool: false,
             generalPurposeSubagent: true,
@@ -94,6 +97,9 @@ export function registerAgentTool(registry: ToolRegistry, context: AgentToolCont
             ...(approvalMode === undefined ? {} : { approvalMode }),
             ...(model === undefined ? {} : { modelOverride: model }),
             ...(skills === undefined ? {} : { skills }),
+            ...(hookScope === undefined ? {} : {
+              hookScope: { ...hookScope, agentId: execution.toolCallId, agentType: 'general-purpose' },
+            }),
             ...(scope === undefined ? {} : { tracing: scope }),
           });
           return { report: result.text, usage: result.usage };
@@ -153,6 +159,9 @@ export function registerAgentTool(registry: ToolRegistry, context: AgentToolCont
           ...(humanApprovalControl === undefined ? {} : { humanApprovalControl }),
           ...(approvalMode === undefined ? {} : { approvalMode }),
           ...(skills === undefined ? {} : { skills }),
+          ...(hookScope === undefined ? {} : {
+            hookScope: { ...hookScope, agentId: execution.toolCallId, agentType: 'Explore' },
+          }),
           ...(scope === undefined ? {} : { tracing: scope }),
         });
         span?.end({ output: report, status: 'succeeded' });

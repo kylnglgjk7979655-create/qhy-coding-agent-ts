@@ -71,12 +71,19 @@ export async function approveToolCall(
     || (call.toolName === 'WebSearch' && webSearchAction === undefined);
   const permissionRequiresApproval = permissionAction === 'ask' || readOutsideWorkspace || searchOutsideWorkspace || searchAsks
     || webRequiresApproval || bashActions.includes('ask') || bashRequiresApproval;
+  const hookAsk = call.hookPermission?.decision === 'ask';
+  const hookAllow = call.hookPermission?.decision === 'allow';
   if (permissionAction === 'deny' || bashDenied) return false;
-  if (call.toolName === 'Bash' && bashAllowed && !permissionRequiresApproval) return true;
-  // 范围要求审批时，不能被另一条宽泛 allow 跳过。
-  if (!permissionRequiresApproval && permissionAction === 'allow') return true;
-  if (!permissionRequiresApproval
-    && ['read_file', 'Read', 'glob', 'Glob', 'grep', 'Grep', 'runtimeInfo', 'agent', 'skill', 'TodoWrite'].includes(call.toolName)) return true;
+  // ask 强制审批，即使权限规则原本允许；allow 不能绕过规则里的 deny/ask。
+  if (!hookAsk) {
+    // Hook allow 只跳过“规则未要求审批”的默认审批；工作区外读取/搜索、需审批 Bash 等范围审批仍然生效。
+    if (hookAllow && !permissionRequiresApproval) return true;
+    if (call.toolName === 'Bash' && bashAllowed && !permissionRequiresApproval) return true;
+    // 范围要求审批时，不能被另一条宽泛 allow 跳过。
+    if (!permissionRequiresApproval && permissionAction === 'allow') return true;
+    if (!permissionRequiresApproval
+      && ['read_file', 'Read', 'glob', 'Glob', 'grep', 'Grep', 'runtimeInfo', 'agent', 'skill', 'TodoWrite'].includes(call.toolName)) return true;
+  }
 
   if (config.approval.mode === 'default') {
     if (!control) return false;
@@ -113,7 +120,12 @@ export async function approveToolCall(
         ...(baseURL === undefined ? {} : { baseURL }),
       });
       const context = {
-        environment: { workspace: config.workspace, toolDetails: call.details ?? {} },
+        environment: {
+          workspace: config.workspace,
+          toolDetails: call.details ?? {},
+          // PreToolUse 的 ask 理由作为审批说明，供独立审查模型判断。
+          ...(call.hookPermission === undefined ? {} : { preToolUse: call.hookPermission }),
+        },
         rules: { permissions: config.permissions ?? {} },
         history: extractApprovalHistory(history),
       };

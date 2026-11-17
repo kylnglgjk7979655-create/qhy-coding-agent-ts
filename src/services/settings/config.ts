@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { AgentError } from '../../utils/errors.js';
+import { hooksConfigSchema, mergeHookSettings } from '../hooks/hooks-config.js';
 
 export const DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS = 300_000;
 /** 模型最大输出额度默认值；摘要请求输出上限取它与该默认值的较小值。 */
@@ -152,18 +153,24 @@ export const configSchema = z.strictObject({
     // prefault 会继续解析空对象，从而落实沙箱各字段默认值；default 只返回原值。
     sandbox: sandboxConfigSchema.prefault({}),
   }).prefault({}),
+  hooks: hooksConfigSchema.optional(),
+  // Hook 总开关；禁用时后续 Hook 子系统不加载、不提示、不执行任何 Hook。
+  disableAllHooks: z.boolean().default(false),
 });
 
 type ParsedModelConfig = z.infer<typeof configSchema>;
 /**
  * 会话中保存的模型配置可能来自旧版本，permissions 允许缺省；
  * 从 settings 解析出的配置始终带有 permissions.sandbox 默认值。
+ * Hook 配置不进入会话持久化，因此不包含 hooks 与 disableAllHooks。
  */
-export type ModelConfig = Omit<ParsedModelConfig, 'permissions' | 'observability'> & {
+export type ModelConfig = Omit<ParsedModelConfig, 'permissions' | 'observability' | 'hooks' | 'disableAllHooks'> & {
   permissions?: ParsedModelConfig['permissions'];
   observability?: ParsedModelConfig['observability'];
 };
 export type ResolvedConfig = ModelConfig & {
+  hooks?: ParsedModelConfig['hooks'];
+  disableAllHooks?: boolean;
   apiKey: string;
   approvalApiKey?: string;
   mcpHeaders?: Record<string, Record<string, string>>;
@@ -215,7 +222,10 @@ export async function loadConfig(options: ConfigOptions): Promise<LoadedConfig> 
     throw new AgentError('CONFIG_ERROR', '项目 settings 不能设置 workspace；请使用 --workspace 或用户级 settings。');
   }
 
-  const raw = mergeSettings(mergeSettings(userSettings, projectSettings), localSettings);
+  const hookWarnings: string[] = [];
+  const raw = mergeSettings(mergeSettings(userSettings, projectSettings, hookWarnings), localSettings, hookWarnings);
+  // 单层内也可能出现重复 Hook；统一在合并结果上再走一次同一去重路径。
+  if (isRecord(raw.hooks)) raw.hooks = mergeHookSettings({}, raw.hooks, hookWarnings);
   raw.workspace = workspace;
   const rawContext: unknown = raw.context;
   const deprecationWarnings = ['triggerRatio', 'targetRatio', 'keepRecentTurns']
@@ -227,6 +237,7 @@ export async function loadConfig(options: ConfigOptions): Promise<LoadedConfig> 
     const fields = [...new Set(parsed.error.issues.map((issue) => issue.path.join('.') || '配置根对象'))];
     throw new AgentError('CONFIG_ERROR', `配置无效，请检查字段：${fields.join('、')}。`);
   }
+  for (const warning of hookWarnings) process.stderr.write(`警告：${warning}\n`);
 
   const config = parsed.data;
   const apiKey = options.env[config.apiKeyEnv]?.trim();
@@ -244,7 +255,7 @@ export async function loadConfig(options: ConfigOptions): Promise<LoadedConfig> 
   const mcpHeaders = resolveMcpHeaders(config, options.env);
   const webSearchKeyEnv = config.webSearch?.apiKeyEnv ?? 'TAVILY_API_KEY';
   const webSearchApiKey = options.env[webSearchKeyEnv]?.trim();
-  const warnings = [...migrationWarnings, ...deprecationWarnings];
+  const warnings = [...migrationWarnings, ...deprecationWarnings, ...hookWarnings];
   return { ...config, workspace, apiKey, mcpHeaders, ...(approvalApiKey === undefined ? {} : { approvalApiKey }),
     ...(webSearchApiKey ? { webSearchApiKey } : {}),
     ...(warnings.length === 0 ? {} : { migrationWarnings: warnings }) };
@@ -294,7 +305,11 @@ function validateSettingsLayer(raw: Record<string, unknown>, path: string): void
   }
 }
 
-function mergeSettings(base: Record<string, unknown>, overlay: Record<string, unknown>): Record<string, unknown> {
+function mergeSettings(
+  base: Record<string, unknown>,
+  overlay: Record<string, unknown>,
+  hookWarnings: string[] = [],
+): Record<string, unknown> {
   const result: Record<string, unknown> = { ...base };
   for (const [key, value] of Object.entries(overlay)) {
     if (key === 'permissions' && isRecord(value)) {
@@ -312,8 +327,15 @@ function mergeSettings(base: Record<string, unknown>, overlay: Record<string, un
         );
       }
       result.permissions = merged;
+    } else if (key === 'hooks' && isRecord(value)) {
+      // hooks 按事件拼接，而不是像普通对象那样由高层整体覆盖。
+      result.hooks = mergeHookSettings(
+        isRecord(result.hooks) ? result.hooks : {},
+        value,
+        hookWarnings,
+      );
     } else if (isRecord(value) && isRecord(result[key])) {
-      result[key] = mergeSettings(result[key] as Record<string, unknown>, value);
+      result[key] = mergeSettings(result[key] as Record<string, unknown>, value, hookWarnings);
     } else {
       result[key] = value;
     }
@@ -359,8 +381,30 @@ export function isMissing(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }
 
+/**
+ * Hook 配置不进入会话持久化与可记录配置：
+ * 会话记录、运行日志和旧快照恢复共用这条裁剪路径，避免命令或命令里的凭据落入磁盘与日志。
+ */
+export function withoutHookConfig<T extends object>(config: T): Omit<T, 'hooks' | 'disableAllHooks'> {
+  const { hooks: _hooks, disableAllHooks: _disableAllHooks, ...rest } = config as T
+    & { hooks?: unknown; disableAllHooks?: unknown };
+  return rest;
+}
+
+/** 会话轮次保存的模型配置：剔除凭据、解析结果、迁移提示与 Hook 配置。 */
+export function persistableSessionConfig(config: ResolvedConfig): ModelConfig {
+  const {
+    apiKey: _apiKey,
+    approvalApiKey: _approvalApiKey,
+    mcpHeaders: _mcpHeaders,
+    migrationWarnings: _migrationWarnings,
+    ...rest
+  } = config;
+  return withoutHookConfig(rest);
+}
+
 export function loggableConfig(config: ResolvedConfig): Omit<ModelConfig, 'approval'> {
-  return {
+  return withoutHookConfig({
     provider: config.provider,
     model: config.model,
     apiKeyEnv: config.apiKeyEnv,
@@ -370,5 +414,5 @@ export function loggableConfig(config: ResolvedConfig): Omit<ModelConfig, 'appro
     maxSteps: config.maxSteps,
     ...(config.explore === undefined ? {} : { explore: config.explore }),
     ...(config.observability === undefined ? {} : { observability: config.observability }),
-  };
+  });
 }

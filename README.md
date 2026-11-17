@@ -386,6 +386,251 @@ Bash 调用在审批前已生成沙箱执行计划，人工和模型审批详情
 
 完整参数仅在人工审批界面展示，便于判断待执行操作；普通进度、执行事件和日志不输出完整参数、结果或原始异常。观察回调失败只输出诊断，不替代审批也不改变决定。常规验证使用本地模型夹具与假凭据；自动测试不能代替最终人工 QA。
 
+## Hook 扩展点
+
+`hooks` 允许用户命令挂载到六个生命周期事件。v1 只有同步 `command` 类型：Hook 通过 `/bin/sh -c <command>` 在独立进程组中运行，工作目录固定为工作区，继承 CLI 环境，以 CLI 当前用户权限执行。Hook 不是操作系统沙箱，也不受 `permissions`、工具审批或 Bash 沙箱约束；设计与完整契约见 [ADR 0007](docs/adr/0007-hooks.md)。
+
+### 配置层级与形状
+
+Hook 配置位于三层 settings 的顶层 `hooks`，合并顺序为：
+
+```text
+~/.agent/settings.json                         用户级
+<工作区>/.agent/settings.json                  项目级
+<工作区>/.agent/settings.local.json            项目本地
+```
+
+同一事件的数组按用户级 → 项目级 → 项目本地拼接；事件、matcher、command 和 timeoutMs 完全相同的 Hook 视为重复，保留第一条并输出 warning。项目层不能通过覆盖删除上层 Hook。配置形状为“事件名 → matcher 组数组 → Hook 数组”：
+
+```json
+{
+  "disableAllHooks": false,
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          { "type": "command", "command": "sh .agent/hooks/session-start.sh", "timeoutMs": 15000 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "sh .agent/hooks/prompt.sh" }] }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|write_file",
+        "hooks": [{ "type": "command", "command": "sh .agent/hooks/pre-tool.sh" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^mcp_",
+        "hooks": [{ "type": "command", "command": "sh .agent/hooks/post-tool.sh" }]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "write_file",
+        "hooks": [{ "type": "command", "command": "sh .agent/hooks/tool-failure.sh" }]
+      }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "sh .agent/hooks/stop.sh" }] }
+    ]
+  }
+}
+```
+
+`HookCommand` 只有三个字段：`type` 必须为 `command`；`command` 去除首尾空白后必须非空；`timeoutMs` 必须是 `1..600000` 的整数。未知事件、未知字段、空 `hooks` 数组、未知类型、越界超时和非法 matcher 正则在加载阶段以 `CONFIG_ERROR` 拒绝，不会留下“配置了但永不匹配”的静默状态。顶层 `disableAllHooks` 默认 `false`，只影响本次加载的 Hook，不写入会话记录。
+
+### 事件与 matcher
+
+| 事件 | 触发时机 | matcher 查询字段 |
+| --- | --- | --- |
+| `SessionStart` | 新建对话或恢复既有对话时，在任何用户提交和模型请求之前 | `source`（`startup` / `resume`） |
+| `UserPromptSubmit` | 真实用户提交消息之后、第一次模型请求之前 | 无 |
+| `PreToolUse` | 工具 `prepare` 与执行事件之后、权限策略与审批之前 | `tool_name` |
+| `PostToolUse` | 工具执行成功返回之后 | `tool_name` |
+| `PostToolUseFailure` | 工具执行抛错之后，例如 Bash 非零退出、超时或执行失败 | `tool_name` |
+| `Stop` | 最终回答产生之后、轮次结束之前 | 无 |
+
+参数错误、未知工具和权限拒绝在 `execute` 前发生，不触发 `PostToolUse` 或 `PostToolUseFailure`；工具执行抛错由 `PostToolUseFailure` 接收，`PostToolUse` 只对应成功返回。
+
+**matcher 不是 glob。** 它按以下顺序解析：
+
+1. 省略、空字符串或 `*`：匹配全部。
+2. 完全由 `A-Za-z0-9_` 组成的字符串：按精确名称匹配，例如 `Bash`。
+3. 由 `|` 分隔且每段都是精确名称的字符串：按名称列表匹配，例如 `Bash|Read`。
+4. 其他字符串：按 JavaScript 正则解析并在加载阶段试编译，例如 `^mcp_`；非法正则直接拒绝。
+
+`UserPromptSubmit` 与 `Stop` 没有 matcher 查询字段，写任何 matcher 都不会过滤，所有 Hook 都会运行。
+
+### stdin 字段
+
+Hook 从 stdin 收到恰好一个 JSON 对象。所有事件共有：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `session_id` | string | 对话标识；子 Agent 的工具事件沿用父对话标识 |
+| `transcript_path` | string | 会话记录路径；子 Agent 指向父对话记录 |
+| `cwd` | string | 工作区绝对路径，同时是 Hook 进程的工作目录 |
+| `approval_mode` | `model` \| `human` | 由 `approval.mode` 映射：`auto` → `model`，`default` → `human` |
+| `hook_event_name` | string | 当前事件名 |
+| `agent_id` | string，可选 | 仅子 Agent 工具事件；本次委派工具调用 ID |
+| `agent_type` | string，可选 | 仅子 Agent 工具事件 |
+
+事件专有字段：
+
+| 事件 | 额外字段 |
+| --- | --- |
+| `SessionStart` | `source`：`startup` 或 `resume` |
+| `UserPromptSubmit` | `prompt`：真实用户提交的原始文本 |
+| `PreToolUse` | `tool_name`、`tool_input`（`prepare` 后、即将审批和执行的输入）、`tool_use_id` |
+| `PostToolUse` | `tool_name`、`tool_input`、`tool_response`（`{ is_error: false, output }`）、`tool_use_id` |
+| `PostToolUseFailure` | `tool_name`、`tool_input`、`error`（字符串）、`error_code`（取 `INVALID_TOOL_ARGUMENTS`、`UNKNOWN_TOOL`、`TOOL_EXECUTION_ERROR`、`PERMISSION_DENIED` 之一，v1 通常为 `TOOL_EXECUTION_ERROR`）、`tool_use_id` |
+| `Stop` | `stop_hook_active`（本次是否由 Stop 阻止后的续跑触发）、`last_assistant_message` |
+
+`tool_input` 不是模型原始参数，而是工具 `prepare` 之后的输入；`tool_use_id` 用于关联同一工具调用的三个事件。协议版本 `HOOK_PROTOCOL_VERSION = 1` 是代码常量，不写入 stdin。
+
+### 退出码、stdout 与结论
+
+| 退出码或边界 | 结果 |
+| --- | --- |
+| `0` | `success`：解析 stdout；去除首尾空白后以 `{` 开头按 JSON，否则按普通 stdout |
+| `2` | `blocking`：理由取 stderr，空时使用默认文案 |
+| 其他非零 | `non_blocking_error` + `failureKind: exit_code`，只提示不阻止 |
+| 超时 | `non_blocking_error` + `timeout` |
+| 启动失败 | `non_blocking_error` + `spawn_error` |
+| stdout 超过 1 MiB | `non_blocking_error` + `output_limit`，终止该 Hook 进程组 |
+| 调用方取消 | `cancelled`，与 Hook 自身故障区分 |
+
+stdout 期望恰好一个 JSON 对象；日志、警告和调试信息写 stderr。以 `{` 开头但 JSON 无效，或已知字段类型不符时，按 `non_blocking_error` + `invalid_json` 处理；未知 JSON 字段忽略。退出码 `2` 时只读取 stderr，不解析 stdout。
+
+| stdout JSON 字段 | 类型 | 用途 |
+| --- | --- | --- |
+| `continue` | boolean | `UserPromptSubmit` 为 `false` 时保留原 prompt 但停止本轮；`Stop` 为 `false` 时禁止续跑 |
+| `preventContinuation` | boolean | 仅 `Stop`：禁止随后的自动续跑 |
+| `suppressOutput` | boolean | 隐藏普通 stdout 的用户提示与日志展示，不改变 JSON 处理和模型注入 |
+| `decision` | `block` | 按事件表示阻止 |
+| `reason` | string | 阻止或停止理由 |
+| `systemMessage` | string | 只给用户看的提示，不进入模型上下文 |
+| `hookSpecificOutput.permissionDecision` | `allow` \| `deny` \| `ask` | 仅 `PreToolUse` 的权限结论 |
+| `hookSpecificOutput.permissionDecisionReason` | string | 权限结论说明，用于审批展示 |
+| `hookSpecificOutput.updatedInput` | object | 仅 `PreToolUse` 的参数改写候选，须通过工具 `inputSchema` |
+| `hookSpecificOutput.additionalContext` | string | 附加上下文或工具反馈 |
+
+`decision: "block"` 因事件而异：`PreToolUse` 等价于 `deny` 并在审批前短路；`UserPromptSubmit` 取消本轮且不保留原 prompt；`PostToolUse` / `PostToolUseFailure` 只追加反馈，不撤销副作用、不改变工具结果；`Stop` 请求一次续跑。`PreToolUse` 的多个结论按 `deny > ask > allow` 聚合，`allow` 仍须经过权限规则，不是通行证。`updatedInput` 校验失败只把该 Hook 记为 `invalid_updated_input`，回退原参数继续审批；多个有效改写按配置顺序取最后一个，`deny` 优先于任何改写。
+
+普通 stdout（退出码 `0` 的非 JSON 输出）按事件区分：
+
+| 事件 | 普通 stdout 行为 |
+| --- | --- |
+| `SessionStart` | 作为 `<hook-context event="SessionStart">` 附加上下文注入模型 |
+| `UserPromptSubmit` | 作为 `<hook-context event="UserPromptSubmit">` 附加上下文注入模型 |
+| `PreToolUse` | 只显示 `[hook]` 用户提示，不进入模型；v1 的 `additionalContext` 也不注入 |
+| `PostToolUse` | 只显示 `[hook]` 用户提示，不改变工具结果 |
+| `PostToolUseFailure` | 只显示 `[hook]` 用户提示，不改变工具错误 |
+| `Stop` | 只显示 `[hook]` 用户提示，不注入续跑请求 |
+
+`systemMessage` 始终只给用户；`additionalContext` 在被使用时只进入模型；`suppressOutput` 只隐藏普通 stdout 的用户展示，不改变前两者的归属。`PreToolUse` 需要向审批说明时使用 `permissionDecisionReason`，需要提示用户时使用 `systemMessage`。
+
+### 默认超时
+
+单个 Hook 未配置 `timeoutMs` 时按事件取默认值；配置值统一上限为 600,000ms。同一事件匹配到的 Hook 并行启动并等待全部完成，结果与注入消息按配置顺序排列；任一 Hook 的超时、故障或输出超限只影响自身。
+
+| 事件 | 默认超时 |
+| --- | --- |
+| `SessionStart` | 60,000ms |
+| `UserPromptSubmit` | 10,000ms |
+| `PreToolUse` | 60,000ms |
+| `PostToolUse` | 60,000ms |
+| `PostToolUseFailure` | 60,000ms |
+| `Stop` | 60,000ms |
+
+超时或取消会向整个进程组发送 `SIGKILL`，包含孙进程；直接子进程退出后会回收残留进程组，避免后台孙进程继承管道导致挂起。`PreToolUse`、`PostToolUse`、`PostToolUseFailure` 运行期间暂停整轮剩余时限，结束后恢复；`SessionStart`、`UserPromptSubmit`、`Stop` 在 `runAgent` 之外运行，由各自超时和轮次取消信号约束。
+
+### 信任门禁与禁用
+
+只要任一事件下存在带 Hook 的组，任何 Hook 执行前都会运行信任门禁：
+
+1. 工作区 realpath 与规范化 hooks 配置 hash 同时匹配用户目录 `~/.qhy-coding-agents/trusted.json` 时视为已信任。
+2. 否则，`--trust-hooks` 或 `QHY_TRUST_HOOKS=1` 是显式 opt-in：写入当前 hash 后启用。
+3. 否则，交互终端展示完整命令清单（事件、matcher、命令和可选 `timeoutMs`）并要求确认；只有输入 `yes` 或 `y` 才启用，其他输入、输入关闭或非交互终端都会禁用本次运行的全部 Hook。
+4. 非交互终端（stdin 或 stdout 不是 TTY）打印禁用警告，普通对话继续；仓库不能给自己授权。
+
+`disableAllHooks: true` 与 `--no-hooks` 优先于信任判断：命中时不加载、不提示、不执行任何 Hook。信任记录只保存在 CLI 用户目录，工作区内的同名文件永远不会被读取；记录要求常规文件、非符号链接、权限不宽于 `0600`，目录为 `0700`。hash 只覆盖 `hooks` 配置，修改模型、权限等无关 settings 不触发重新确认；修改事件、matcher、命令或 `timeoutMs` 会。记录损坏、权限过宽或写入失败都按未信任处理或只警告，不会绕过门禁。
+
+### 最小可运行示例
+
+在已有可运行模型配置的工作区中创建 Hook 脚本：
+
+```sh
+mkdir -p .agent/hooks
+cat > .agent/hooks/session-start.sh <<'SH'
+#!/bin/sh
+# stdin 是事件 JSON；追加到固定日志，不写入会话历史。
+cat >> .agent/hooks/events.jsonl
+printf '\n' >> .agent/hooks/events.jsonl
+# 非 JSON stdout：SessionStart 会把它作为隐藏附加上下文提供给模型。
+printf '当前会话由 qhy hooks 记录。\n'
+SH
+```
+
+在项目级 `.agent/settings.json` 中加入：
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          { "type": "command", "command": "sh .agent/hooks/session-start.sh", "timeoutMs": 5000 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+构建并启动；首次使用显式信任，脚本会收到 `SessionStart` 的 stdin JSON 并写入 `.agent/hooks/events.jsonl`：
+
+```sh
+pnpm build
+pnpm exec node dist/cli.js --workspace . --trust-hooks
+```
+
+若省略 `--trust-hooks` 且终端是非交互的，本次运行会以“未信任的 Hook 配置”禁用全部 Hook；交互终端则应先按提示核对命令并输入 `yes`。
+
+### 输出上限与注入时序
+
+| 常量 | 值 | 行为 |
+| --- | --- | --- |
+| stdout | 1 MiB | 终止该 Hook 进程组，结果 `output_limit`，只提示不阻止 |
+| stderr | 64 KiB | 保留前 64 KiB 并追加 `[hook stderr 已截断]`，继续读取丢弃剩余内容 |
+| 注入文本 | 8,000 个 Unicode 字符 | 所有进入模型的 Hook 文本截断并附加省略标记 |
+| 用户可见 `[hook]` 行 | 500 个字符 | 截断并加省略号 |
+
+Hook 注入都是独立的隐藏 `user` 消息，不折入工具结果，不改变工具调用与结果配对：
+
+| 事件 | 注入内容 | 位置与可见时机 |
+| --- | --- | --- |
+| `SessionStart(startup)` | 成功运行的 `additionalContext` 或普通 stdout；`exit 2` 的 stderr 理由 | 新建对话历史首部，第一次模型请求可见 |
+| `SessionStart(resume)` | 同上 | 重建历史尾部，恢复后的下一次模型请求可见 |
+| `UserPromptSubmit` | 成功运行的 `additionalContext` 或普通 stdout | 用户消息之后、本轮第一次模型请求之前 |
+| `PreToolUse` | 不注入模型 | `updatedInput` 影响审批与执行，`permissionDecisionReason` 只用于审批展示 |
+| `PostToolUse` / `PostToolUseFailure` | `exit 2` / `decision: block` 的理由与成功的 `additionalContext` | 整批工具结果之后的隐藏用户消息，同轮下一次主模型请求可见 |
+| `Stop` | `exit 2` / `decision: block` 的理由 | 最终回答之后，仅一次续跑请求可见；第二次 Stop 的反馈丢弃 |
+
+同名包装为 `<hook-context event="...">` 或 `<hook-feedback event="..." hook="事件:配置顺序">`。注入在单个 CLI 进程内按每次运行的随机标识去重，不扫描命令输出，也不跨进程持久化。`Stop` 最多续跑一次且使用本轮剩余 `maxSteps`；第二次运行时 `stop_hook_active` 为 `true`，再次阻止只记录日志。
+
+Hook 范围还受运行场景约束：`--smoke-tool` 不运行信任门禁和任何 Hook；后台任务通知形成的轮次不触发 `SessionStart` 与 `UserPromptSubmit`，但工具事件和 `Stop` 照常触发；子 Agent 只触发三个工具事件，stdin 沿用父对话 `session_id` / `transcript_path` 并附加 `agent_id` / `agent_type`，不触发 `SessionStart`、`UserPromptSubmit` 与 `Stop`。
+
+用户提示写 stderr，形如 `[hook] <事件>: <理由>`；Hook 故障只提示不阻止。结构化日志只记录事件、配置顺序、耗时、退出码、outcome、failureKind 和输出字节数，默认不包含 stdin、参数或输出正文；显式设置 `QHY_HOOK_DEBUG=1` 才追加完整 stdout/stderr。Hook 等价于以当前用户权限执行远程代码，信任门禁只解决“仓库不能静默让其命令执行”，不能替代隔离。
+
+Hook 的人工与黑盒验收清单见 [本地 QA 指南](docs/qa-tool-capabilities.md#hook-人工与黑盒验收)。
+
 ## 远程 MCP 工具
 
 可配置远程 Streamable HTTP MCP 服务；不支持旧式 SSE 端点、本地 stdio、OAuth 或浏览器登录。在运行配置中添加：

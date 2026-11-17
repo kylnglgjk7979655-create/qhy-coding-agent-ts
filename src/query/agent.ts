@@ -23,6 +23,13 @@ import { appendRecentSkillLoads, collectSkillInjections, insertSkillInjections }
 import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import type { SkillInjection } from '../services/skills/skill-injection.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
+import {
+  HookInjectionTracker, describeHookRun, evaluatePreToolUse, hookInputBase, runHookEvent,
+  takeToolFeedbackMessages, toolPreToolUseDecision,
+} from '../services/hooks/hook-engine.js';
+import type { HookEventNotification, HookEventResult } from '../services/hooks/hook-engine.js';
+import type { ParentHookScope, SubagentHookScope } from '../services/hooks/hook-scope.js';
+import type { PostToolUseFailureHookInput, PostToolUseHookInput, PreToolUseHookInput } from '../services/hooks/hook-runner.js';
 import type { BackgroundAgentTasks, BackgroundTaskStatusEntry } from '../tools/AgentTool/background-agent-tasks.js';
 import { AgentObservations } from '../services/observability/agent-observations.js';
 import type { TracingScope } from '../services/observability/langfuse.js';
@@ -117,12 +124,20 @@ export async function estimateContextUsage(
   return { estimatedInputTokens, capacityTokens, usageRatio: estimatedInputTokens / capacityTokens };
 }
 
+/**
+ * prompt 省略时只以 history 发起请求，供 Stop 阻止后的续跑复用同一轮有效历史，
+ * 不再追加新的用户消息。
+ */
 export async function runAgent(
   config: ResolvedConfig,
-  prompt: string,
+  prompt: string | undefined,
   options: {
     smokeTool: boolean;
     history?: ModelMessage[];
+    /** 覆盖本次运行的步数上限；Stop 续跑传入整轮剩余步数。 */
+    maxSteps?: number;
+    /** 用户消息之后的 Hook 附加上下文；只进入第一次模型请求并随有效历史持久化。 */
+    promptContext?: readonly ModelMessage[];
     onText?: (chunk: string) => Promise<void> | void;
     onToolCallStart?: (call: { callId: string; toolName: string; input: unknown }) => Promise<void> | void;
     onStepMessages?: (content: unknown[]) => Promise<void> | void;
@@ -144,6 +159,17 @@ export async function runAgent(
     }) => Promise<{ coversThrough: number } | void> | { coversThrough: number } | void;
     /** 会话原始记录路径，写入摘要续接包装供后续找回细节；子 Agent 没有会话记录时省略。 */
     transcriptPath?: string;
+    /** 工具 Hook 的对话标识；smoke 与尚未接入会话范围的子 Agent 省略时，不运行工具 Hook。 */
+    sessionId?: string;
+    /**
+     * 子 Agent 的工具 Hook 范围：沿用父对话的 session_id 与记录路径，并附加 agent_id/agent_type。
+     * 省略时按主 Agent 处理，从 sessionId/transcriptPath 推导范围。
+     */
+    hookScope?: SubagentHookScope;
+    /** 与对话共享的注入去重集合；省略时本次运行自行创建。 */
+    hookInjectionTracker?: HookInjectionTracker;
+    /** 独立于工具事件的 Hook 观测回调；失败只写 stderr，不改变 Hook 或模型流程。 */
+    onHookEvent?: (notification: HookEventNotification) => unknown;
     /** 成功读取文件后刷新最近文件顺序；子 Agent 没有会话记录时省略。 */
     onFileRead?: (target: string) => void;
     /** 压缩时提供当前最近读取文件候选；子 Agent 没有会话记录时省略。 */
@@ -169,7 +195,8 @@ export async function runAgent(
     tracing?: TracingScope;
   },
 ): Promise<RunResult> {
-  if (options.smokeTool && config.maxSteps < 2) {
+  const stepLimit = options.maxSteps ?? config.maxSteps;
+  if (options.smokeTool && stepLimit < 2) {
     throw new AgentError('CONFIG_ERROR', '工具冒烟需要 maxSteps >= 2，以完成工具调用及后续回答。');
   }
 
@@ -214,10 +241,139 @@ export async function runAgent(
     activeSince = performance.now();
     timer = setTimeout(() => deadline.abort(), remainingMs);
   }
+  const hookInjectionTracker = options.hookScope?.hookInjectionTracker
+    ?? options.hookInjectionTracker
+    ?? new HookInjectionTracker();
+  // 子 Agent 沿用父级的 Hook 观测回调；主 Agent 直接使用调用方传入的回调。
+  const onHookEvent = options.hookScope?.onHookEvent ?? options.onHookEvent;
+  // 子 Agent 的 stdin 沿用父会话标识；主 Agent 省略 agent_id/agent_type。
+  const hookSessionId = options.hookScope?.sessionId ?? options.sessionId;
+  const hookTranscriptPath = options.hookScope?.transcriptPath ?? options.transcriptPath;
+  const subagentHookFields = options.hookScope === undefined
+    ? {}
+    : { agent_id: options.hookScope.agentId, agent_type: options.hookScope.agentType };
+  // 委派工具沿用同一份父会话范围；子 Agent 不能再委派，因此只对主 Agent 生效。
+  const parentHookScope: ParentHookScope | undefined = hookSessionId === undefined || hookTranscriptPath === undefined
+    ? undefined
+    : {
+      sessionId: hookSessionId,
+      transcriptPath: hookTranscriptPath,
+      hookInjectionTracker,
+      ...(onHookEvent === undefined ? {} : { onHookEvent }),
+    };
+  // 成功工具调用的 PostToolUse 结果先按调用标识暂存，下一次 prepareStep 再注入。
+  const pendingToolFeedback = new Map<string, HookEventResult>();
   const observations = new AgentObservations(options.tracing);
   const registry = new ToolRegistry({
     ...(options.onToolEvent ? { onToolEvent: options.onToolEvent } : {}),
     ...(options.onToolCallStart ? { beforeTool: options.onToolCallStart } : {}),
+    preToolUse: async (call, toolSignal) => {
+      if (config.hooks === undefined || config.disableAllHooks
+        || hookSessionId === undefined || hookTranscriptPath === undefined) return undefined;
+      // Hook 是同步策略计算：暂停整轮时限，避免慢 Hook 被对话超时误杀；finally 保证恢复。
+      try {
+        pauseDeadline();
+        const hookInput: PreToolUseHookInput = {
+          ...hookInputBase('PreToolUse', hookSessionId, hookTranscriptPath, config),
+          ...subagentHookFields,
+          tool_name: call.toolName,
+          tool_input: call.input,
+          tool_use_id: call.callId,
+        };
+        let result: Awaited<ReturnType<typeof runHookEvent>>;
+        try {
+          result = await runHookEvent(config.hooks, 'PreToolUse', hookInput, {
+            cwd: config.workspace,
+            env: process.env,
+            signal: toolSignal ?? signal,
+            ...(onHookEvent === undefined ? {} : { onHookEvent }),
+          });
+        } catch {
+          process.stderr.write('[hook] PreToolUse: 执行失败（已忽略，不影响工具）\n');
+          return undefined;
+        }
+        // 改写候选按工具注册的 inputSchema 校验；失败的运行仅作为非阻断错误提示。
+        const evaluation = await evaluatePreToolUse(result, call.validateInput);
+        for (const run of evaluation.runs) {
+          const message = describeHookRun(run);
+          if (message !== undefined) process.stderr.write(`${message}\n`);
+        }
+        return toolPreToolUseDecision(evaluation);
+      } finally {
+        resumeDeadline();
+      }
+    },
+    postToolUse: async (call, toolSignal) => {
+      if (config.hooks === undefined || config.disableAllHooks
+        || hookSessionId === undefined || hookTranscriptPath === undefined) return;
+      // 与 PreToolUse 一样，Hook 执行期间暂停整轮时限；反馈不参与工具结果构造。
+      try {
+        pauseDeadline();
+        const hookInput: PostToolUseHookInput = {
+          ...hookInputBase('PostToolUse', hookSessionId, hookTranscriptPath, config),
+          ...subagentHookFields,
+          tool_name: call.toolName,
+          tool_input: call.input,
+          tool_response: call.response,
+          tool_use_id: call.callId,
+        };
+        let result: HookEventResult;
+        try {
+          result = await runHookEvent(config.hooks, 'PostToolUse', hookInput, {
+            cwd: config.workspace,
+            env: process.env,
+            signal: toolSignal ?? signal,
+            ...(onHookEvent === undefined ? {} : { onHookEvent }),
+          });
+        } catch {
+          process.stderr.write('[hook] PostToolUse: 执行失败（已忽略，不影响工具）\n');
+          return;
+        }
+        for (const run of result.runs) {
+          const message = describeHookRun(run);
+          if (message !== undefined) process.stderr.write(`${message}\n`);
+        }
+        if (result.runs.length > 0) pendingToolFeedback.set(call.callId, result);
+      } finally {
+        resumeDeadline();
+      }
+    },
+    postToolUseFailure: async (call, toolSignal) => {
+      if (config.hooks === undefined || config.disableAllHooks
+        || hookSessionId === undefined || hookTranscriptPath === undefined) return;
+      // 只有 execute 抛错会走到这里；反馈与 PostToolUse 共用工具结果后的注入位置。
+      try {
+        pauseDeadline();
+        const hookInput: PostToolUseFailureHookInput = {
+          ...hookInputBase('PostToolUseFailure', hookSessionId, hookTranscriptPath, config),
+          ...subagentHookFields,
+          tool_name: call.toolName,
+          tool_input: call.input,
+          error: call.error,
+          error_code: call.errorCode,
+          tool_use_id: call.callId,
+        };
+        let result: HookEventResult;
+        try {
+          result = await runHookEvent(config.hooks, 'PostToolUseFailure', hookInput, {
+            cwd: config.workspace,
+            env: process.env,
+            signal: toolSignal ?? signal,
+            ...(onHookEvent === undefined ? {} : { onHookEvent }),
+          });
+        } catch {
+          process.stderr.write('[hook] PostToolUseFailure: 执行失败（已忽略，不影响工具）\n');
+          return;
+        }
+        for (const run of result.runs) {
+          const message = describeHookRun(run);
+          if (message !== undefined) process.stderr.write(`${message}\n`);
+        }
+        if (result.runs.length > 0) pendingToolFeedback.set(call.callId, result);
+      } finally {
+        resumeDeadline();
+      }
+    },
     approve: async (call) => {
       signal.throwIfAborted();
       // 每个调用进入审批前读取当前模式；切换前已开始的等待继续使用其原有路径。
@@ -251,6 +407,7 @@ export async function runAgent(
     bashOperations,
     ...(options.onFileRead ? { onFileRead: options.onFileRead } : {}),
     ...(options.skills === undefined ? {} : { skills: options.skills }),
+    ...(parentHookScope === undefined ? {} : { hookScope: parentHookScope }),
     ...(options.tracing === undefined ? {} : { tracing: options.tracing }),
   });
   let closeMCP: (() => Promise<void>) | undefined;
@@ -297,7 +454,7 @@ export async function runAgent(
       tools,
       // SDK 的工作池负责并发上限；registry 按声明执行独占屏障与队首调度。
       toolCallConcurrency: MAX_TOOL_CALL_CONCURRENCY,
-      stopWhen: isStepCount(config.maxSteps),
+      stopWhen: isStepCount(stepLimit),
       onError: ({ error }) => {
         if (InvalidToolInputError.isInstance(error) || NoSuchToolError.isInstance(error)) return;
         frameworkError ??= modelStreamError(error);
@@ -324,10 +481,13 @@ export async function runAgent(
           skillInjections.push(...injections);
           skillBodies = { ...skillBodies, ...Object.fromEntries(injections.map(({ name, body }) => [name, body])) };
         }
-        // 注入消息排在工具结果之后，并作为本轮消息延续到后续步骤。
-        const stepMessages = injections.length === 0
+        // 工具反馈与 Skill 正文都排在工具结果之后，并作为本轮消息延续到后续步骤。
+        // 工具反馈按工具结果的到达顺序注入，再按配置顺序排列同一事件的多个 Hook。
+        const toolFeedback = takeToolFeedbackMessages(messages, pendingToolFeedback, hookInjectionTracker);
+        const extraMessages = [...toolFeedback, ...injections.map(({ message }) => message)];
+        const stepMessages = extraMessages.length === 0
           ? messages
-          : [...messages, ...injections.map(({ message }) => message)];
+          : [...messages, ...extraMessages];
         // 压缩恢复顺序包含本运行内新的加载，使同轮加载的正文也参与恢复。
         const restore = options.skills === undefined
           ? undefined
@@ -378,12 +538,16 @@ export async function runAgent(
     signal.throwIfAborted();
     const inputMessages: ModelMessage[] = [
       ...(options.smokeTool ? [] : options.history ?? []),
-      {
-        role: 'user',
-        content: options.smokeTool
-          ? `调用 read_file 读取 ${smokeProbePath}，然后在最终回答中逐字写出文件内容。`
-          : prompt,
-      },
+      ...(options.smokeTool
+        ? [{
+          role: 'user' as const,
+          content: `调用 read_file 读取 ${smokeProbePath}，然后在最终回答中逐字写出文件内容。`,
+        }]
+        : prompt === undefined
+          ? []
+          : [{ role: 'user' as const, content: prompt }]),
+      // UserPromptSubmit 上下文必须排在用户消息之后，模型才能把它看作对本次提交的补充资料。
+      ...(options.smokeTool ? [] : options.promptContext ?? []),
     ];
     const result = await agent.stream({
       messages: inputMessages,
@@ -447,8 +611,8 @@ export async function runAgent(
     if (options.smokeTool && !toolSmokePassed) {
       throw new AgentError('TOOL_COMPATIBILITY_ERROR', '工具冒烟失败：没有完成工具执行与结果回传，请检查模型和 provider 兼容性。');
     }
-    if (steps.length >= config.maxSteps && steps.at(-1)?.toolCalls.length) {
-      throw new AgentError('STEP_LIMIT', `已达到 ${config.maxSteps} 步上限，任务尚未生成最终回答。`);
+    if (steps.length >= stepLimit && steps.at(-1)?.toolCalls.length) {
+      throw new AgentError('STEP_LIMIT', `已达到 ${stepLimit} 步上限，任务尚未生成最终回答。`);
     }
     if (finishReason !== 'stop' || !text.trim()) {
       throw new AgentError('PROVIDER_ERROR', '模型没有返回完整回答，请检查输出限制、服务策略或模型兼容性。');
