@@ -56,7 +56,7 @@ const exploreConfigSchema = z.strictObject({
   loadRootAgents: z.boolean().default(false),
 });
 /** 网络搜索配置；凭据只引用环境变量，缺失时工具调用返回明确错误而不影响其他工具。 */
-const webSearchConfigSchema = z.strictObject({
+export const webSearchConfigSchema = z.strictObject({
   provider: z.literal('tavily').default('tavily'),
   apiKeyEnv: apiKeyEnvSchema.default('TAVILY_API_KEY'),
   baseURL: baseURLSchema.optional(),
@@ -381,10 +381,7 @@ export function isMissing(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }
 
-/**
- * Hook 配置不进入可记录配置：
- * 运行日志和旧快照恢复共用这条裁剪路径，避免命令或命令里的凭据落入日志。
- */
+/** Hook 配置不进入可记录配置：运行日志写入前剔除 Hook 字段，避免命令或命令里的凭据落入日志。 */
 export function withoutHookConfig<T extends object>(config: T): Omit<T, 'hooks' | 'disableAllHooks'> {
   const { hooks: _hooks, disableAllHooks: _disableAllHooks, ...rest } = config as T
     & { hooks?: unknown; disableAllHooks?: unknown };

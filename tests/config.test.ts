@@ -30,8 +30,13 @@ describe('configuration', () => {
     const missing = await loadConfig({ cwd, workspace: '.', env: { OPENAI_API_KEY: 'key' } });
     expect(missing.webSearchApiKey).toBeUndefined();
     expect(missing.webSearch?.provider).toBe('tavily');
+  });
 
-    // 会话持久化保留搜索配置，但凭据值只存在运行时，不写入会话记录。
+  it('持久化会话配置时保留搜索配置但不写入凭据', async () => {
+    await mkdir(join(cwd, '.agent'), { recursive: true });
+    await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({ webSearch: { timeoutMs: 5000 } }));
+    const config = await loadConfig({ cwd, workspace: '.', env: { OPENAI_API_KEY: 'key', TAVILY_API_KEY: 'tavily-key' } });
+
     const persisted = persistableSessionConfig(config);
     expect(persisted.webSearch).toEqual(config.webSearch);
     expect(persisted).not.toHaveProperty('webSearchApiKey');

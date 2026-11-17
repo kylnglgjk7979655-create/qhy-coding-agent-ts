@@ -1,8 +1,9 @@
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
+import { sessionEventsPath } from '../src/services/session/conversations.js';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import { readStoredSession } from './helpers/session-store.js';
@@ -51,8 +52,10 @@ it('配置网络搜索后，首次搜索轮次仍能正常保存并重新加载�
   expect(result.code).toBe(0);
   expect(result.stdout + result.stderr).not.toContain('会话记录格式无效');
   expect(result.stdout).toContain('当前汇率约为七元人民币。');
-  // 会话记录保留搜索配置，但不落盘搜索凭据值。
+  // 会话记录保留搜索配置，但不落盘搜索凭据值；读取路径会剔除凭据，需直接检查磁盘字节。
   const session = await readStoredSession(userDir);
   expect(session.config.webSearch).toMatchObject({ provider: 'tavily' });
-  expect(JSON.stringify(session)).not.toContain('tavily-key');
+  const events = await readFile(sessionEventsPath(userDir, session.id), 'utf8');
+  expect(events).not.toContain('webSearchApiKey');
+  expect(events).not.toContain('tavily-key');
 });

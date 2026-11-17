@@ -2,8 +2,15 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createSession, loadSession, saveSession, sessionEventsPath, startSessionRound } from '../src/services/session/conversations.js';
+import { createSession, loadSession, saveSession, sessionEventsPath, sessionSnapshotPath, startSessionRound, type SessionRecord } from '../src/services/session/conversations.js';
 import { readStoredSession, writeLegacySession } from './helpers/session-store.js';
+
+const webSearch = { provider: 'tavily' as const, apiKeyEnv: 'TAVILY_API_KEY', timeoutMs: 30_000, maxResults: 5 };
+
+/** 模拟旧版本把网络搜索凭据值写进会话配置的记录。 */
+function withWebSearchCredential(record: SessionRecord): SessionRecord {
+  return { ...record, config: { ...record.config, webSearchApiKey: 'legacy-secret' } as SessionRecord['config'] };
+}
 
 describe('user-level session storage', () => {
   let userDirectory: string | undefined;
@@ -114,7 +121,6 @@ describe('user-level session storage', () => {
 
   it('round-trips a session configured with WebSearch', async () => {
     const home = await makeUserDirectory();
-    const webSearch = { provider: 'tavily' as const, apiKeyEnv: 'TAVILY_API_KEY', timeoutMs: 30_000, maxResults: 5 };
     await createSession(home, {
       id: 'websearch-session', workspace: '/work/project',
       config: {
@@ -129,7 +135,6 @@ describe('user-level session storage', () => {
 
   it('loads sessions written with the former WebSearch credential field without exposing it', async () => {
     const home = await makeUserDirectory();
-    const webSearch = { provider: 'tavily' as const, apiKeyEnv: 'TAVILY_API_KEY', timeoutMs: 30_000, maxResults: 5 };
     await createSession(home, {
       id: 'legacy-websearch-session', workspace: '/work/project',
       config: {
@@ -145,6 +150,46 @@ describe('user-level session storage', () => {
     await writeFile(path, `${JSON.stringify(event)}\n`);
 
     const restarted = await loadSession(home, 'legacy-websearch-session');
+    expect(restarted.config.webSearch).toEqual(webSearch);
+    expect(restarted.config).not.toHaveProperty('webSearchApiKey');
+    expect(JSON.stringify(restarted)).not.toContain('legacy-secret');
+  });
+
+  it('ignores the former WebSearch credential field stored in a session snapshot', async () => {
+    const home = await makeUserDirectory();
+    const id = 'snapshot-websearch-session';
+    await createSession(home, {
+      id, workspace: '/work/project',
+      config: {
+        provider: 'openai', model: 'fixture-model', apiKeyEnv: 'TEST_API_KEY', workspace: '/work/project',
+        timeoutMs: 60_000, maxSteps: 20, webSearch, approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
+      },
+    });
+    // 快照覆盖完整事件日志时不回放 create 事件，凭据必须在快照校验和归一化时剔除。
+    const events = await readFile(sessionEventsPath(home, id));
+    await writeFile(sessionSnapshotPath(home, id), JSON.stringify({
+      v: 1, id, eventSeq: 1, byteOffset: events.byteLength, record: withWebSearchCredential(await loadSession(home, id)),
+    }));
+
+    const restarted = await loadSession(home, id);
+    expect(restarted.config.webSearch).toEqual(webSearch);
+    expect(restarted.config).not.toHaveProperty('webSearchApiKey');
+    expect(JSON.stringify(restarted)).not.toContain('legacy-secret');
+  });
+
+  it('ignores the former WebSearch credential field in a legacy record file', async () => {
+    const home = await makeUserDirectory();
+    const id = 'legacy-websearch-record';
+    await createSession(home, {
+      id, workspace: '/work/project',
+      config: {
+        provider: 'openai', model: 'fixture-model', apiKeyEnv: 'TEST_API_KEY', workspace: '/work/project',
+        timeoutMs: 60_000, maxSteps: 20, webSearch, approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
+      },
+    });
+    await writeLegacySession(home, withWebSearchCredential(await loadSession(home, id)));
+
+    const restarted = await loadSession(home, id);
     expect(restarted.config.webSearch).toEqual(webSearch);
     expect(restarted.config).not.toHaveProperty('webSearchApiKey');
     expect(JSON.stringify(restarted)).not.toContain('legacy-secret');

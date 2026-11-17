@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { ModelMessage } from 'ai';
 import type { ModelConfig } from '../settings/config.js';
-import { withoutSessionRuntimeConfig } from '../settings/config.js';
+import { withoutSessionRuntimeConfig, webSearchConfigSchema } from '../settings/config.js';
 import { AgentError } from '../../utils/errors.js';
 import { appendRecentSkillLoads } from '../skills/skill-injection.js';
 import { snapshotWorkspaceFile } from '../../tools/workspace-files.js';
@@ -1108,16 +1108,9 @@ function isModelConfig(value: unknown): value is ModelConfig {
     && typeof config.approval === 'object' && config.approval !== null;
 }
 
-/** 网络搜索配置只保存服务提供方与非敏感设置；凭据值以环境变量名引用。 */
+/** 网络搜索配置复用 settings 的 schema 校验，避免会话校验与配置解析各自维护一套字段规则。 */
 function isWebSearchConfig(value: unknown): boolean {
-  if (typeof value !== 'object' || value === null) return false;
-  const config = value as Record<string, unknown>;
-  return Object.keys(config).every((field) => ['provider', 'apiKeyEnv', 'baseURL', 'timeoutMs', 'maxResults'].includes(field))
-    && config.provider === 'tavily'
-    && (config.apiKeyEnv === undefined || typeof config.apiKeyEnv === 'string')
-    && (config.baseURL === undefined || typeof config.baseURL === 'string')
-    && (config.timeoutMs === undefined || typeof config.timeoutMs === 'number')
-    && (config.maxResults === undefined || typeof config.maxResults === 'number');
+  return webSearchConfigSchema.safeParse(value).success;
 }
 
 /** 会话配置只保存环境变量名与非敏感地址；凭据值不会出现在记录中。 */
