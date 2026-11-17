@@ -395,7 +395,7 @@ stdout 输出回答、交互提示、工具名称和单轮错误；stderr 输出
 pnpm exec node dist/cli.js --workspace ./demo 2> run.jsonl
 ```
 
-每轮生成新的 run ID。`run.started` 记录模型配置、工作区及请求状态；`run.finished` 记录成功或失败，成功轮次还包含步数、工具调用次数和 token 用量。普通对话日志包含 `conversationId`，冒烟日志不包含该字段。启动配置错误也有终态记录。日志不包含密钥、用户需求或原始 provider 错误响应；轮次耗时从开始处理该条消息计算。
+每轮生成新的 run ID。`run.started` 记录模型配置、工作区及请求状态；`run.finished` 记录成功或失败，成功轮次还包含步数、工具调用次数和 token 用量。普通对话日志包含 `conversationId`，冒烟日志不包含该字段。启动配置错误也有终态记录。启动或重载 Skill 时，被跳过目录以 `skill.skipped` 事件记录 `path` 与 `reason`；交互模式改为在 stderr 显示可读提示。日志不包含密钥、用户需求或原始 provider 错误响应；轮次耗时从开始处理该条消息计算。
 
 交互模式中，鉴权失败、超时、步数上限等普通轮次错误会记录错误码并继续等待输入；随后 `/exit` 仍可使进程以 0 退出，应结合每轮日志判断结果。下表的非零退出码适用于错误导致进程结束的场景，例如启动失败、冒烟失败或取消退出。
 
