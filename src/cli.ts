@@ -17,6 +17,7 @@ import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepar
 import type { FileRewindPlan } from './services/session/file-checkpoints.js';
 import { AgentError, publicError } from './utils/errors.js';
 import { CliInput } from './cli/cli-input.js';
+import { formatBeijingTime } from './cli/terminal-text.js';
 import { CommandRegistry } from './cli/commands.js';
 import { ToolActivityRenderer } from './cli/tool-activity.js';
 import { loadSkillCatalogue } from './services/skills/skill-registry.js';
@@ -647,7 +648,7 @@ input.setBusy(true);
         const sessions = await listSessions(userHome, all ? undefined : config.workspace);
         const choices: Array<{ label: string; detail: string; value: { kind: 'session'; id: string } | { kind: 'all' } }> = sessions.map((session) => ({
           label: session.title || '未命名会话',
-          detail: `${session.updatedAt} · ${session.workspace} · ${session.id}`,
+          detail: `${formatBeijingTime(session.updatedAt)} · ${session.workspace} · ${session.id}`,
           value: { kind: 'session' as const, id: session.id },
         }));
         if (!all) choices.push({ label: '查看全部会话', detail: '包括其他工作区的会话', value: { kind: 'all' as const } });
@@ -663,7 +664,7 @@ input.setBusy(true);
             }
             const allChoices = allSessions.map((session) => ({
               label: session.title || '未命名会话',
-              detail: `${session.updatedAt} · ${session.workspace} · ${session.id}`,
+              detail: `${formatBeijingTime(session.updatedAt)} · ${session.workspace} · ${session.id}`,
               value: session.id,
             }));
             const selectedId = await input.select('全部工作区会话', allChoices);
