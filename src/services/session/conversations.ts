@@ -592,12 +592,37 @@ interface SessionState {
   eventsEmpty: boolean;
 }
 
-/** 追加事件并（按周期）刷新快照；所有写操作在会话锁内单写者调用。 */
-async function commitSession(
+/** 进程内同一会话的提交队列：文件锁只约束跨进程，并行工具结果仍会同时提交。 */
+const pendingSessionCommits = new Map<string, Promise<unknown>>();
+
+/** 串行化同一会话的读取-追加-快照更新，避免并发提交读到相同 seq 后写出重复事件。 */
+function serializeSessionCommit<T>(home: string, conversationId: string, operation: () => Promise<T>): Promise<T> {
+  const key = join(sessionStorageRoot(home), 'sessions', conversationId);
+  const previous = pendingSessionCommits.get(key) ?? Promise.resolve();
+  // 前一次提交失败不应阻塞后续提交，每次提交都会重新读取当前状态。
+  const current = previous.catch(() => undefined).then(operation);
+  pendingSessionCommits.set(key, current);
+  void current.finally(() => {
+    if (pendingSessionCommits.get(key) === current) pendingSessionCommits.delete(key);
+  }).catch(() => undefined);
+  return current;
+}
+
+/** 追加事件并（按周期）刷新快照；同一会话的提交在进程内串行执行，跨进程由会话锁保护。 */
+function commitSession(
   home: string,
   conversationId: string,
   build: (record: SessionRecord) => SessionMutation | Promise<SessionMutation>,
   options: { snapshot?: boolean } = {},
+): Promise<SessionRecord> {
+  return serializeSessionCommit(home, conversationId, () => commitSessionLocked(home, conversationId, build, options));
+}
+
+async function commitSessionLocked(
+  home: string,
+  conversationId: string,
+  build: (record: SessionRecord) => SessionMutation | Promise<SessionMutation>,
+  options: { snapshot?: boolean },
 ): Promise<SessionRecord> {
   const state = await readSessionState(home, conversationId);
   // 运行时配置不随会话持久化：写入前统一剔除会话级与轮次级 config 中的 Hook 字段与网络搜索凭据。
