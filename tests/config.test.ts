@@ -1,7 +1,7 @@
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { configSchema, loadConfig, loggableConfig, restoreSessionConfig } from '../src/services/settings/config.js';
+import { configSchema, loadConfig, loggableConfig, persistableSessionConfig, restoreSessionConfig } from '../src/services/settings/config.js';
 import { tempDir } from './helpers/temp-dir.js';
 
 describe('configuration', () => {
@@ -30,6 +30,12 @@ describe('configuration', () => {
     const missing = await loadConfig({ cwd, workspace: '.', env: { OPENAI_API_KEY: 'key' } });
     expect(missing.webSearchApiKey).toBeUndefined();
     expect(missing.webSearch?.provider).toBe('tavily');
+
+    // 会话持久化保留搜索配置，但凭据值只存在运行时，不写入会话记录。
+    const persisted = persistableSessionConfig(config);
+    expect(persisted.webSearch).toEqual(config.webSearch);
+    expect(persisted).not.toHaveProperty('webSearchApiKey');
+    expect(JSON.stringify(persisted)).not.toContain('tavily-key');
   });
 
   it('拒绝无效的网络搜索配置', () => {

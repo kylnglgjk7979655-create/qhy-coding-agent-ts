@@ -111,4 +111,42 @@ describe('user-level session storage', () => {
     })).rejects.toThrow(/会话记录.*损坏/);
     expect(await readFile(path, 'utf8')).toBe('{truncated');
   });
+
+  it('round-trips a session configured with WebSearch', async () => {
+    const home = await makeUserDirectory();
+    const webSearch = { provider: 'tavily' as const, apiKeyEnv: 'TAVILY_API_KEY', timeoutMs: 30_000, maxResults: 5 };
+    await createSession(home, {
+      id: 'websearch-session', workspace: '/work/project',
+      config: {
+        provider: 'openai', model: 'fixture-model', apiKeyEnv: 'TEST_API_KEY', workspace: '/work/project',
+        timeoutMs: 60_000, maxSteps: 20, webSearch, approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
+      },
+    });
+
+    const restarted = await loadSession(home, 'websearch-session');
+    expect(restarted.config.webSearch).toEqual(webSearch);
+  });
+
+  it('loads sessions written with the former WebSearch credential field without exposing it', async () => {
+    const home = await makeUserDirectory();
+    const webSearch = { provider: 'tavily' as const, apiKeyEnv: 'TAVILY_API_KEY', timeoutMs: 30_000, maxResults: 5 };
+    await createSession(home, {
+      id: 'legacy-websearch-session', workspace: '/work/project',
+      config: {
+        provider: 'openai', model: 'fixture-model', apiKeyEnv: 'TEST_API_KEY', workspace: '/work/project',
+        timeoutMs: 60_000, maxSteps: 20, webSearch, approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
+      },
+    });
+    // 旧版本会把网络搜索凭据值写入 create 事件；模拟这类既有会话。
+    const path = sessionEventsPath(home, 'legacy-websearch-session');
+    const [line] = (await readFile(path, 'utf8')).split('\n');
+    const event = JSON.parse(line!) as { data: { record: { config: Record<string, unknown> } } };
+    event.data.record.config.webSearchApiKey = 'legacy-secret';
+    await writeFile(path, `${JSON.stringify(event)}\n`);
+
+    const restarted = await loadSession(home, 'legacy-websearch-session');
+    expect(restarted.config.webSearch).toEqual(webSearch);
+    expect(restarted.config).not.toHaveProperty('webSearchApiKey');
+    expect(JSON.stringify(restarted)).not.toContain('legacy-secret');
+  });
 });
