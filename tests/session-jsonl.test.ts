@@ -100,6 +100,57 @@ describe('JSONL 会话保存', () => {
     expect(record.rounds[0]?.status).toBe('succeeded');
   });
 
+  it('并发提交同一会话时事件序号严格递增且不丢事件', async () => {
+    const userHome = await home();
+    const id = 'concurrent-session';
+    await createSession(userHome, { id, workspace: config.workspace, config });
+    const roundId = await startSessionRound(userHome, id, '并发工具需求', config);
+
+    // 并行工具结果会在同一 tick 内提交到同一会话，模拟并发写入。
+    const toolCallIds = Array.from({ length: 12 }, (_, index) => `parallel-call-${index}`);
+    await Promise.all(toolCallIds.map((toolCallId) => appendRoundMessages(userHome, id, roundId, [{
+      role: 'assistant',
+      content: [{ type: 'tool-call', toolCallId, toolName: 'read_file', input: { path: `${toolCallId}.txt` } }],
+    } as unknown as ModelMessage])));
+
+    const lines = await eventLines(userHome, id);
+    const seqs = lines.map((line) => (JSON.parse(line) as { seq: number }).seq);
+    expect(seqs).toEqual(Array.from({ length: lines.length }, (_, index) => index + 1));
+
+    // 重复序号会让回放静默跳过事件；恢复记录必须包含全部并发提交。
+    const record = await loadSession(userHome, id);
+    const savedCalls = (record.rounds[0]?.messages ?? []).flatMap((message) => Array.isArray(message.content)
+      ? message.content.flatMap((part) => part && typeof part === 'object' && (part as { type?: string }).type === 'tool-call'
+        ? [(part as { toolCallId?: string }).toolCallId] : [])
+      : []);
+    expect(savedCalls.sort()).toEqual([...toolCallIds].sort());
+  });
+
+  it('单次提交失败不会阻塞同一会话的后续提交', async () => {
+    const userHome = await home();
+    const id = 'failed-commit-session';
+    await createSession(userHome, { id, workspace: config.workspace, config });
+    const roundId = await startSessionRound(userHome, id, '失败后续提交', config);
+
+    // 失败的提交排在前面；队列必须放行后续提交，且失败本身不写入事件。
+    const failing = appendRoundMessages(userHome, id, 'missing-round', []);
+    const succeeding = appendRoundMessages(userHome, id, roundId, [{
+      role: 'assistant',
+      content: [{ type: 'tool-call', toolCallId: 'after-failure', toolName: 'read_file', input: { path: 'after.txt' } }],
+    } as unknown as ModelMessage]);
+    await Promise.all([
+      expect(failing).rejects.toMatchObject({ code: 'PROVIDER_ERROR' }),
+      expect(succeeding).resolves.toBeUndefined(),
+    ]);
+
+    const lines = await eventLines(userHome, id);
+    expect(lines.map((line) => (JSON.parse(line) as { seq: number }).seq))
+      .toEqual(Array.from({ length: lines.length }, (_, index) => index + 1));
+    expect(lines).toHaveLength(3);
+    const record = await loadSession(userHome, id);
+    expect(record.rounds[0]?.messages).toHaveLength(1);
+  });
+
   it('旧 JSON 会话在首次打开时按需转换，之后继续追加且不批量迁移', async () => {
     const userHome = await home();
     const id = 'legacy-session';

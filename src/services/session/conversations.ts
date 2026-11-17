@@ -72,28 +72,31 @@ export function sessionStorageRoot(home = homedir()): string {
   return join(home, '.qhy-coding-agents');
 }
 
+/** 会话目录；调用方需自行校验 conversationId，进程内提交队列也用它构造同一键。 */
+function sessionDirectory(home: string, conversationId: string): string {
+  return join(sessionStorageRoot(home), 'sessions', conversationId);
+}
+
 export function sessionTaskOutputDirectory(home: string, conversationId: string): string {
-  if (!conversationIdPattern.test(conversationId)) {
-    throw new AgentError('CONFIG_ERROR', 'conversationId 仅允许 1–128 位字母、数字、下划线或连字符。');
-  }
-  return join(sessionStorageRoot(home), 'sessions', conversationId, 'tasks');
+  assertConversationId(conversationId);
+  return join(sessionDirectory(home, conversationId), 'tasks');
 }
 
 /** 新会话的追加式事件日志；旧会话首次打开后也迁移到该文件。 */
 export function sessionEventsPath(home: string, conversationId: string): string {
   assertConversationId(conversationId);
-  return join(sessionStorageRoot(home), 'sessions', conversationId, 'events.jsonl');
+  return join(sessionDirectory(home, conversationId), 'events.jsonl');
 }
 
 export function sessionSnapshotPath(home: string, conversationId: string): string {
   assertConversationId(conversationId);
-  return join(sessionStorageRoot(home), 'sessions', conversationId, 'snapshot.json');
+  return join(sessionDirectory(home, conversationId), 'snapshot.json');
 }
 
 /** 旧版全量 JSON 记录；转换后保留原文件作为兼容备份，但不再读取或改写。 */
 export function sessionLegacyRecordPath(home: string, conversationId: string): string {
   assertConversationId(conversationId);
-  return join(sessionStorageRoot(home), 'sessions', conversationId, 'record.json');
+  return join(sessionDirectory(home, conversationId), 'record.json');
 }
 
 /** 兼容旧调用名：摘要包装等场景把该路径作为完整原始记录位置展示。 */
@@ -592,12 +595,37 @@ interface SessionState {
   eventsEmpty: boolean;
 }
 
-/** 追加事件并（按周期）刷新快照；所有写操作在会话锁内单写者调用。 */
-async function commitSession(
+/** 进程内同一会话的提交队列：文件锁只约束跨进程，并行工具结果仍会同时提交。 */
+const pendingSessionCommits = new Map<string, Promise<unknown>>();
+
+/** 串行化同一会话的读取-追加-快照更新，避免并发提交读到相同 seq 后写出重复事件。 */
+function serializeSessionCommit<T>(home: string, conversationId: string, operation: () => Promise<T>): Promise<T> {
+  const key = sessionDirectory(home, conversationId);
+  const previous = pendingSessionCommits.get(key) ?? Promise.resolve();
+  // 前一次提交失败不应阻塞后续提交，每次提交都会重新读取当前状态。
+  const current = previous.catch(() => undefined).then(operation);
+  pendingSessionCommits.set(key, current);
+  void current.finally(() => {
+    if (pendingSessionCommits.get(key) === current) pendingSessionCommits.delete(key);
+  }).catch(() => undefined);
+  return current;
+}
+
+/** 追加事件并（按周期）刷新快照；同一会话的提交在进程内串行执行，跨进程由会话锁保护。 */
+function commitSession(
   home: string,
   conversationId: string,
   build: (record: SessionRecord) => SessionMutation | Promise<SessionMutation>,
   options: { snapshot?: boolean } = {},
+): Promise<SessionRecord> {
+  return serializeSessionCommit(home, conversationId, () => commitSessionInOrder(home, conversationId, build, options));
+}
+
+async function commitSessionInOrder(
+  home: string,
+  conversationId: string,
+  build: (record: SessionRecord) => SessionMutation | Promise<SessionMutation>,
+  options: { snapshot?: boolean },
 ): Promise<SessionRecord> {
   const state = await readSessionState(home, conversationId);
   // 运行时配置不随会话持久化：写入前统一剔除会话级与轮次级 config 中的 Hook 字段与网络搜索凭据。
@@ -967,7 +995,7 @@ async function writeSnapshotIfDue(
   force: boolean,
 ): Promise<void> {
   if (!force && seq - snapshotSeq < snapshotEventInterval) return;
-  const directory = join(sessionStorageRoot(home), 'sessions', conversationId);
+  const directory = sessionDirectory(home, conversationId);
   const path = sessionSnapshotPath(home, conversationId);
   const temporaryPath = join(directory, `.snapshot.${randomUUID()}.tmp`);
   const snapshot: SessionSnapshot = { v: snapshotVersion, id: conversationId, eventSeq: seq, byteOffset, record };
@@ -981,7 +1009,7 @@ async function writeSnapshotIfDue(
 }
 
 async function prepareSessionDirectory(home: string, conversationId: string): Promise<void> {
-  const directory = join(sessionStorageRoot(home), 'sessions', conversationId);
+  const directory = sessionDirectory(home, conversationId);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(sessionStorageRoot(home), 0o700);
   await chmod(join(sessionStorageRoot(home), 'sessions'), 0o700);
