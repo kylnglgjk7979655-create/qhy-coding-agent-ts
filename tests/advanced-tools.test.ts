@@ -246,10 +246,11 @@ it('WebSearch 通过 Tavily 兼容接口返回搜索结果，并可按搜索服�
     requests.push(JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>);
     authorizations.push(String(request.headers.authorization));
     response.writeHead(200, { 'Content-Type': 'application/json' });
+    // Tavily 在 include_answer=false 时返回 answer: null，解析仍应成功。
     response.end(JSON.stringify({ results: [
       { title: '结果一', url: 'https://example.com/one', content: '摘要一', score: 0.9 },
       { title: '结果二', url: 'https://example.com/two', content: '摘要二', score: 0.8 },
-    ] }));
+    ], answer: null }));
   });
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const address = server.address();
@@ -275,6 +276,8 @@ it('WebSearch 通过 Tavily 兼容接口返回搜索结果，并可按搜索服�
     { title: '结果一', url: 'https://example.com/one', content: '摘要一', score: 0.9 },
     { title: '结果二', url: 'https://example.com/two', content: '摘要二', score: 0.8 },
   ] } });
+  // null 摘要不应透传给模型，返回值中不出现 answer 字段。
+  expect((output('tavily').output as Record<string, unknown>)).not.toHaveProperty('answer');
 });
 
 it('新工具沿用 Read、Write 与 WebFetch 权限规则，deny 优先且 allow 可免除审批', async () => {
