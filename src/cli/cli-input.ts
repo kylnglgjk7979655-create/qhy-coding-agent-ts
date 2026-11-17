@@ -38,18 +38,34 @@ export class CliInput {
   private sequence = 0;
   private selector: (() => void) | undefined;
   private approvalMenu: ApprovalMenu | undefined;
+  private confirmation: { answer: (line: string) => void; close: () => void } | undefined;
   private compactRequested = false;
+  private busy = false;
   private readonly cancelRequest: () => void;
 
-  constructor(private readonly signal: AbortSignal, cancel: () => void, private readonly humanTimeoutMs: number) {
+  constructor(
+    private readonly signal: AbortSignal,
+    cancel: () => void,
+    private readonly humanTimeoutMs: number,
+    /** 即时处理的本地命令；返回 true 表示该行已被消费，不作为对话或审批答复。 */
+    private readonly localLineHandler?: (line: string) => boolean,
+  ) {
     this.cancelRequest = cancel;
     this.input = createInterface({
       input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY, signal,
     });
     this.input.on('SIGINT', cancel);
     this.input.on('line', (line) => {
-      if (this.selector || this.approvalMenu) {
-        // Enter 由活动中的键盘菜单消费，不能变成聊天或审批答复。
+      if (this.confirmation) {
+        // 信任确认答复优先于对话消息和审批答复，避免启动输入被当成一次用户请求。
+        this.confirmation.answer(line);
+      } else if (this.selector) {
+        // Enter 由活动中的键盘选择器消费，不能变成聊天或审批答复。
+      } else if (this.localLineHandler?.(line.trim())) {
+        // 审批等待或轮次执行中也可切换模式；只有空闲时才重新显示输入提示。
+        if (!this.busy && this.approvals.size === 0 && !this.closed && process.stdin.isTTY) this.prompt();
+      } else if (this.approvalMenu) {
+        // Enter 由活动中的审批菜单消费，不能变成聊天或审批答复。
       } else if (this.approvals.size > 0) {
         const match = /^(approve|deny)\s+(\d+)$/i.exec(line.trim());
         const approval = match ? this.approvals.get(Number(match[2])) : undefined;
@@ -72,6 +88,8 @@ export class CliInput {
     });
     this.input.on('close', () => {
       this.closed = true;
+      this.confirmation?.close();
+      this.confirmation = undefined;
       this.selector?.();
       for (const approval of [...this.approvals.values()]) approval.finish('deny', '拒绝本次（输入关闭）');
       this.wakeNext?.();
@@ -138,6 +156,25 @@ export class CliInput {
       stdin.on('keypress', onKeypress);
       process.stdout.on('resize', render);
       render();
+    });
+  }
+
+  /** 首次遇到未信任 Hook 时请求确认；只有交互终端会展示，非交互调用一律视为拒绝。 */
+  async confirmHookTrust(workspace: string, commands: string): Promise<boolean> {
+    if (this.closed || !process.stdin.isTTY || !process.stdout.isTTY) return false;
+    process.stdout.write(`\n[hook] 检测到未信任的 Hook 配置（工作区：${workspace}）。\n${commands}\n信任并启用这些 Hook 请输入 yes，其他输入将禁用本次运行的全部 Hook：\n> `);
+    return new Promise<boolean>((resolve) => {
+      let finished = false;
+      const finish = (accepted: boolean): void => {
+        if (finished) return;
+        finished = true;
+        this.confirmation = undefined;
+        resolve(accepted);
+      };
+      this.confirmation = {
+        answer: (line) => finish(/^(yes|y)$/i.test(line.trim())),
+        close: () => finish(false),
+      };
     });
   }
 
@@ -213,6 +250,8 @@ export class CliInput {
   };
 
   prompt(): void { if (!this.closed) this.input.prompt(); }
+  /** 主循环执行轮次或压缩期间不重新显示提示，避免打断流式输出或审批提示。 */
+  setBusy(value: boolean): void { this.busy = value; }
   close(): void { this.input.close(); }
 
   private startApprovalMenu(): void {
@@ -322,6 +361,7 @@ export class CliInput {
       call.details?.sandboxExecution ? `沙箱执行模式：${call.details.sandboxExecution}` : '',
       call.details?.sandboxBypass ? `豁免申请：${call.details.sandboxBypass}` : '',
       call.details?.sandboxNotice ? `沙箱状态：${call.details.sandboxNotice}` : '',
+      call.hookPermission?.reason ? `Hook 审批说明：${call.hookPermission.reason}` : '',
     ].filter(Boolean).map((line) => `${line}\n`).join('');
     return `\n[人工审批 ${number}] ${call.toolName}（调用 ${call.callId}；最多等待 ${this.humanTimeoutMs}ms${pending}）\n${JSON.stringify(call.input, null, 2)}\n${details}${suffix}`;
   }

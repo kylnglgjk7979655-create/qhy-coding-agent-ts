@@ -5,9 +5,12 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
-import { runAgent } from './query/agent.js';
+import { estimateContextUsage, runAgent } from './query/agent.js';
+import type { ContextUsageEstimate } from './query/agent.js';
 import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession, type BackgroundTaskStatusEntry } from './tools/AgentTool/background-agent-tasks.js';
-import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
+import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, persistableSessionConfig, restoreSessionConfig } from './services/settings/config.js';
+import type { ApprovalMode } from './services/settings/config.js';
+import { approvalModeLabel, createApprovalModeState, parseApprovalModeCommand } from './tools/approval-mode.js';
 import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, saveManualCompaction, sessionRecordPath, sessionTaskOutputDirectory, startSessionRound } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
 import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './services/session/file-checkpoints.js';
@@ -18,10 +21,24 @@ import { CommandRegistry } from './cli/commands.js';
 import { ToolActivityRenderer } from './cli/tool-activity.js';
 import { loadSkillCatalogue } from './services/skills/skill-registry.js';
 import type { SkillCatalogue } from './services/skills/skill-registry.js';
+import { appendRecentSkillLoads } from './services/skills/skill-injection.js';
 import type { ApprovalControl } from './tools/tool-approval.js';
 import { acquireSessionLock } from './services/session/session-lock.js';
 import { generateSummary } from './services/compact/context-summary.js';
 import { RecentFileTracker } from './services/compact/recent-files.js';
+import { formatHookCommandList, hasHookCommands, isHooksConfigTrusted, trustHooksConfig } from './services/hooks/hook-trust.js';
+import type { HooksConfig, SessionStartSource } from './services/hooks/hooks-config.js';
+import {
+  HookInjectionTracker, describeHookRun, hookInputBase, hookLogFields, runHookEvent,
+  sessionStartContextMessages, stopContinuation, stopFeedbackMessages, userPromptSubmitContextMessages,
+  userPromptSubmitStop,
+} from './services/hooks/hook-engine.js';
+import type { HookEventNotification, UserPromptSubmitStop } from './services/hooks/hook-engine.js';
+import type { SessionStartHookInput, StopHookInput, UserPromptSubmitHookInput } from './services/hooks/hook-runner.js';
+import type { LoadedConfig } from './services/settings/config.js';
+import { createLangfuseTracer } from './services/observability/langfuse.js';
+import type { LangfuseTracer, TraceHandle } from './services/observability/langfuse.js';
+import { AgentObservations } from './services/observability/agent-observations.js';
 
 const help = `用法：node dist/cli.js [选项]
 
@@ -31,11 +48,16 @@ const help = `用法：node dist/cli.js [选项]
   /resume [ID]         继续会话；省略 ID 时用方向键选择，/resume all 查看全部
   /rewind              预览并确认恢复到消息级文件检查点
   /compact             压缩当前有效历史并保存；空闲时立即生效，执行中在当前工具完成后生效
+  /context             显示当前有效历史的估算输入用量、配置容量与使用比例
+  /permission-mode [模式]  查看或切换当前进程的审批模式（default / auto）
 
 选项：
   --workspace <目录>  覆盖配置的工作区（相对当前目录）
   --conversation-id <ID>  继续指定会话（省略时新建会话）
+  --permission-mode <模式>  本次进程使用 default（人工审批）或 auto（模型审批）
   --smoke-tool        强制读取探针文件并验证模型使用结果
+  --trust-hooks       跳过 Hook 信任确认并记录当前 Hook 配置
+  --no-hooks          本次运行禁用全部 Hook
   --help              显示帮助
 
 从当前目录 .env 或环境变量读取配置中 apiKeyEnv 指定的凭据。
@@ -51,10 +73,46 @@ function log(event: Record<string, unknown>): void {
   process.stderr.write(`${JSON.stringify({ timestamp: new Date().toISOString(), ...event })}\n`);
 }
 
+/** 调试开关独立于普通日志；开启后才允许把 Hook 输出正文写入结构化日志。 */
+function hookDebugEnabled(): boolean {
+  return process.env.QHY_HOOK_DEBUG?.trim() === '1';
+}
+
+/**
+ * Hook 观测回调：结构化日志只含元数据，回调异常不会传播到 Hook 执行或模型流程。
+ * 完整 stdout/stderr 仅在显式调试开关下追加；suppressOutput 仍隐藏普通 stdout。
+ */
+function reportHookEvent(notification: HookEventNotification): void {
+  if (notification.phase === 'started') {
+    log({ event: 'hook.started', hookEvent: notification.event, hook: notification.hookId });
+    return;
+  }
+  const run = notification.run;
+  if (run === undefined) return;
+  log({
+    event: notification.phase === 'failed' ? 'hook.failed' : 'hook.finished',
+    ...hookLogFields(run),
+    ...(hookDebugEnabled() && run.result.suppressOutput !== true
+      ? { stdout: run.result.stdout, stderr: run.result.stderr }
+      : {}),
+  });
+}
+
 function formatUserError(error: unknown): string {
   const failure = publicError(error);
   const code = isInteractiveTerminal() ? `（${failure.code}）` : '';
   return `错误${code}：${failure.message}`;
+}
+
+// 用量按发送前估算展示，不声称与服务端精确 token 计数一致；MCP 定义需连接远端才能发现，不计入。
+function formatContextUsage(usage: ContextUsageEstimate, config: Awaited<ReturnType<typeof loadConfig>>): string {
+  const tokens = (value: number): string => String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const lines = [
+    `上下文用量（估算）：约 ${tokens(usage.estimatedInputTokens)} / ${tokens(usage.capacityTokens)} tokens（${(usage.usageRatio * 100).toFixed(1)}%）`,
+    '估算包含系统提示、可用工具定义与当前有效历史，不等同于服务端精确 token 计数；命令不发起模型请求或修改历史。',
+  ];
+  if ((config.mcp?.servers.length ?? 0) > 0) lines.push('未连接远程 MCP 服务，配置的 MCP 工具定义未计入估算。');
+  return `${lines.join('\n')}\n`;
 }
 
 function reportCheckpointWarning(event: string, message: string, details: Record<string, unknown>): void {
@@ -92,6 +150,10 @@ async function main(): Promise<void> {
     if (args.positionals.length > 0) {
       throw new AgentError('CONFIG_ERROR', '交互模式不接受位置参数，请启动后在终端输入需求。');
     }
+    const permissionMode = args.values['permission-mode'];
+    if (permissionMode !== undefined && permissionMode !== 'default' && permissionMode !== 'auto') {
+      throw new AgentError('CONFIG_ERROR', '--permission-mode 只接受 default 或 auto。运行 --help 查看用法。');
+    }
     if (args.values['smoke-tool'] && args.values['conversation-id'] !== undefined) {
       throw new AgentError('CONFIG_ERROR', '--smoke-tool 不能与 --conversation-id 同时使用。');
     }
@@ -101,6 +163,9 @@ async function main(): Promise<void> {
       if (!isMissing(error)) throw new AgentError('CONFIG_ERROR', '无法读取当前目录 .env 文件。');
     }
     const smokeTool = args.values['smoke-tool'] ?? false;
+    const noHooks = args.values['no-hooks'] ?? false;
+    const trustHooksOptIn = (args.values['trust-hooks'] ?? false)
+      || process.env.QHY_TRUST_HOOKS?.trim() === '1';
     let conversationId = args.values['conversation-id'] ?? newConversationId();
     const userHome = homedir();
     const loadCurrentConfig = async () => {
@@ -111,9 +176,48 @@ async function main(): Promise<void> {
       });
       return loaded;
     };
+    const disableHookConfig = (loaded: LoadedConfig): LoadedConfig => {
+      const { hooks: _hooks, ...rest } = loaded;
+      return rest;
+    };
+    const persistHookTrust = async (workspace: string, hooks: HooksConfig): Promise<void> => {
+      try {
+        await trustHooksConfig(userHome, workspace, hooks);
+      } catch {
+        // 记录失败不应阻断已获授权的本次运行；下次启动会重新要求确认。
+        process.stderr.write('警告：无法保存 Hook 信任记录；本次运行仍启用已确认的 Hook。\n');
+      }
+    };
+    /**
+     * 信任门禁：禁用开关优先，未信任的非交互运行 fail-closed。
+     * 只有交互终端会在任何 Hook 执行前展示完整命令清单并等待确认。
+     */
+    const applyHookTrust = async (loaded: LoadedConfig): Promise<LoadedConfig> => {
+      if (noHooks || loaded.disableAllHooks) return disableHookConfig(loaded);
+      const hooks = loaded.hooks;
+      if (!hasHookCommands(hooks)) return loaded;
+      if (await isHooksConfigTrusted(userHome, loaded.workspace, hooks)) return loaded;
+      if (trustHooksOptIn) {
+        await persistHookTrust(loaded.workspace, hooks);
+        return loaded;
+      }
+      if (!input || !process.stdin.isTTY || !process.stdout.isTTY) {
+        process.stderr.write('警告：检测到未信任的 Hook 配置，已禁用全部 Hook；使用 --trust-hooks 或 QHY_TRUST_HOOKS=1 显式信任。\n');
+        return disableHookConfig(loaded);
+      }
+      const accepted = await input.confirmHookTrust(loaded.workspace, formatHookCommandList(hooks));
+      if (!accepted) {
+        process.stdout.write('已禁用全部 Hook。\n');
+        return disableHookConfig(loaded);
+      }
+      await persistHookTrust(loaded.workspace, hooks);
+      return loaded;
+    };
     let config: Awaited<ReturnType<typeof loadConfig>>;
     let session: Awaited<ReturnType<typeof loadSession>> | undefined;
     let legacyHistory: ModelMessage[] | undefined;
+    // 只有本次进程新建的对话运行 SessionStart(startup)；恢复既有会话留给 resume 来源。
+    let sessionStartedFresh = false;
     if (!smokeTool && args.values['conversation-id'] !== undefined) {
       try {
         session = await loadSession(userHome, conversationId);
@@ -123,21 +227,40 @@ async function main(): Promise<void> {
         config = await loadCurrentConfig();
         const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
         legacyHistory = await loadLegacyConversation(legacyDirectory, conversationId);
-        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, migrationWarnings: _migrationWarnings, ...persistedConfig } = config;
         session = await createSession(userHome, {
           id: conversationId,
           workspace: config.workspace,
-          config: persistedConfig,
+          config: persistableSessionConfig(config),
           ...(legacyHistory === undefined ? {} : { transcript: legacyHistory, effectiveHistory: legacyHistory }),
         });
+        // 旧版历史已在恢复既有对话；只有记录不存在且无历史时才按新建会话处理。
+        sessionStartedFresh = legacyHistory === undefined;
       }
     } else {
       config = await loadCurrentConfig();
       if (smokeTool) session = undefined;
       else {
-        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, migrationWarnings: _migrationWarnings, ...persistedConfig } = config;
-        session = await createSession(userHome, { id: conversationId, workspace: config.workspace, config: persistedConfig });
+        session = await createSession(userHome, { id: conversationId, workspace: config.workspace, config: persistableSessionConfig(config) });
+        sessionStartedFresh = true;
       }
+    }
+    // 审批模式是进程级运行状态：切会话不变，重启后重新取 settings；切换不写回配置或会话记录。
+    const approvalMode = createApprovalModeState(permissionMode ?? config.approval.mode);
+    const currentApprovalMode = (): ApprovalMode => approvalMode.current();
+    const executeApprovalModeCommand = (line: string): boolean => {
+      const command = parseApprovalModeCommand(line);
+      if (command === undefined) return false;
+      if (command.mode !== undefined) approvalMode.switchTo(command.mode);
+      if (command.invalid !== undefined) {
+        process.stdout.write(`\n未知审批模式“${command.invalid}”；可用模式：default、auto。\n`);
+      }
+      process.stdout.write(`当前审批模式：${approvalModeLabel(currentApprovalMode())}。\n`);
+      return true;
+    };
+    // 信任门禁的交互确认需要输入消费者，因此在 Hook 信任判断之前建立。
+    if (!smokeTool) {
+      input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, executeApprovalModeCommand);
+      config = await applyHookTrust(config);
     }
     if (session) releaseSession = await acquireSessionLock(userHome, conversationId);
     // 最近读取文件记录跨进程续聊保留；进程内以该记录为准，轮次结束或压缩时持久化。
@@ -153,14 +276,121 @@ async function main(): Promise<void> {
     } else history = [];
     if (smokeTool) {
       activeRound = new AbortController();
-      await runTurn('smoke', config, undefined, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), true);
+      await runTurn({
+        prompt: 'smoke',
+        config,
+        history,
+        userHome,
+        conversationId,
+        signal: AbortSignal.any([cancellation.signal, activeRound.signal]),
+        smokeTool: true,
+        approvalMode: currentApprovalMode,
+      });
       return;
     }
+    // 非 smoke 路径在加载配置与 Hook 信任之前已建立输入消费者；此处显式收窄供后续闭包使用。
+    if (!input) throw new AgentError('CONFIG_ERROR', '交互输入未初始化。');
+
+    const hookInjectionTracker = new HookInjectionTracker();
+    /**
+     * 新建对话的 SessionStart(startup) 在任何用户提交之前完成。
+     * 匹配 Hook 并行执行，附加上下文按配置顺序放到历史首部；故障只提示，不阻止启动。
+     */
+    const sessionStartContext = async (source: SessionStartSource, sessionId: string, signal: AbortSignal): Promise<ModelMessage[]> => {
+      if (config.hooks === undefined || config.disableAllHooks) return [];
+      const hookInput: SessionStartHookInput = {
+        ...hookInputBase('SessionStart', sessionId, sessionRecordPath(userHome, sessionId), config),
+        source,
+      };
+      let result: Awaited<ReturnType<typeof runHookEvent>>;
+      try {
+        result = await runHookEvent(config.hooks, 'SessionStart', hookInput, {
+          cwd: config.workspace,
+          env: process.env,
+          signal,
+          onHookEvent: reportHookEvent,
+        });
+      } catch {
+        process.stderr.write('[hook] SessionStart: 执行失败（已忽略，不影响对话）\n');
+        return [];
+      }
+      for (const run of result.runs) {
+        const message = describeHookRun(run);
+        if (message !== undefined) process.stderr.write(`${message}\n`);
+      }
+      return sessionStartContextMessages(result, hookInjectionTracker);
+    };
+    /** 启动 Hook 期间登记为活动轮次，使 Ctrl-C 能取消；取消后按既有路径关闭输入退出。 */
+    const runSessionStart = async (source: SessionStartSource, sessionId: string): Promise<ModelMessage[]> => {
+      const controller = new AbortController();
+      activeRound = controller;
+      try {
+        const injected = await sessionStartContext(source, sessionId, AbortSignal.any([cancellation.signal, controller.signal]));
+        if (controller.signal.aborted) input?.close();
+        return injected;
+      } finally {
+        activeRound = undefined;
+      }
+    };
+    if (sessionStartedFresh && session) {
+      history = [...await runSessionStart('startup', conversationId), ...history];
+    } else if (session) {
+      // 恢复既有对话：附加上下文接在重建历史尾部，恢复后的下一次请求可见并随有效历史持久化。
+      history = [...history, ...await runSessionStart('resume', conversationId)];
+    }
+
+    /**
+     * 每次真实用户提交进入模型前运行 UserPromptSubmit；该事件没有 matcher query。
+     * 附加上下文排在用户消息之后；exit 2 与 decision block 取消本轮，continue false 保留原 prompt。
+     */
+    const runUserPromptSubmit = async (prompt: string, signal: AbortSignal): Promise<{
+      context: ModelMessage[];
+      stop?: UserPromptSubmitStop;
+    }> => {
+      if (config.hooks === undefined || config.disableAllHooks) return { context: [] };
+      const hookInput: UserPromptSubmitHookInput = {
+        ...hookInputBase('UserPromptSubmit', conversationId, sessionRecordPath(userHome, conversationId), config),
+        prompt,
+      };
+      let result: Awaited<ReturnType<typeof runHookEvent>>;
+      try {
+        result = await runHookEvent(config.hooks, 'UserPromptSubmit', hookInput, {
+          cwd: config.workspace,
+          env: process.env,
+          signal,
+          onHookEvent: reportHookEvent,
+        });
+      } catch {
+        process.stderr.write('[hook] UserPromptSubmit: 执行失败（已忽略，不影响对话）\n');
+        return { context: [] };
+      }
+      for (const run of result.runs) {
+        const message = describeHookRun(run);
+        if (message !== undefined) process.stderr.write(`${message}\n`);
+      }
+      const stop = userPromptSubmitStop(result);
+      if (stop) return { context: [], stop };
+      return { context: userPromptSubmitContextMessages(result, hookInjectionTracker) };
+    };
+    /** continue:false 不发出模型请求，但把原 prompt 留在 transcript 与有效历史中。 */
+    const preserveUserPrompt = async (prompt: string): Promise<void> => {
+      const preserved: ModelMessage = { role: 'user', content: prompt };
+      await appendSessionEvent(userHome, conversationId, [preserved]);
+      history = [...history, preserved];
+    };
 
     // 启动时注册一次 Skill；会话切换工作区后重新加载，本轮内来源文件变化不影响已注册内容。
-    let skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
-
-    input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
+    const loadSkills = async (): Promise<SkillCatalogue> => {
+      const catalogue = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
+      // 诊断不中断启动，有效 Skill 仍按原规则注册；交互模式显示可读提示，
+      // 非交互模式沿用 stderr 的 JSON 事件流，避免破坏可逐行解析的运行日志。
+      for (const { path, reason } of catalogue.diagnostics) {
+        if (isInteractiveTerminal()) process.stderr.write(`Skill 提示：跳过 ${path}（${reason}）\n`);
+        else log({ event: 'skill.skipped', path, reason });
+      }
+      return catalogue;
+    };
+    let skills = await loadSkills();
     const fileBaselinesBySession = new Map<string, Map<string, WorkspaceFileSnapshot>>();
     const fileBaselinesForSession = (id: string): Map<string, WorkspaceFileSnapshot> => {
       let baselines = fileBaselinesBySession.get(id);
@@ -186,6 +416,8 @@ async function main(): Promise<void> {
     };
     const switchSession = async (id: string) => {
       const resumed = await resumeSession(userHome, id);
+      // 恢复对话时从磁盘重新加载 Hook 配置，并按当前配置重新检查信任。
+      resumed.config = await applyHookTrust(resumed.config);
       if (id !== conversationId) {
         const nextRelease = await acquireSessionLock(userHome, id);
         await releaseSession?.();
@@ -195,8 +427,10 @@ async function main(): Promise<void> {
       config = resumed.config;
       conversationId = id;
       recentFiles.replace(resumed.recentFiles);
-      skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
+      skills = await loadSkills();
       bindBackgroundNotifications(id);
+      // 进程内切换与启动恢复使用同一来源；Hook 配置与信任已在上面按磁盘当前状态重新判定。
+      resumed.history = [...resumed.history, ...await runSessionStart('resume', id)];
       process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
       return resumed;
     };
@@ -220,8 +454,7 @@ async function main(): Promise<void> {
       type: 'local',
       execute: async () => {
         const id = newConversationId();
-        const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, ...persistedConfig } = config;
-        await createSession(userHome, { id, workspace: config.workspace, config: persistedConfig });
+        await createSession(userHome, { id, workspace: config.workspace, config: persistableSessionConfig(config) });
         const nextRelease = await acquireSessionLock(userHome, id);
         await releaseSession?.();
         releaseSession = nextRelease;
@@ -231,6 +464,8 @@ async function main(): Promise<void> {
         recoveredRoundIds = [];
         recentFiles.clear();
         bindBackgroundNotifications(id);
+        // /clear 等同新建对话，先完成 SessionStart(startup) 再接受下一条用户提交。
+        history = await runSessionStart('startup', id);
         process.stdout.write(`已新建会话：${id}\n`);
       },
     });
@@ -241,6 +476,17 @@ async function main(): Promise<void> {
       type: 'local',
       execute: () => ({ exit: true }),
     });
+    // 用量只读当前进程内的有效历史，不建立 MCP 连接、不发起模型请求，也不修改会话记录。
+    await commands.register({
+      name: '/context',
+      displayName: '上下文用量',
+      aliases: [],
+      type: 'local',
+      execute: async () => {
+        const usage = await estimateContextUsage(config, history, skills);
+        process.stdout.write(formatContextUsage(usage, config));
+      },
+    });
     if (process.stdin.isTTY) input.prompt();
     // 执行中登记的请求由 Agent 在下次主模型请求前消费；空闲时从工作项进入手动压缩。
     const consumeCompactionRequest = (): boolean => input?.consumeCompactRequest() ?? false;
@@ -250,12 +496,14 @@ async function main(): Promise<void> {
       if (workItem.type === 'compact') {
         try {
           activeRound = new AbortController();
+          input.setBusy(true);
           history = await compactIdleHistory(config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), legacyDirectory, recentFiles, pendingTaskStatuses, skills);
         } catch (error) {
           if (cancellation.signal.aborted) throw error;
           if (publicError(error).code === 'CANCELLED') process.stdout.write('\n用户中断：Interrupt by user\n');
           else process.stdout.write(`\n${formatUserError(error)}\n`);
         } finally {
+          input.setBusy(false);
           activeRound = undefined;
         }
         if (process.stdin.isTTY) input.prompt();
@@ -271,7 +519,26 @@ async function main(): Promise<void> {
         ].join('\n');
         try {
           activeRound = new AbortController();
-          history = await runTurn(notificationPrompt, config, skills, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
+input.setBusy(true);
+          history = await runTurn({
+            prompt: notificationPrompt,
+            config,
+            skills,
+            history,
+            userHome,
+            conversationId,
+            signal: AbortSignal.any([cancellation.signal, activeRound.signal]),
+            smokeTool: false,
+            humanApprovalControl: input.approve,
+            legacyDirectory,
+            recoveredRoundIds,
+            fileBaselines,
+            consumeCompactionRequest,
+            recentFiles,
+            getTaskStatuses: pendingTaskStatuses,
+            approvalMode: currentApprovalMode,
+            hookInjectionTracker,
+          });
           const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
           history = recovered.history;
           recoveredRoundIds = recovered.recoveredRoundIds;
@@ -280,6 +547,7 @@ async function main(): Promise<void> {
           process.stdout.write(`\n${formatUserError(error)}\n`);
           await syncHistoryFromSession();
         } finally {
+          input.setBusy(false);
           activeRound = undefined;
         }
         if (process.stdin.isTTY) input.prompt();
@@ -420,8 +688,35 @@ async function main(): Promise<void> {
       }
       try {
         activeRound = new AbortController();
+        input.setBusy(true);
         const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
-        history = await runTurn(prompt, config, skills, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
+const submitted = await runUserPromptSubmit(prompt, turnSignal);
+        turnSignal.throwIfAborted();
+        if (submitted.stop) {
+          if (submitted.stop.kind === 'stop') await preserveUserPrompt(prompt);
+          if (process.stdin.isTTY) input.prompt();
+          continue;
+        }
+        history = await runTurn({
+          prompt,
+          config,
+          skills,
+          history,
+          userHome,
+          conversationId,
+          signal: turnSignal,
+          smokeTool: false,
+          humanApprovalControl: input.approve,
+          legacyDirectory,
+          recoveredRoundIds,
+          fileBaselines,
+          consumeCompactionRequest,
+          recentFiles,
+          getTaskStatuses: pendingTaskStatuses,
+          approvalMode: currentApprovalMode,
+          promptContext: submitted.context,
+          hookInjectionTracker,
+        });
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
@@ -431,6 +726,7 @@ async function main(): Promise<void> {
         process.stdout.write(`\n${formatUserError(failure)}\n`);
         await syncHistoryFromSession();
       } finally {
+        input.setBusy(false);
         activeRound = undefined;
       }
       if (process.stdin.isTTY) input.prompt();
@@ -480,7 +776,19 @@ async function compactIdleHistory(
   }
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new AgentError('TIMEOUT', `请求超过 ${config.timeoutMs}ms，已终止。`)), config.timeoutMs);
+  let langfuseTracer: LangfuseTracer | undefined;
+  let langfuseTrace: TraceHandle | undefined;
   try {
+    // 跟踪器构造失败也走正常错误路径，避免遗留未清理的执行时限定时器。
+    langfuseTracer = createLangfuseTracer({ config, env: process.env, sessionId: conversationId });
+    langfuseTrace = langfuseTracer?.startTrace({
+      name: 'conversation.compact',
+      metadata: { conversationId, model: config.model, messageCount: history.length },
+    });
+    const tracing = langfuseTracer === undefined || langfuseTrace === undefined
+      ? undefined
+      : { tracer: langfuseTracer, traceId: langfuseTrace.id };
+    const observations = new AgentObservations(tracing);
     // 空闲压缩与自动压缩共用 Skill 恢复路径，按会话记录中的最近加载顺序补回被摘要移除的正文。
     const current = await loadSession(userHome, conversationId);
     const restore = skills === undefined
@@ -490,41 +798,127 @@ async function compactIdleHistory(
         recentLoads: current.skillLoads ?? [],
         ...(current.skillBodies === undefined ? {} : { bodies: current.skillBodies }),
       };
-    const summary = await generateSummary(config, history, AbortSignal.any([signal, deadline.signal]), sessionRecordPath(userHome, conversationId), {
-      recentFiles: recentFiles.list(),
-      getTaskStatuses,
-      ...(restore === undefined ? {} : { restore }),
-    });
+    const summary = await observations.traceSummary(
+      history.length,
+      (childTracing) => generateSummary(config, history, AbortSignal.any([signal, deadline.signal]), sessionRecordPath(userHome, conversationId), {
+        recentFiles: recentFiles.list(),
+        getTaskStatuses,
+        ...(restore === undefined ? {} : { restore }),
+        ...(childTracing === undefined ? {} : { tracing: childTracing }),
+      }),
+      (result) => result.text,
+    );
     await saveManualCompaction(userHome, conversationId, {
       effectiveHistory: summary.compacted,
       summary: { text: summary.text, restoredMessages: summary.restoredMessages },
       recentFiles: recentFiles.list(),
     });
     if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, summary.compacted).catch(() => undefined);
+    langfuseTrace?.end({
+      output: summary.text,
+      status: 'succeeded',
+      metadata: { compactedMessages: summary.compacted.length, restoredMessages: summary.restoredMessages },
+    });
     process.stdout.write('已压缩当前会话历史。\n');
     return summary.compacted;
+  } catch (error) {
+    langfuseTrace?.end({
+      status: signal.aborted ? 'cancelled' : 'failed',
+      error: { message: error instanceof Error ? error.message : '手动压缩失败。' },
+    });
+    throw error;
   } finally {
     clearTimeout(timer);
+    // 上报在后台完成：Langfuse 不可达或超时不能延迟返回输入提示符。
+    void langfuseTracer?.flush();
   }
 }
 
-async function runTurn(
-  prompt: string,
+/** Stop 的反馈与续跑结论；第二次运行只观察日志，不使用其中的反馈。 */
+interface StopHookOutcome {
+  feedback: ModelMessage[];
+  continuation: boolean;
+}
+
+/**
+ * Stop 在 runAgent 成功返回后、finishSessionRound 之前运行。
+ * 该事件没有 matcher query，默认超时 60 秒；block 或 exit 2 的理由追加到有效历史末端。
+ * stopHookActive 标记本次运行是否由上一次 Stop 阻止后的续跑触发。
+ */
+async function runStopHook(
   config: Awaited<ReturnType<typeof loadConfig>>,
-  skills: SkillCatalogue | undefined,
-  history: ModelMessage[],
-  userHome: string,
   conversationId: string,
+  userHome: string,
+  text: string,
   signal: AbortSignal,
-  smokeTool: boolean,
-  approvalControl?: ApprovalControl,
-  legacyDirectory?: string,
-  recoveredRoundIds: string[] = [],
-  fileBaselines: Map<string, WorkspaceFileSnapshot> = new Map(),
-  consumeCompactionRequest?: () => boolean,
-  recentFiles: RecentFileTracker = new RecentFileTracker(),
-  getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[],
-): Promise<ModelMessage[]> {
+  tracker: HookInjectionTracker,
+  stopHookActive: boolean,
+): Promise<StopHookOutcome> {
+  if (config.hooks === undefined || config.disableAllHooks) return { feedback: [], continuation: false };
+  // 最终回答之后、Hook 启动之前的取消仍属于取消路径，不运行 Stop。
+  signal.throwIfAborted();
+  const hookInput: StopHookInput = {
+    ...hookInputBase('Stop', conversationId, sessionRecordPath(userHome, conversationId), config),
+    stop_hook_active: stopHookActive,
+    last_assistant_message: text,
+  };
+  let result: Awaited<ReturnType<typeof runHookEvent>>;
+  try {
+    result = await runHookEvent(config.hooks, 'Stop', hookInput, {
+      cwd: config.workspace,
+      env: process.env,
+      signal,
+      onHookEvent: reportHookEvent,
+    });
+  } catch {
+    process.stderr.write('[hook] Stop: 执行失败（已忽略，不影响本轮）\n');
+    return { feedback: [], continuation: false };
+  }
+  for (const run of result.runs) {
+    const message = describeHookRun(run);
+    if (message !== undefined) process.stderr.write(`${message}\n`);
+  }
+  // 用户在 Hook 执行期间取消时不把本轮记为成功，也不保存反馈。
+  signal.throwIfAborted();
+  return {
+    feedback: stopFeedbackMessages(result, tracker),
+    continuation: stopContinuation(result),
+  };
+}
+
+interface TurnOptions {
+  prompt: string;
+  config: Awaited<ReturnType<typeof loadConfig>>;
+  skills?: SkillCatalogue;
+  history: ModelMessage[];
+  userHome: string;
+  conversationId: string;
+  signal: AbortSignal;
+  smokeTool: boolean;
+  /** CLI 人工审批控制；仅在当前模式为 default 时使用。 */
+  humanApprovalControl?: ApprovalControl;
+  /** 当前进程的审批模式；每个工具调用进入审批前读取。 */
+  approvalMode?: () => ApprovalMode;
+  legacyDirectory?: string;
+  recoveredRoundIds?: string[];
+  fileBaselines?: Map<string, WorkspaceFileSnapshot>;
+  consumeCompactionRequest?: () => boolean;
+  recentFiles?: RecentFileTracker;
+  getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[];
+  /** 本轮首次模型请求之前的附加上下文（UserPromptSubmit Hook）；续跑不重复注入。 */
+  promptContext?: ModelMessage[];
+  /** 首次运行与 Stop 续跑共享的 Hook 注入去重集合。 */
+  hookInjectionTracker?: HookInjectionTracker;
+}
+
+async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
+  const {
+    prompt, config, skills, history, userHome, conversationId, signal, smokeTool,
+    humanApprovalControl, approvalMode, legacyDirectory,
+    recoveredRoundIds = [], fileBaselines = new Map<string, WorkspaceFileSnapshot>(),
+    consumeCompactionRequest, recentFiles = new RecentFileTracker(), getTaskStatuses,
+    promptContext = [], hookInjectionTracker,
+  } = options;
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
   let summaryRestoredBase = 0;
@@ -535,6 +929,8 @@ async function runTurn(
   // 交互终端按模型步聚合工具活动；非交互管道继续使用下方逐行事件。
   const toolActivity = new ToolActivityRenderer(process.stdout);
   const toolInputs = new Map<string, { toolName: string; input: unknown }>();
+  let langfuseTracer: LangfuseTracer | undefined;
+  let langfuseTrace: TraceHandle | undefined;
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
   log({
@@ -543,8 +939,7 @@ async function runTurn(
   });
   try {
     if (!smokeTool) {
-      const { apiKey: _apiKey, approvalApiKey: _approvalApiKey, mcpHeaders: _mcpHeaders, migrationWarnings: _migrationWarnings, ...persistedConfig } = config;
-      roundId = await startSessionRound(userHome, conversationId, prompt, persistedConfig, () => {
+      roundId = await startSessionRound(userHome, conversationId, prompt, persistableSessionConfig(config), () => {
         reportCheckpointWarning('checkpoint.snapshot_failed', '消息检查点文件快照失败，本轮继续处理。', { conversationId });
       });
       const current = await loadSession(userHome, conversationId);
@@ -554,13 +949,43 @@ async function runTurn(
       recentSkillLoads = current.skillLoads ?? [];
       skillBodies = current.skillBodies ?? {};
     }
-    const result = await runAgent(config, prompt, {
+    // 默认关闭时 tracer 为 undefined；启用后每轮是独立 trace，会话 ID 关联同一对话。
+    langfuseTracer = createLangfuseTracer({ config, env: process.env, sessionId: conversationId });
+    langfuseTrace = langfuseTracer?.startTrace({
+      name: 'agent.round',
+      input: prompt,
+      metadata: {
+        conversationId,
+        ...(roundId === undefined ? {} : { roundId }),
+        workspace: config.workspace,
+        model: config.model,
+        smokeTool,
+      },
+    });
+    const tracing = langfuseTracer === undefined || langfuseTrace === undefined
+      ? undefined
+      : { tracer: langfuseTracer, traceId: langfuseTrace.id };
+    const runAgentTurn = (
+      agentPrompt: string | undefined,
+      agentHistory: ModelMessage[],
+      turnOptions: {
+        promptContext: ModelMessage[];
+        maxSteps?: number;
+        summaryCoverageBase?: number;
+        summaryRestoredBase?: number;
+        recentSkillLoads?: readonly string[];
+        skillBodies?: Readonly<Record<string, string>>;
+      },
+    ) => runAgent(config, agentPrompt, {
       smokeTool,
-      history,
-      summaryCoverageBase,
-      summaryRestoredBase,
-      recentSkillLoads,
-      skillBodies,
+      ...(tracing === undefined ? {} : { tracing }),
+      history: agentHistory,
+      promptContext: turnOptions.promptContext,
+      summaryCoverageBase: turnOptions.summaryCoverageBase ?? summaryCoverageBase,
+      summaryRestoredBase: turnOptions.summaryRestoredBase ?? summaryRestoredBase,
+      recentSkillLoads: turnOptions.recentSkillLoads ?? recentSkillLoads,
+      skillBodies: turnOptions.skillBodies ?? skillBodies,
+      ...(turnOptions.maxSteps === undefined ? {} : { maxSteps: turnOptions.maxSteps }),
       fileBaselines,
       ...(skills === undefined ? {} : { skills }),
       ...(!smokeTool ? { backgroundTasks: backgroundAgentTasksForSession(
@@ -574,7 +999,9 @@ async function runTurn(
         toolActivity.flush();
         process.stdout.write(chunk);
       },
-      ...(!smokeTool ? { transcriptPath: sessionRecordPath(userHome, conversationId) } : {}),
+      ...(!smokeTool ? { transcriptPath: sessionRecordPath(userHome, conversationId), sessionId: conversationId } : {}),
+      ...(hookInjectionTracker === undefined ? {} : { hookInjectionTracker }),
+      onHookEvent: reportHookEvent,
       onFileRead: (target) => recentFiles.record(target),
       getRecentFiles: () => recentFiles.list(),
       ...(getTaskStatuses ? { getTaskStatuses } : {}),
@@ -645,28 +1072,92 @@ async function runTurn(
         if (requested) manualCompaction = true;
         return requested;
       } } : {}),
-      ...(config.approval.mode === 'default' && approvalControl ? { approvalControl } : {}),
+      // 人工控制只在当前模式为 default 时生效；运行时切换后，后续调用由模型审批或人工审批接管。
+      ...(humanApprovalControl === undefined ? {} : { humanApprovalControl }),
+      ...(approvalMode === undefined ? {} : { approvalMode }),
     });
+
+    const firstResult = await runAgentTurn(prompt, history, { promptContext });
     signal.throwIfAborted();
-    const nextHistory = smokeTool ? history : result.effectiveHistory;
+    const tracker = hookInjectionTracker ?? new HookInjectionTracker();
+    // Stop 只在最终回答产生后、轮次结束前运行；取消与异常终止都在调用前抛错。
+    const stop = smokeTool
+      ? { feedback: [] as ModelMessage[], continuation: false }
+      : await runStopHook(config, conversationId, userHome, firstResult.text, signal, tracker, false);
+    const stopFeedback = stop.feedback;
+    let finalResult = firstResult;
+    let roundMessages = firstResult.roundMessages;
+    let summaries = [...firstResult.summaries];
+    let skillLoads = [...firstResult.skillLoads];
+    let mergedSkillBodies = { ...firstResult.skillBodies };
+    let totalSteps = firstResult.steps;
+    let totalToolCalls = firstResult.toolCalls;
+    let totalUsage = firstResult.usage;
+    let nextHistory = smokeTool ? history : [...firstResult.effectiveHistory, ...stopFeedback];
+    if (!smokeTool && stop.continuation) {
+      // 续跑复用整轮剩余步数，而不是重新获得完整额度。
+      const remainingSteps = config.maxSteps - firstResult.steps;
+      if (remainingSteps <= 0) {
+        process.stderr.write('[hook] Stop: 已达到本轮步数上限，不再续跑\n');
+      } else {
+        // 第一次运行可能已写压缩检查点；续跑从磁盘读取最新摘要边界与 Skill 状态。
+        const current = await loadSession(userHome, conversationId);
+        const lastSummary = current.summaries.at(-1);
+        const resumed = await runAgentTurn(undefined, [...firstResult.effectiveHistory, ...stopFeedback], {
+          promptContext: [],
+          maxSteps: remainingSteps,
+          summaryCoverageBase: lastSummary?.coversThrough ?? 0,
+          summaryRestoredBase: lastSummary?.restoredMessages ?? 0,
+          recentSkillLoads: appendRecentSkillLoads(current.skillLoads ?? [], firstResult.skillLoads),
+          skillBodies: { ...current.skillBodies, ...firstResult.skillBodies },
+        });
+        signal.throwIfAborted();
+        // 第二次 Stop 只记录日志：再次 block 也不续跑，也不向历史注入新的反馈。
+        await runStopHook(config, conversationId, userHome, resumed.text, signal, tracker, true);
+        finalResult = resumed;
+        roundMessages = [...roundMessages, ...stopFeedback, ...resumed.roundMessages];
+        summaries = [...summaries, ...resumed.summaries];
+        skillLoads = appendRecentSkillLoads(skillLoads, resumed.skillLoads);
+        mergedSkillBodies = { ...mergedSkillBodies, ...resumed.skillBodies };
+        nextHistory = resumed.effectiveHistory;
+        totalSteps += resumed.steps;
+        totalToolCalls += resumed.toolCalls;
+        totalUsage = {
+          inputTokens: sumTokens(firstResult.usage.inputTokens, resumed.usage.inputTokens),
+          outputTokens: sumTokens(firstResult.usage.outputTokens, resumed.usage.outputTokens),
+        };
+      }
+    }
     if (!smokeTool) {
       if (!roundId) throw new AgentError('PROVIDER_ERROR', '当前轮次未能建立持久化记录。');
       await finishSessionRound(userHome, conversationId, roundId, {
-        status: 'succeeded', response: result.roundMessages, effectiveHistory: nextHistory,
-        summaries: result.summaries, recoveredRoundIds, recentFiles: recentFiles.list(),
-        skillLoads: result.skillLoads, skillBodies: result.skillBodies,
+        status: 'succeeded', response: roundMessages, effectiveHistory: nextHistory,
+        summaries, recoveredRoundIds, recentFiles: recentFiles.list(),
+        skillLoads, skillBodies: mergedSkillBodies,
       });
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }
     toolActivity.flush();
     if (bashFailed) process.stdout.write('\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n');
+    langfuseTrace?.end({
+      output: finalResult.text,
+      status: 'succeeded',
+      metadata: {
+        steps: totalSteps,
+        toolCalls: totalToolCalls,
+        finishReason: finalResult.finishReason,
+        toolSmokePassed: finalResult.toolSmokePassed,
+      },
+    });
+    // 上报在后台完成：不延迟下一轮输入提示符；待发送请求由事件循环保持到结束。
+    void langfuseTracer?.flush();
     process.stdout.write('\n');
     log({
       event: 'run.finished', runId: lastRunId, status: 'succeeded',
       durationMs: Math.round(performance.now() - lastRunStartedAt),
-      steps: result.steps, toolCalls: result.toolCalls,
-      finishReason: result.finishReason, usage: result.usage,
-      toolSmokePassed: result.toolSmokePassed,
+      steps: totalSteps, toolCalls: totalToolCalls,
+      finishReason: finalResult.finishReason, usage: totalUsage,
+      toolSmokePassed: finalResult.toolSmokePassed,
       ...(smokeTool ? {} : { conversationId }),
     });
     return nextHistory;
@@ -679,6 +1170,8 @@ async function runTurn(
         status: 'cancelled', error: { code: 'CANCELLED', message: 'Interrupt by user' }, recentFiles: recentFiles.list(),
       }).catch(() => undefined);
       process.stdout.write('\n用户中断：Interrupt by user\n');
+      langfuseTrace?.end({ status: 'cancelled', error: { code: 'CANCELLED', message: 'Interrupt by user' } });
+      void langfuseTracer?.flush();
       log({ event: 'run.finished', runId: lastRunId, status: 'cancelled', durationMs: Math.round(performance.now() - lastRunStartedAt), conversationId });
       return history;
     }
@@ -695,8 +1188,19 @@ async function runTurn(
         error: { code: failure.code, message: failure.message }, conversationId,
       });
     }
+    langfuseTrace?.end({
+      status: failure.code === 'CANCELLED' ? 'cancelled' : 'failed',
+      error: { code: failure.code, message: failure.message },
+    });
+    void langfuseTracer?.flush();
     throw error;
   }
+}
+
+/** 合并两次运行的 token 用量；两边都未提供时保持未知，而不是伪造为 0。 */
+function sumTokens(first: number | undefined, second: number | undefined): number | undefined {
+  if (first === undefined && second === undefined) return undefined;
+  return (first ?? 0) + (second ?? 0);
 }
 
 function parseCliArgs() {
@@ -704,7 +1208,10 @@ function parseCliArgs() {
     options: {
       workspace: { type: 'string' },
       'conversation-id': { type: 'string' },
+      'permission-mode': { type: 'string' },
       'smoke-tool': { type: 'boolean' },
+      'trust-hooks': { type: 'boolean' },
+      'no-hooks': { type: 'boolean' },
       help: { type: 'boolean' },
     },
     allowPositionals: true,

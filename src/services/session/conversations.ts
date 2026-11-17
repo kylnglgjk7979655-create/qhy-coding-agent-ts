@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { ModelMessage } from 'ai';
 import type { ModelConfig } from '../settings/config.js';
+import { withoutHookConfig } from '../settings/config.js';
 import { AgentError } from '../../utils/errors.js';
 import { appendRecentSkillLoads } from '../skills/skill-injection.js';
 import { snapshotWorkspaceFile } from '../../tools/workspace-files.js';
@@ -108,9 +109,12 @@ export async function loadSession(home: string, conversationId: string): Promise
   }
   try {
     const value: unknown = JSON.parse(raw);
-    if (!isSessionRecord(value) || value.id !== conversationId) throw new Error('Invalid session');
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid session');
+    // 旧快照里的 hooks 直接忽略；恢复对话时按当前 settings 重新加载。
+    const session = pruneSessionHookConfig(value as SessionRecord);
+    if (!isSessionRecord(session) || session.id !== conversationId) throw new Error('Invalid session');
     // 旧格式记录没有 recentFiles 字段，读取时补空数组，保存时升级。
-    return { ...value, recentFiles: value.recentFiles ?? [], title: value.title?.trim() ? value.title : deriveSessionTitle(value.transcript) };
+    return { ...session, recentFiles: session.recentFiles ?? [], title: session.title?.trim() ? session.title : deriveSessionTitle(session.transcript) };
   } catch {
     throw new AgentError('PROVIDER_ERROR', '会话记录格式无效或已损坏，未覆盖原记录。');
   }
@@ -214,10 +218,11 @@ export async function loadOrCreateSession(home: string, options: {
 }
 
 export async function saveSession(home: string, record: SessionRecord): Promise<void> {
-  if (!isSessionRecord(record)) throw new AgentError('CONFIG_ERROR', '会话记录结构无效，未保存。');
-  const previous = await loadSession(home, record.id);
-  if (previous.workspace !== record.workspace) throw new AgentError('CONFIG_ERROR', '会话工作区不可变更。');
-  await writeSessionRecord(home, { ...record, updatedAt: new Date().toISOString() });
+  const session = pruneSessionHookConfig(record);
+  if (!isSessionRecord(session)) throw new AgentError('CONFIG_ERROR', '会话记录结构无效，未保存。');
+  const previous = await loadSession(home, session.id);
+  if (previous.workspace !== session.workspace) throw new AgentError('CONFIG_ERROR', '会话工作区不可变更。');
+  await writeSessionRecord(home, { ...session, updatedAt: new Date().toISOString() });
 }
 
 export async function appendSessionEvent(home: string, conversationId: string, messages: ModelMessage[]): Promise<void> {
@@ -478,8 +483,9 @@ export function sessionRecordPath(home: string, conversationId: string): string 
 }
 
 async function writeSessionRecord(home: string, record: SessionRecord, createOnly = false): Promise<void> {
-  const path = sessionRecordPath(home, record.id);
-  const directory = join(sessionStorageRoot(home), 'sessions', record.id);
+  const session = pruneSessionHookConfig(record);
+  const path = sessionRecordPath(home, session.id);
+  const directory = join(sessionStorageRoot(home), 'sessions', session.id);
   let temporaryPath: string | undefined;
   try {
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -489,13 +495,13 @@ async function writeSessionRecord(home: string, record: SessionRecord, createOnl
     if (createOnly) {
       try {
         await readFile(path);
-        throw new AgentError('CONFIG_ERROR', `会话已存在：${record.id}。`);
+        throw new AgentError('CONFIG_ERROR', `会话已存在：${session.id}。`);
       } catch (error) {
         if (!isMissing(error)) throw error;
       }
     }
     temporaryPath = join(directory, `.${randomUUID()}.tmp`);
-    await writeFile(temporaryPath, JSON.stringify(record), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    await writeFile(temporaryPath, JSON.stringify(session), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     await rename(temporaryPath, path);
   } catch (error) {
     if (error instanceof AgentError) throw error;
@@ -503,6 +509,19 @@ async function writeSessionRecord(home: string, record: SessionRecord, createOnl
   } finally {
     if (temporaryPath) await rm(temporaryPath, { force: true }).catch(() => undefined);
   }
+}
+
+/** Hook 配置不随会话持久化：读写记录时统一剔除会话级与轮次级 config 中的 Hook 字段。 */
+function pruneSessionHookConfig(record: SessionRecord): SessionRecord {
+  const config = typeof record.config === 'object' && record.config !== null
+    ? withoutHookConfig(record.config)
+    : record.config;
+  const rounds = Array.isArray(record.rounds)
+    ? record.rounds.map((round) => typeof round?.config === 'object' && round.config !== null
+      ? { ...round, config: withoutHookConfig(round.config) }
+      : round)
+    : record.rounds;
+  return { ...record, config, rounds };
 }
 
 function isSessionRecord(value: unknown): value is SessionRecord {
@@ -554,7 +573,7 @@ function deriveTitleFromText(text: string): string {
 function isModelConfig(value: unknown): value is ModelConfig {
   if (typeof value !== 'object' || value === null) return false;
   const config = value as Partial<ModelConfig>;
-  const fields = ['provider', 'model', 'apiKeyEnv', 'baseURL', 'workspace', 'timeoutMs', 'maxSteps', 'explore', 'context', 'mcp', 'bash', 'approval', 'permissions'];
+  const fields = ['provider', 'model', 'apiKeyEnv', 'baseURL', 'workspace', 'timeoutMs', 'maxSteps', 'explore', 'context', 'mcp', 'bash', 'approval', 'permissions', 'observability'];
   return Object.keys(value).every((field) => fields.includes(field))
     && config.provider === 'openai'
     && typeof config.model === 'string'
@@ -566,7 +585,23 @@ function isModelConfig(value: unknown): value is ModelConfig {
       && Object.keys(config.explore).every((field) => ['model', 'loadRootAgents'].includes(field))
       && (config.explore.model === undefined || (typeof config.explore.model === 'string' && config.explore.model.trim() !== ''))
       && (config.explore.loadRootAgents === undefined || typeof config.explore.loadRootAgents === 'boolean')))
+    && (config.observability === undefined || isObservabilityConfig(config.observability))
     && typeof config.approval === 'object' && config.approval !== null;
+}
+
+/** 会话配置只保存环境变量名与非敏感地址；凭据值不会出现在记录中。 */
+function isObservabilityConfig(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const observability = value as { langfuse?: unknown };
+  if (!Object.keys(value).every((field) => field === 'langfuse')) return false;
+  const langfuse = observability.langfuse;
+  if (typeof langfuse !== 'object' || langfuse === null) return false;
+  const record = langfuse as Record<string, unknown>;
+  return Object.keys(record).every((field) => ['enabled', 'baseURL', 'publicKeyEnv', 'secretKeyEnv'].includes(field))
+    && typeof record.enabled === 'boolean'
+    && typeof record.baseURL === 'string'
+    && typeof record.publicKeyEnv === 'string'
+    && typeof record.secretKeyEnv === 'string';
 }
 
 function isRoundRecord(value: unknown): value is SessionRecord['rounds'][number] {

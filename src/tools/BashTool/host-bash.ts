@@ -1,6 +1,6 @@
-import { spawn } from 'node:child_process';
 import { realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { runControlledProcess } from '../../services/process/controlled-process.js';
 import { isWithinWorkspace } from '../workspace-files.js';
 import { ToolExecutionError } from '../tool-registry.js';
 import { analyzeBashCommand } from './bash-policy.js';
@@ -79,54 +79,30 @@ export async function runBashProcess(
     throw new Error('Bash 工作目录在审批后不可用或发生变化，请重新提交调用。');
   }
   signal?.throwIfAborted();
-  return new Promise<BashRunResult>((resolve, reject) => {
-    const child = spawn(file, args, {
-      cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
-      ...(env === undefined ? {} : { env }),
-    });
-    const terminate = (): void => {
-      if (child.pid === undefined) return;
-      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* 进程组已退出。 */ }
-    };
-    let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; terminate(); }, timeoutMs);
-    signal?.addEventListener('abort', terminate, { once: true });
-    if (signal?.aborted) terminate();
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let savedBytes = 0;
-    let truncated = false;
-    const collect = (destination: Buffer[], chunk: Buffer): void => {
-      const remaining = 65_536 - savedBytes;
-      if (chunk.length > remaining) truncated = true;
-      const kept = chunk.subarray(0, remaining);
-      if (kept.length) destination.push(Buffer.from(kept));
-      savedBytes += kept.length;
-    };
-    child.stdout.on('data', (chunk: Buffer) => collect(stdout, chunk));
-    child.stderr.on('data', (chunk: Buffer) => collect(stderr, chunk));
-    let startFailed = false;
-    child.once('error', () => { startFailed = true; });
-    child.once('close', (exitCode, exitSignal) => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', terminate);
-      const result: BashRunResult = {
-        stdout: outputText(stdout), stderr: outputText(stderr), exitCode, signal: exitSignal, truncated, sandboxed,
-      };
-      if (signal?.aborted) reject(signal.reason);
-      else if (timedOut) reject(new ToolExecutionError('Bash 命令执行超时。', result));
-      else if (startFailed) reject(new ToolExecutionError(options.startFailureMessage ?? '无法启动 Bash 命令。', result));
-      else if (exitCode === 0) resolve(result);
-      else if (sandboxed && /operation not permitted/iu.test(result.stderr)) {
-        reject(new ToolExecutionError('Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。', result));
-      } else reject(new ToolExecutionError('Bash 命令执行失败。', result));
-    });
+  const controlled = await runControlledProcess(file, args, {
+    cwd,
+    ...(env === undefined ? {} : { env }),
+    ...(signal === undefined ? {} : { signal }),
+    timeoutMs,
+    // 沿用外部约定：stdout 与 stderr 合计最多保存 64 KiB。
+    stdoutLimitBytes: 65_536,
+    stderrLimitBytes: 65_536,
+    combinedLimitBytes: 65_536,
   });
-}
-
-function outputText(chunks: Buffer[]): string {
-  const bytes = Buffer.concat(chunks);
-  // 无效字节转为文本后再次限定字节量；流式解码丢弃截断处未完成的 UTF-8 字符。
-  const textBytes = Buffer.from(new TextDecoder().decode(bytes, { stream: true }));
-  return new TextDecoder().decode(textBytes.subarray(0, bytes.length), { stream: true });
+  const result: BashRunResult = {
+    stdout: controlled.stdout,
+    stderr: controlled.stderr,
+    exitCode: controlled.exitCode,
+    signal: controlled.signal,
+    truncated: controlled.stdoutTruncated || controlled.stderrTruncated,
+    sandboxed,
+  };
+  if (signal?.aborted) throw signal.reason;
+  if (controlled.timedOut) throw new ToolExecutionError('Bash 命令执行超时。', result);
+  if (controlled.startFailed) throw new ToolExecutionError(options.startFailureMessage ?? '无法启动 Bash 命令。', result);
+  if (controlled.exitCode === 0) return result;
+  if (sandboxed && /operation not permitted/iu.test(result.stderr)) {
+    throw new ToolExecutionError('Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。', result);
+  }
+  throw new ToolExecutionError('Bash 命令执行失败。', result);
 }

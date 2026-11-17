@@ -16,8 +16,9 @@ afterEach(async () => {
   if (cwd) await rm(cwd, { recursive: true, force: true });
 });
 const summary = '目标：修复折扣；已确认决策：满百九折；约束：保留文件边界；关键结果：已读取源码；未完成事项：验证测试。';
-// 阈值 = 容量 − min(最大输出额度, 20000) − 13000；基础请求约 1.5K，old 历史约 3.8K，触发点在两者之间。
-const context = { capacityTokens: 19_500, answerReserveTokens: 700, maxOutputTokens: 1_000 };
+// 阈值 = 容量 − min(最大输出额度, 20000) − 13000；基础请求含完整工具定义约 3.5K，old 历史约 3.8K，触发点在两者之间。
+// 容量为包含 Claude 风格工具定义预留了固定空间，不改变这些用例要验证的压缩时机。
+const context = { capacityTokens: 21_200, answerReserveTokens: 700, maxOutputTokens: 1_000 };
 // 全历史压缩不保留任何原文轮次；摘要输出上限与主模型回答预留相互独立。
 const compactContext = context;
 const historyPath = () => join(cwd, '.agent/conversations/summary.json');
@@ -75,7 +76,7 @@ it('同轮工具结果增长触发全历史摘要，后续步骤不再发送原�
   const fixture = await setup((_request, index) => index <= 2 ? { calls: [
     { id: `growth-${index}`, type: 'function', function: { name: 'read_file', arguments: '{"path":"large.txt"}' } },
   ] } : { content: '增长后完成' }, undefined, {
-    context: { capacityTokens: 19_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
+    context: { capacityTokens: 21_200, answerReserveTokens: 700, maxOutputTokens: 1_000 },
   });
   await writeFile(historyPath(), JSON.stringify([
     { role: 'user', content: '可替换旧目标' },
@@ -120,7 +121,7 @@ it('审查单次调用载荷超预算时不发送审查，停止同批后续操�
     { id: 'oversized-review', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'oversized.txt', content: '审'.repeat(4000) }) } },
     { id: 'tail', type: 'function', function: { name: 'Bash', arguments: '{"command":"touch forbidden.txt"}' } },
   ] }), undefined, {
-    context: { capacityTokens: 19_500, answerReserveTokens: 18_500, maxOutputTokens: 1_000 },
+    context: { capacityTokens: 21_200, answerReserveTokens: 18_500, maxOutputTokens: 1_000 },
     permissions: { allow: ['Bash(node:*)'] },
   });
   await writeFile(historyPath(), '[]');
@@ -156,7 +157,7 @@ it.each(['摘要失败', '压缩后仍超阈值'])('轮内%s停止后可提交�
   ] } : { content: '恢复完成' }, () => scenario === '摘要失败'
     ? { status: 500, content: '摘要故障_PRIVATE' }
     : { content: '冗长摘要'.repeat(4_000) }, {
-    context: { capacityTokens: 19_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
+    context: { capacityTokens: 21_200, answerReserveTokens: 700, maxOutputTokens: 1_000 },
     permissions: { allow: ['Bash(node:*)'] },
   });
   await writeFile(historyPath(), JSON.stringify([
@@ -183,7 +184,7 @@ it('动态 MCP 工具参数 schema 占用预算，压缩后仍超阈值时不发
   mcpFixtures.push(remote);
   const fixture = await setup(undefined, undefined, {
     mcp: { servers: [{ name: 'sized', url: remote.url }] },
-    context: { capacityTokens: 19_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
+    context: { capacityTokens: 21_200, answerReserveTokens: 700, maxOutputTokens: 1_000 },
   });
   await writeFile(historyPath(), '[]');
   expect((await run().done).stdout).toContain('本轮完成');
@@ -232,7 +233,7 @@ it.each(['超时', '取消'])('工具增长后的摘要等待受整轮%s约束�
   const fixture = await setup(() => ({ calls: [
     { id: 'growth', type: 'function', function: { name: 'read_file', arguments: '{"path":"large.txt"}' } },
   ] }), () => { entered(); return undefined; }, {
-    context: { capacityTokens: 19_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
+    context: { capacityTokens: 21_200, answerReserveTokens: 700, maxOutputTokens: 1_000 },
     timeoutMs: stop === '超时' ? 600 : 3000,
   });
   await writeFile(historyPath(), JSON.stringify([

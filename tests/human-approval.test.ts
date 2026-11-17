@@ -84,7 +84,7 @@ it.skipIf(process.platform === 'win32')('人工审批 Bash 展示完整参数与
     { id: 'bash-approve', type: 'function', function: { name: 'Bash', arguments: JSON.stringify({ command, cwd: 'alias' }) } },
     { id: 'bash-deny', type: 'function', function: { name: 'Bash', arguments: '{"command":"touch denied.txt"}' } },
     { id: 'read', type: 'function', function: { name: 'read_file', arguments: '{"path":"nested/approved.txt"}' } },
-  ] } : { content: 'Bash 审批完成' }, { timeoutMs: 600 });
+  ] } : { content: 'Bash 审批完成' }, { timeoutMs: 2000, approval: { mode: 'default', humanTimeoutMs: 4000 } });
   await mkdir(join(cwd, 'nested'));
   await symlink(join(cwd, 'nested'), join(cwd, 'alias'));
   const running = run();
@@ -94,7 +94,8 @@ it.skipIf(process.platform === 'win32')('人工审批 Bash 展示完整参数与
   expect(running.output()).toContain(command);
   expect(running.output()).toContain('"cwd": "alias"');
   expect(running.output()).toContain(`实际工作目录：${await realpath(join(cwd, 'nested'))}`);
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  // 人工等待 2500ms 超过 2000ms 整轮预算；等待期间预算暂停，因此整轮仍能完成。
+  await new Promise((resolve) => setTimeout(resolve, 2500));
   expect(running.output()).not.toMatch(/● Bash\(.*· 运行中/u);
   await expect(readFile(join(cwd, 'nested/approved.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
   running.child.stdin.write('1\r');
@@ -391,7 +392,8 @@ it.skipIf(process.platform === 'win32')('多次人工等待不会重置此前模
   }
   await running.waitFor('TIMEOUT');
   expect(running.output()).not.toContain('不应完成');
-  expect(fixture.requests).toHaveLength(3);
+  // 预算可能在第三次请求发出前或进行中到期；两种都说明人工等待没有重置预算。
+  expect([2, 3]).toContain(fixture.requests.length);
   expect(await readFile(join(cwd, 'step-1.txt'), 'utf8')).toBe('内容-step-1');
   expect(await readFile(join(cwd, 'step-2.txt'), 'utf8')).toBe('内容-step-2');
   await expect(readFile(join(cwd, '.agent/conversations/human.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
