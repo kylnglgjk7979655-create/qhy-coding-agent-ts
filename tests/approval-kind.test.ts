@@ -19,6 +19,7 @@ function writeCall(toolName = 'write_file', callId = 'call-1'): ToolApprovalRequ
     toolName,
     input: { path: 'note.txt', content: 'content' },
     details: { requestedPath: 'note.txt', target: join('/tmp/qhy-approval-kind', 'note.txt') },
+    permission: { tool: 'write_file', requestedPath: 'note.txt', target: join('/tmp/qhy-approval-kind', 'note.txt') },
   };
 }
 
@@ -68,6 +69,7 @@ describe('人工审批来源标记', () => {
     const bashCall: ToolApprovalRequest = {
       callId: 'bash-1', toolName: 'Bash', input: { command: 'echo hi' },
       details: { bashCommands: JSON.stringify(['echo hi']) },
+      permission: { tool: 'Bash', commands: ['echo hi'], requiresExtraApproval: false },
     };
     const defaults: ToolApprovalRequest[] = [];
     await approveToolCall(
@@ -86,5 +88,34 @@ describe('人工审批来源标记', () => {
 
     expect(defaults[0]?.approvalKind).toBe('default');
     expect(asks[0]?.approvalKind).toBe('explicit');
+  });
+
+  it('Hook allow 跳过工具默认审批，但不跳过网络工具默认审批', async () => {
+    const permissions = { allow: [], ask: [], deny: [], sandbox: DEFAULT_SANDBOX };
+    let writeApprovalRequested = false;
+    const writeDecision = await approveToolCall(
+      config(permissions),
+      { ...writeCall(), hookPermission: { decision: 'allow', reason: 'Hook 允许' } },
+      new AbortController().signal,
+      async () => { writeApprovalRequested = true; return 'deny'; },
+    );
+
+    const seen: ToolApprovalRequest[] = [];
+    const webDecision = await approveToolCall(
+      config(permissions),
+      {
+        callId: 'web-1', toolName: 'WebFetch', input: { url: 'https://example.com', prompt: '读取' },
+        permission: { tool: 'webFetch', hostname: 'example.com' },
+        hookPermission: { decision: 'allow', reason: 'Hook 允许' },
+      },
+      new AbortController().signal,
+      async (request) => { seen.push(request); return 'deny'; },
+    );
+
+    // 工具默认审批可被 Hook allow 跳过；网络工具的默认审批仍须进入审批。
+    expect(writeDecision).toBe(true);
+    expect(writeApprovalRequested).toBe(false);
+    expect(webDecision).toBe(false);
+    expect(seen).toHaveLength(1);
   });
 });

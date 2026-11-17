@@ -15,6 +15,7 @@ export function registerTodoWriteTool(registry: ToolRegistry): void {
     name: 'TodoWrite',
     description: '创建或完整更新本次任务的待办列表。todos 为完整新列表，会替换旧列表；最多一个任务处于 in_progress。',
     inputSchema: z.strictObject({ todos: z.array(todoSchema) }),
+    permission: { tool: 'todoWrite' },
     execute: ({ todos: next }) => {
       if (next.filter(({ status }) => status === 'in_progress').length > 1) {
         throw new Error('最多允许一个待办处于 in_progress。');

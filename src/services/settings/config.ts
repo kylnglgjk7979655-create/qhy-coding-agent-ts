@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { AgentError } from '../../utils/errors.js';
 import { hooksConfigSchema, mergeHookSettings } from '../hooks/hooks-config.js';
+import { parsePermissionRule } from '../../tools/tool-permission-policy.js';
 
 export const DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS = 300_000;
 /** 模型最大输出额度默认值；摘要请求输出上限取它与该默认值的较小值。 */
@@ -101,16 +102,8 @@ const sandboxArrayKeys = [
   'networkAllow', 'networkPorts', 'envPassthrough', 'bypassAllowedCommands',
 ] as const;
 
-const permissionRuleSchema = z.string().trim().min(1).refine((rule) => {
-  const match = /^(Read|Write|Edit|Glob|Grep|Bash|MCP|Agent|RuntimeInfo|TodoWrite|WebFetch|WebSearch)(?:\(([^()]+)\))?$/u.exec(rule);
-  if (!match) return false;
-  const [, kind, argument] = match;
-  if (['Read', 'Write', 'Edit', 'Glob', 'Grep'].includes(kind!)) return argument === undefined || argument.trim().length > 0;
-  if (kind === 'Bash') return argument !== undefined && argument.trim().length > 0;
-  if (kind === 'MCP') return argument === undefined || /^[a-z][a-z0-9-]{0,15}\/(?:\*|[^\s()*][^\s()]*)$/u.test(argument);
-  if (kind === 'WebFetch') return argument === undefined || /^domain:\S+$/u.test(argument);
-  return argument === undefined;
-}, '权限规则语法无效');
+const permissionRuleSchema = z.string().trim().min(1)
+  .refine((rule) => parsePermissionRule(rule) !== undefined, '权限规则语法无效');
 
 export const configSchema = z.strictObject({
   provider: z.literal('openai').default('openai'),

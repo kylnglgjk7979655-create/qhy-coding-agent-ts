@@ -196,6 +196,7 @@ export function registerWebFetchTool(registry: ToolRegistry): void {
           ...(target === undefined ? {} : { target: target.origin, urlHost: target.hostname }),
           requestedUrl: url,
         },
+        permission: { tool: 'webFetch', ...(target === undefined ? {} : { hostname: target.hostname }) },
       };
     },
     execute: async ({ url }, execution) => {

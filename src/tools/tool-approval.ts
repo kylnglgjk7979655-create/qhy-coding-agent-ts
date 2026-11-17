@@ -6,11 +6,7 @@ import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS } from '../services/
 import { AgentError } from '../utils/errors.js';
 import type { ToolApprovalRequest } from './tool-registry.js';
 import { assertInputBudget } from '../services/compact/context-summary.js';
-import { homedir } from 'node:os';
-import { realpathSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { isWithinWorkspace } from './workspace-files.js';
-import { matchesCommandPattern } from './BashTool/bash-policy.js';
+import { evaluatePermission, toPermissionRuleSet } from './tool-permission-policy.js';
 import { AgentObservations } from '../services/observability/agent-observations.js';
 import type { TracingScope } from '../services/observability/langfuse.js';
 
@@ -43,53 +39,27 @@ export async function approveToolCall(
   tracing?: TracingScope,
 ): Promise<boolean> {
   signal.throwIfAborted();
-  const readAction = isReadTool(call.toolName) ? readPermissionAction(config, call) : undefined;
-  // Edit 同时受 Edit 与 Write 规则约束，避免用户配置的 Edit(...) 规则被静默忽略。
-  const writeAction = isWriteTool(call.toolName)
-    ? pathPermissionAction(config, call, call.toolName === 'Edit' ? ['Edit', 'Write'] : ['Write']) : undefined;
-  const searchAction = isSearchTool(call.toolName)
-    ? pathPermissionAction(config, call, isGlobTool(call.toolName) ? 'Glob' : 'Grep') : undefined;
-  const searchAsks = call.details?.searchAsk !== undefined;
-  const searchOutsideWorkspace = isSearchTool(call.toolName)
-    && searchAction === undefined && call.details?.target !== undefined
-    && !isWithinWorkspace(config.workspace, call.details.target);
-  const webFetchAction = call.toolName === 'WebFetch' ? webFetchPermissionAction(config, call) : undefined;
-  const webSearchAction = call.toolName === 'WebSearch' ? basicToolPermissionAction(config, 'WebSearch') : undefined;
-  const todoAction = call.toolName === 'TodoWrite' ? basicToolPermissionAction(config, 'TodoWrite') : undefined;
-  const bashActions = call.toolName === 'Bash' ? bashPermissionActions(config, call) : [];
-  const mcpAction = mcpPermissionAction(config, call);
-  const basicToolAction = ['agent', 'runtimeInfo'].includes(call.toolName)
-    ? basicToolPermissionAction(config, call.toolName === 'agent' ? 'Agent' : 'RuntimeInfo') : undefined;
-  const bashDenied = bashActions.includes('deny');
-  const bashAllowed = bashActions.length > 0 && bashActions.every((action) => action === 'allow');
-  const bashRequiresApproval = call.toolName === 'Bash' && call.details?.bashRequiresApproval === 'true';
-  const readOutsideWorkspace = isReadTool(call.toolName) && readAction === undefined && !isReadTargetInWorkspace(config, call);
-  const permissionAction = mcpAction ?? webFetchAction ?? webSearchAction ?? todoAction
-    ?? basicToolAction ?? readAction ?? writeAction ?? searchAction;
-  // 网络工具未显式 allow/deny 时默认进入审批；TodoWrite 只修改本次运行内状态。
-  const webRequiresApproval = (call.toolName === 'WebFetch' && webFetchAction === undefined)
-    || (call.toolName === 'WebSearch' && webSearchAction === undefined);
-  // 显式 ask/范围规则每次重新确认；会话批准只能跳过 readOutsideWorkspace 这类工具默认审批。
-  const explicitAsk = permissionAction === 'ask' || searchAsks || bashActions.includes('ask');
-  const permissionRequiresApproval = explicitAsk || readOutsideWorkspace || searchOutsideWorkspace
-    || webRequiresApproval || bashRequiresApproval;
+  const decision = evaluatePermission({
+    rules: toPermissionRuleSet(config.permissions),
+    workspace: config.workspace,
+    facts: call.permission,
+  });
   const hookAsk = call.hookPermission?.decision === 'ask';
   const hookAllow = call.hookPermission?.decision === 'allow';
+  // Hook allow 可跳过工具默认审批，但不能跳过规则/范围审批；网络工具的默认审批仍保留。
+  const hookAllowSkipsDefaultApproval = decision.outcome === 'allow'
+    || (hookAllow && decision.outcome === 'ask' && decision.reason === 'default'
+      && call.permission.tool !== 'webFetch' && call.permission.tool !== 'webSearch');
+  // 规则 ask 与搜索范围 ask 属于显式审批；其余审批都是工具默认审批，会话批准只跳过后者。
+  const explicitAsk = decision.outcome === 'ask'
+    && (decision.reason === 'rule' || decision.reason === 'search-scope');
   const controlledCall: ToolApprovalRequest = {
     ...structuredClone(call),
     approvalKind: explicitAsk ? 'explicit' : 'default',
   };
-  if (permissionAction === 'deny' || bashDenied) return false;
-  // ask 强制审批，即使权限规则原本允许；allow 不能绕过规则里的 deny/ask。
-  if (!hookAsk) {
-    // Hook allow 只跳过“规则未要求审批”的默认审批；工作区外读取/搜索、需审批 Bash 等范围审批仍然生效。
-    if (hookAllow && !permissionRequiresApproval) return true;
-    if (call.toolName === 'Bash' && bashAllowed && !permissionRequiresApproval) return true;
-    // 范围要求审批时，不能被另一条宽泛 allow 跳过。
-    if (!permissionRequiresApproval && permissionAction === 'allow') return true;
-    if (!permissionRequiresApproval
-      && ['read_file', 'Read', 'glob', 'Glob', 'grep', 'Grep', 'runtimeInfo', 'agent', 'skill', 'TodoWrite'].includes(call.toolName)) return true;
-  }
+  // deny 不受 Hook 或审批控制影响；allow 在 Hook 明确 ask 时仍需审批。
+  if (decision.outcome === 'deny') return false;
+  if (!hookAsk && hookAllowSkipsDefaultApproval) return true;
 
   if (config.approval.mode === 'default') {
     if (!control) return false;
@@ -256,160 +226,6 @@ function toolStatus(output: unknown): 'succeeded' | 'failed' | 'cancelled' {
   return 'failed';
 }
 
-function bashPermissionActions(config: ResolvedConfig, call: ToolApprovalRequest): Array<'allow' | 'ask' | 'deny' | undefined> {
-  const commands = call.details?.bashCommands;
-  if (!commands) return [];
-  let parsed: unknown;
-  try { parsed = JSON.parse(commands); } catch { return []; }
-  if (!Array.isArray(parsed) || !parsed.every((command) => typeof command === 'string')) return [];
-  return parsed.map((command) => {
-    for (const action of ['deny', 'ask', 'allow'] as const) {
-      if ((config.permissions?.[action] ?? []).some((rule) => matchesBashRule(rule, command))) return action;
-    }
-    return undefined;
-  });
-}
-
-function matchesBashRule(rule: string, command: string): boolean {
-  const match = /^Bash\((.+)\)$/u.exec(rule);
-  if (!match) return false;
-  return matchesCommandPattern(match[1]!.trim(), command);
-}
-
-function mcpPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest): 'allow' | 'ask' | 'deny' | undefined {
-  const server = call.details?.mcpServer;
-  const tool = call.details?.mcpTool;
-  if (!server || !tool) return undefined;
-  for (const action of ['deny', 'ask', 'allow'] as const) {
-    if ((config.permissions?.[action] ?? []).some((rule) => {
-      if (rule === 'MCP') return true;
-      const match = /^MCP\(([a-z][a-z0-9-]{0,15})\/(.+)\)$/u.exec(rule);
-      if (!match || match[1] !== server) return false;
-      return match[2] === '*' || match[2] === tool;
-    })) return action;
-  }
-  return undefined;
-}
-
-function basicToolPermissionAction(
-  config: ResolvedConfig,
-  permission: 'Agent' | 'RuntimeInfo' | 'TodoWrite' | 'WebSearch',
-): 'allow' | 'ask' | 'deny' | undefined {
-  for (const action of ['deny', 'ask', 'allow'] as const) {
-    if ((config.permissions?.[action] ?? []).includes(permission)) return action;
-  }
-  return undefined;
-}
-
-function webFetchPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest): 'allow' | 'ask' | 'deny' | undefined {
-  const inputUrl = typeof call.input === 'object' && call.input !== null && 'url' in call.input
-    && typeof call.input.url === 'string' ? call.input.url : undefined;
-  let hostname: string | undefined;
-  try { hostname = inputUrl === undefined ? undefined : new URL(inputUrl).hostname.toLowerCase(); }
-  catch { hostname = undefined; }
-  const matches = (rule: string): boolean => {
-    const match = /^WebFetch(?:\(domain:(.+)\))?$/u.exec(rule);
-    if (!match) return false;
-    if (match[1] === undefined) return true;
-    if (hostname === undefined) return false;
-    const pattern = match[1].toLowerCase();
-    const expression = globExpression(pattern);
-    return expression.test(hostname);
-  };
-  for (const action of ['deny', 'ask', 'allow'] as const) {
-    if ((config.permissions?.[action] ?? []).some(matches)) return action;
-  }
-  return undefined;
-}
-
-function isReadTool(name: string): boolean { return name === 'read_file' || name === 'Read'; }
-function isWriteTool(name: string): boolean { return name === 'write_file' || name === 'Write' || name === 'Edit'; }
-function isSearchTool(name: string): boolean { return ['glob', 'Glob', 'grep', 'Grep'].includes(name); }
-function isGlobTool(name: string): boolean { return name === 'glob' || name === 'Glob'; }
-
-function readPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest): 'allow' | 'ask' | 'deny' | undefined {
-  return pathPermissionAction(config, call, 'Read');
-}
-
-type PathPermission = 'Read' | 'Write' | 'Edit' | 'Glob' | 'Grep';
-
-function pathPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest, permissions: PathPermission | readonly PathPermission[]): 'allow' | 'ask' | 'deny' | undefined {
-  const permissionNames = typeof permissions === 'string' ? [permissions] : permissions;
-  const inputPath = typeof call.input === 'object' && call.input !== null
-    ? ('file_path' in call.input && typeof call.input.file_path === 'string' ? call.input.file_path
-      : 'path' in call.input && typeof call.input.path === 'string' ? call.input.path : undefined)
-    : undefined;
-  const requestedPath = call.details?.requestedPath ?? inputPath;
-  const target = call.details?.target;
-  if (!requestedPath || !target) return undefined;
-  const paths = [resolveUserPath(config, requestedPath), target].map(canonicalizePermissionPath);
-  const matches = (rule: string): boolean => permissionNames.some((permission) => {
-    const match = new RegExp(`^${permission}(?:\\((.+)\\))?$`, 'u').exec(rule);
-    if (!match) return false;
-    if (match[1] === undefined) return true;
-    const pattern = canonicalizePermissionPath(resolveUserPath(config, match[1]));
-    const expression = globExpression(pattern);
-    return paths.some((path) => expression.test(path));
-  });
-  for (const action of ['deny', 'ask', 'allow'] as const) {
-    if ((config.permissions?.[action] ?? []).some(matches)) return action;
-  }
-  return undefined;
-}
-
-export function searchPathPermissionAction(config: ResolvedConfig, toolName: 'glob' | 'grep', path: string): 'allow' | 'ask' | 'deny' | undefined {
-  const permission = toolName === 'glob' ? 'Glob' : 'Grep';
-  const absolutePath = resolve(path);
-  for (const action of ['deny', 'ask', 'allow'] as const) {
-    const matches = (config.permissions?.[action] ?? []).some((rule) => {
-      const match = new RegExp(`^${permission}(?:\\((.+)\\))?$`, 'u').exec(rule);
-      if (!match) return false;
-      if (match[1] === undefined) return true;
-      return globExpression(canonicalizePermissionPath(resolveUserPath(config, match[1]))).test(canonicalizePermissionPath(absolutePath));
-    });
-    if (matches) return action;
-  }
-  return undefined;
-}
-
-function canonicalizePermissionPath(path: string): string {
-  const normalized = resolve(path).replaceAll('\\', '/');
-  const segments = normalized.split('/').filter(Boolean);
-  let prefix = normalized.startsWith('/') ? '/' : '';
-  let index = 0;
-  for (; index < segments.length; index += 1) {
-    const segment = segments[index]!;
-    if (segment.includes('*') || segment.includes('?')) break;
-    const candidate = resolve(prefix || '/', segment);
-    try { prefix = realpathSync(candidate).replaceAll('\\', '/'); }
-    catch { prefix = candidate.replaceAll('\\', '/'); index += 1; break; }
-  }
-  return resolve(prefix || '/', ...segments.slice(index)).replaceAll('\\', '/');
-}
-
-function isReadTargetInWorkspace(config: ResolvedConfig, call: ToolApprovalRequest): boolean {
-  const target = call.details?.target;
-  return target !== undefined && isWithinWorkspace(config.workspace, target);
-}
-
-function resolveUserPath(config: ResolvedConfig, path: string): string {
-  const expanded = path === '~' ? homedir() : path.startsWith('~/') ? resolve(homedir(), path.slice(2)) : path;
-  return resolve(config.workspace, expanded).replaceAll('\\', '/');
-}
-
-function globExpression(pattern: string): RegExp {
-  let expression = '^';
-  for (let index = 0; index < pattern.length; index += 1) {
-    const character = pattern[index]!;
-    if (character === '*' && pattern[index + 1] === '*') {
-      if (pattern[index + 2] === '/') { expression += '(?:.*/)?'; index += 2; }
-      else { expression += '.*'; index += 1; }
-    } else if (character === '*') expression += '[^/]*';
-    else if (character === '?') expression += '[^/]';
-    else expression += character.replace(/[|\\{}()[\]^$+?.]/gu, '\\$&');
-  }
-  return new RegExp(`${expression}$`, 'u');
-}
 
 function waitForDecision(control: ApprovalControl, call: ToolApprovalRequest, signal: AbortSignal): Promise<'approve' | 'deny'> {
   return new Promise((resolve, reject) => {

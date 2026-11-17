@@ -2,8 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { approvalOptionsFor, SessionApprovals } from '../src/cli/approval-policy.js';
 import type { ToolApprovalRequest } from '../src/tools/tool-registry.js';
 
+// 本组用例只断言审批选项与会话批准，权限事实不参与判断，使用中性占位。
+const inertPermission: ToolApprovalRequest['permission'] = { tool: 'skill' };
+
 function call(toolName: string, approvalKind?: 'default' | 'explicit'): ToolApprovalRequest {
-  return { callId: `${toolName}-1`, toolName, input: {}, ...(approvalKind === undefined ? {} : { approvalKind }) };
+  return {
+    callId: `${toolName}-1`, toolName, input: {},
+    permission: inertPermission,
+    ...(approvalKind === undefined ? {} : { approvalKind }),
+  };
 }
 
 describe('交互审批选项', () => {

@@ -66,6 +66,7 @@ export function registerAgentTool(registry: ToolRegistry, context: AgentToolCont
       model: z.string().trim().min(1).optional(),
       background: z.boolean().optional(),
     }),
+    permission: { tool: 'agent' },
     execute: async ({ description, prompt, subagent_type, model, background }, execution) => {
       const type = subagent_type?.toLowerCase() ?? 'general-purpose';
       if (type === 'task-manager') {
