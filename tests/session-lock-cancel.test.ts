@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import { startCLI } from './helpers/cli-process.js';
+import { readStoredSession } from './helpers/session-store.js';
 
 const secret = 'session-lock-test-key';
 
@@ -86,7 +87,7 @@ describe.skipIf(process.platform === 'win32')('CLI 会话占用与轮次中断',
 
       const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
       if (!id) throw new Error('会话尚未持久化');
-      const record = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json'), 'utf8')) as {
+      const record = await readStoredSession(userDir, id) as {
         transcript: Array<{ role: string; content: Array<{ type?: string; toolCallId?: string; output?: unknown }> | unknown }>;
         rounds: Array<{ status: string; error?: { message: string } }>;
       };

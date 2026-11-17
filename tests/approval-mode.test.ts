@@ -7,6 +7,7 @@ import type { ApprovalControl } from '../src/tools/tool-approval.js';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureRequest, FixtureResponse, FixtureToolCall } from './helpers/local-openai-fixture.js';
+import { readStoredSession } from './helpers/session-store.js';
 import { tempDir } from './helpers/temp-dir.js';
 
 let cwd = '';
@@ -51,9 +52,7 @@ async function sessionRoundModes(): Promise<unknown[]> {
   const ids = await readdir(root);
   const modes: unknown[] = [];
   for (const id of ids) {
-    const record = JSON.parse(await readFile(join(root, id, 'record.json'), 'utf8')) as {
-      rounds?: Array<{ config?: { approval?: { mode?: unknown } } }>;
-    };
+    const record = await readStoredSession(cwd, id);
     for (const round of record.rounds ?? []) modes.push(round.config?.approval?.mode);
   }
   return modes;

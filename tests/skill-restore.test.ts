@@ -1,9 +1,10 @@
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureToolCall } from './helpers/local-openai-fixture.js';
 import { startCLI } from './helpers/cli-process.js';
+import { readStoredSession } from './helpers/session-store.js';
 import { tempDir } from './helpers/temp-dir.js';
 
 const secret = 'skill-restore-test-key';
@@ -60,9 +61,7 @@ describe('压缩后恢复 Skill 正文', () => {
   }
 
   async function sessionRecord(userDir: string): Promise<StoredSession> {
-    const sessions = join(userDir, '.qhy-coding-agents', 'sessions');
-    const id = (await readdir(sessions))[0]!;
-    return JSON.parse(await readFile(join(sessions, id, 'record.json'), 'utf8')) as StoredSession;
+    return await readStoredSession(userDir) as StoredSession;
   }
 
   function injectionNames(messages: Array<{ role: string; content: unknown }>): string[] {

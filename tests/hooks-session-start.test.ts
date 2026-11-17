@@ -5,6 +5,7 @@ import { afterEach, expect, it } from 'vitest';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureRequest, FixtureResponse, FixtureToolCall } from './helpers/local-openai-fixture.js';
+import { readStoredSession, writeLegacySession } from './helpers/session-store.js';
 
 const homes: string[] = [];
 const workspaces: string[] = [];
@@ -107,10 +108,7 @@ it('SessionStart(startup) 在第一次模型请求前注入隐藏上下文并收
   expect(await readFile(join(workspace, 'hook-cwd.txt'), 'utf8')).toBe(`${workspace}\n`);
   expect(await readFile(join(workspace, 'hook-env.txt'), 'utf8')).toBe('inherited-env');
 
-  const record = JSON.parse(await readFile(
-    join(home, '.qhy-coding-agents', 'sessions', 'session-start', 'record.json'),
-    'utf8',
-  )) as { effectiveHistory: Array<{ role: string; content: unknown }> };
+  const record = await readStoredSession(home, 'session-start');
   const persisted = record.effectiveHistory.filter(({ role }) => role === 'user');
   expect(persisted).toHaveLength(2);
   expect(persisted[0]!.content).toContain('项目规则：始终使用中文。');
@@ -301,11 +299,12 @@ it('启动时恢复既有会话以 resume 来源注入在重建历史尾部，�
   expect(fixture.requests).toHaveLength(1);
   expect(userMessages(fixture.requests[0]!)[0]).toContain('启动上下文');
 
-  const recordPath = join(home, '.qhy-coding-agents', 'sessions', 'session-resume-startup', 'record.json');
-  const record = JSON.parse(await readFile(recordPath, 'utf8')) as { config: Record<string, unknown> };
+  const stored = await readStoredSession(home, 'session-resume-startup');
   // 旧快照残留的 Hook 不得执行；配置只能来自当前磁盘 settings。
-  record.config.hooks = { SessionStart: [{ hooks: [commandHook('touch stale-hook-ran')] }] };
-  await writeFile(recordPath, JSON.stringify(record));
+  // 用完整旧记录模拟升级前状态，事件日志会被清空并在下次恢复时按需转换。
+  const legacyConfig = stored.config as Record<string, unknown>;
+  legacyConfig.hooks = { SessionStart: [{ hooks: [commandHook('touch stale-hook-ran')] }] };
+  await writeLegacySession(home, stored);
   await writeSettings(workspace, fixture, {
     hooks: { SessionStart: [{ matcher: 'resume', hooks: [commandHook("cat > resume-input.json; printf '恢复上下文'")] }] },
   });

@@ -5,6 +5,7 @@ import { afterEach, expect, it } from 'vitest';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureRequest, FixtureResponse, FixtureToolCall } from './helpers/local-openai-fixture.js';
+import { readStoredSession } from './helpers/session-store.js';
 
 const homes: string[] = [];
 const workspaces: string[] = [];
@@ -71,10 +72,7 @@ function userTexts(request: FixtureRequest): string[] {
 }
 
 async function record(home: string, conversationId: string) {
-  return JSON.parse(await readFile(
-    join(home, '.qhy-coding-agents', 'sessions', conversationId, 'record.json'),
-    'utf8',
-  )) as { effectiveHistory: Array<{ role: string; content: unknown }> };
+  return readStoredSession(home, conversationId);
 }
 
 it('工具执行抛错触发 PostToolUseFailure：stdin 带错误与 error_code，反馈排在同批结果之后并持久化', async () => {

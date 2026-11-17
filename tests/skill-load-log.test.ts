@@ -1,9 +1,10 @@
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureToolCall } from './helpers/local-openai-fixture.js';
 import { startCLI } from './helpers/cli-process.js';
+import { readStoredSession, writeLegacySession } from './helpers/session-store.js';
 import { tempDir } from './helpers/temp-dir.js';
 
 const secret = 'skill-load-log-test-key';
@@ -47,14 +48,7 @@ describe('Skill 加载顺序记录', () => {
   }
 
   async function sessionRecord(userDir: string, conversationId?: string): Promise<StoredSession> {
-    const sessions = join(userDir, '.qhy-coding-agents', 'sessions');
-    const id = conversationId ?? (await readdir(sessions))[0]!;
-    const path = join(sessions, id, 'record.json');
-    return JSON.parse(await readFile(path, 'utf8')) as StoredSession;
-  }
-
-  async function writeSessionRecord(userDir: string, conversationId: string, record: StoredSession): Promise<void> {
-    await writeFile(join(userDir, '.qhy-coding-agents', 'sessions', conversationId, 'record.json'), JSON.stringify(record));
+    return await readStoredSession(userDir, conversationId) as StoredSession;
   }
 
   it('按加载顺序记录规范名称，同一 Skill 重复加载只保留最近一次位置', async () => {
@@ -148,7 +142,7 @@ describe('Skill 加载顺序记录', () => {
       const record = await sessionRecord(userDir, conversationId);
       expect(record.skillLoads).toEqual(['alpha']);
       delete record.skillLoads;
-      await writeSessionRecord(userDir, conversationId!, record);
+      await writeLegacySession(userDir, record as Parameters<typeof writeLegacySession>[1]);
 
       const resumed = startCLI({ cwd, userDir, conversationId: conversationId!, env: { TEST_MODEL_API_KEY: secret }, input: '加载 Beta\n/exit\n' });
       expect((await resumed.done).code).toBe(0);

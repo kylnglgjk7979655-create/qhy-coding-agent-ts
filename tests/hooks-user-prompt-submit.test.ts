@@ -5,6 +5,7 @@ import { afterEach, expect, it } from 'vitest';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureRequest, FixtureResponse, FixtureToolCall } from './helpers/local-openai-fixture.js';
+import { readStoredSession } from './helpers/session-store.js';
 
 const homes: string[] = [];
 const workspaces: string[] = [];
@@ -73,13 +74,7 @@ function call(id: string, name: string, input: unknown): FixtureToolCall {
 }
 
 async function record(home: string, conversationId: string) {
-  return JSON.parse(await readFile(
-    join(home, '.qhy-coding-agents', 'sessions', conversationId, 'record.json'),
-    'utf8',
-  )) as {
-    effectiveHistory: Array<{ role: string; content: unknown }>;
-    rounds: Array<{ status: string }>;
-  };
+  return readStoredSession(home, conversationId);
 }
 
 function messageText(message: { role: string; content: unknown }): string {

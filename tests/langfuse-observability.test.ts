@@ -487,7 +487,7 @@ describe('CLI Langfuse 接线', () => {
     expect(enabledLangfuse.requests[0]!.headers.authorization)
       .toBe(`Basic ${Buffer.from('pk-cli:sk-cli').toString('base64')}`);
     // 会话记录只保存环境变量名，不落盘凭据值。
-    const record = await readFile(join(userDir, '.qhy-coding-agents', 'sessions', conversationId!, 'record.json'), 'utf8');
+    const record = await readFile(join(userDir, '.qhy-coding-agents', 'sessions', conversationId!, 'events.jsonl'), 'utf8');
     expect(record).not.toContain('pk-cli');
     expect(record).not.toContain('sk-cli');
 

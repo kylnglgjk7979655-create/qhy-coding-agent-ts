@@ -2,7 +2,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createSession, loadSession, saveSession, sessionStorageRoot, startSessionRound } from '../src/services/session/conversations.js';
+import { createSession, loadSession, saveSession, sessionEventsPath, startSessionRound } from '../src/services/session/conversations.js';
+import { readStoredSession, writeLegacySession } from './helpers/session-store.js';
 
 describe('user-level session storage', () => {
   let userDirectory: string | undefined;
@@ -38,7 +39,7 @@ describe('user-level session storage', () => {
     expect(restarted).toEqual(created);
     expect(restarted.workspace).toBe('/work/project');
     expect(restarted.config.apiKeyEnv).toBe('TEST_API_KEY');
-    expect(await readFile(join(sessionStorageRoot(home), 'sessions', 'durable-session', 'record.json'), 'utf8'))
+    expect(await readFile(sessionEventsPath(home, 'durable-session'), 'utf8'))
       .not.toContain('credential-value');
   });
 
@@ -76,23 +77,23 @@ describe('user-level session storage', () => {
     await startSessionRound(home, session.id, '  第一个需求\n请修改文件  ', config);
     await startSessionRound(home, session.id, '后续需求不得覆盖标题', config);
 
-    const stored = JSON.parse(await readFile(join(sessionStorageRoot(home), 'sessions', session.id, 'record.json'), 'utf8')) as { title?: string };
+    const stored = await readStoredSession(home, session.id);
     expect(stored.title).toBe('第一个需求 请修改文件');
     const restarted = await loadSession(home, session.id);
     expect(restarted.title).toBe('第一个需求 请修改文件');
 
+    // 旧记录没有 title 时按 transcript 推导，并在下一次保存时持久化。
     delete stored.title;
-    await writeFile(join(sessionStorageRoot(home), 'sessions', session.id, 'record.json'), JSON.stringify(stored));
+    await writeLegacySession(home, stored);
     const legacy = await loadSession(home, session.id);
     expect(legacy.title).toBe('第一个需求 请修改文件');
     await saveSession(home, legacy);
-    expect(JSON.parse(await readFile(join(sessionStorageRoot(home), 'sessions', session.id, 'record.json'), 'utf8')))
-      .toMatchObject({ title: '第一个需求 请修改文件' });
+    expect((await readStoredSession(home, session.id)).title).toBe('第一个需求 请修改文件');
   });
 
   it('rejects a damaged record and leaves it unchanged', async () => {
     const home = await makeUserDirectory();
-    const path = join(sessionStorageRoot(home), 'sessions', 'damaged-session', 'record.json');
+    const path = sessionEventsPath(home, 'damaged-session');
     await createSession(home, {
       id: 'damaged-session', workspace: '/work/project', config: {
         provider: 'openai', model: 'fixture-model', apiKeyEnv: 'TEST_API_KEY', workspace: '/work/project',

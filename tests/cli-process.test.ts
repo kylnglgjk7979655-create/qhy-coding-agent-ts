@@ -3,7 +3,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import { startCLI } from './helpers/cli-process.js';
+import { readStoredSession, writeLegacySession } from './helpers/session-store.js';
 import { tempDir } from './helpers/temp-dir.js';
+import { sessionEventsPath } from '../src/services/session/conversations.js';
 
 const secret = 'cli-process-test-key';
 
@@ -72,9 +74,9 @@ describe('compiled CLI process driver', () => {
       expect(model.requests).toHaveLength(4);
 
       const firstId = findConversationId((await first.done).stderr);
-      const recordPath = join(firstUserDir, '.qhy-coding-agents', 'sessions', firstId, 'record.json');
+      const recordPath = sessionEventsPath(firstUserDir, firstId);
       const stored = await readFile(recordPath, 'utf8');
-      const record = JSON.parse(stored) as { workspace: string; transcript: Array<{ role?: string; content: unknown }>; effectiveHistory: unknown[]; rounds: Array<{ status: string }>; config: { apiKeyEnv: string } };
+      const record = await readStoredSession(firstUserDir, firstId);
       expect(record.workspace).toBe(firstCwd);
       expect(JSON.stringify(record.transcript)).toContain('第二条');
       expect(JSON.stringify(record.transcript)).toContain('write_file');
@@ -134,10 +136,7 @@ describe('compiled CLI process driver', () => {
       expect(JSON.stringify(model.requests[2])).toContain('启动后台调查');
       expect(JSON.stringify(model.requests[3])).toContain('后台子 Agent 已完成');
       const id = findConversationId(result.stderr);
-      const record = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json'), 'utf8')) as {
-        transcript: Array<{ role?: string; content: unknown }>;
-        rounds: Array<{ status: string }>;
-      };
+      const record = await readStoredSession(userDir, id);
       expect(JSON.stringify(record.transcript)).toContain('后台子 Agent 已完成');
       expect(JSON.stringify(record.transcript)).toContain('已收到后台调查结果。');
       expect(record.rounds.map(({ status }) => status)).toEqual(['succeeded', 'succeeded']);
@@ -268,20 +267,17 @@ describe('compiled CLI process driver', () => {
       const result = await child.done;
       expect(result.code).toBe(0);
       const id = findConversationId(result.stderr);
-      const record = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json'), 'utf8')) as {
-        checkpoints: Array<{ messageId: string; files: Array<{ path: string; backupId: string }> }>;
-        backups: Array<{ id: string; path: string; existed: boolean; content?: string }>;
-      };
+      const record = await readStoredSession(userDir, id);
       expect(record.checkpoints).toHaveLength(3);
-      const first = record.checkpoints[0]!.files;
+      const first = record.checkpoints[0]!.files!;
       expect(first.map(({ path }) => path).sort()).toEqual(['ignored.txt', 'late.txt', 'note.txt']);
       const original = new Map(record.backups.map((backup) => [backup.id, backup]));
       expect(original.get(first.find(({ path }) => path === 'note.txt')!.backupId)).toMatchObject({ path: 'note.txt', existed: true, content: 'before' });
       expect(original.get(first.find(({ path }) => path === 'ignored.txt')!.backupId)).toMatchObject({ path: 'ignored.txt', existed: false });
-      const second = record.checkpoints[1]!.files.find(({ path }) => path === 'note.txt');
+      const second = record.checkpoints[1]!.files!.find(({ path }) => path === 'note.txt');
       expect(original.get(second!.backupId)).toMatchObject({ path: 'note.txt', existed: true, content: 'within-message' });
       for (const checkpoint of record.checkpoints) {
-        const late = checkpoint.files.find(({ path }) => path === 'late.txt');
+        const late = checkpoint.files!.find(({ path }) => path === 'late.txt');
         expect(late).toBeDefined();
         expect(original.get(late!.backupId)).toMatchObject({ path: 'late.txt', existed: false });
       }
@@ -294,10 +290,7 @@ describe('compiled CLI process driver', () => {
       expect(otherResult.code).toBe(0);
       const otherId = findConversationId(otherResult.stderr);
       expect(otherId).not.toBe(id);
-      const otherRecord = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', otherId, 'record.json'), 'utf8')) as {
-        checkpoints: Array<{ files: Array<{ path: string; backupId: string }> }>;
-        backups: Array<{ id: string; content?: string }>;
-      };
+      const otherRecord = await readStoredSession(userDir, otherId);
       expect(otherRecord.checkpoints[0]!.files).toEqual([]);
       expect(otherRecord.backups).toEqual([]);
       expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('second');
@@ -368,11 +361,7 @@ describe('compiled CLI process driver', () => {
 
       const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
       if (!id) throw new Error('会话未保存');
-      const record = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json'), 'utf8')) as {
-        transcript: unknown[];
-        effectiveHistory: unknown[];
-        checkpoints: Array<{ id: string }>;
-      };
+      const record = await readStoredSession(userDir, id);
       expect(record.checkpoints).toHaveLength(2);
       expect(JSON.stringify(record.transcript)).toContain('恢复文件检查点');
       expect(JSON.stringify(record.transcript)).toContain('删除');
@@ -401,12 +390,7 @@ describe('compiled CLI process driver', () => {
       expect((await first.done).code).toBe(0);
       const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
       if (!id) throw new Error('会话未保存');
-      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
-      const record = JSON.parse(await readFile(recordPath, 'utf8')) as {
-        checkpoints: Array<{ id: string; messageId: string }>;
-        rounds: Array<{ id: string; transcriptStart?: number }>;
-        transcript: Array<{ role: string; content: unknown }>;
-      };
+      const record = await readStoredSession(userDir, id);
       expect(record.checkpoints).toHaveLength(2);
 
       let output = '';
@@ -426,7 +410,7 @@ describe('compiled CLI process driver', () => {
       const firstRound = record.rounds.find(({ id: roundId }) => roundId === record.checkpoints[0]!.messageId);
       if (firstRound?.transcriptStart === undefined) throw new Error('检查点轮次缺少 transcript 起点');
       record.transcript[firstRound.transcriptStart] = { role: 'user', content: '' };
-      await writeFile(recordPath, JSON.stringify(record));
+      await writeLegacySession(userDir, record);
       let emptyOutput = '';
       const emptyChooser = startCLI({ cwd, userDir, conversationId: id, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { emptyOutput = text; });
       emptyChooser.send('/rewind\n');
@@ -440,7 +424,7 @@ describe('compiled CLI process driver', () => {
       const legacyRound = record.rounds.find(({ id: roundId }) => roundId === record.checkpoints[0]!.messageId);
       if (!legacyRound) throw new Error('检查点轮次未保存');
       delete legacyRound.transcriptStart;
-      await writeFile(recordPath, JSON.stringify(record));
+      await writeLegacySession(userDir, record);
       let legacyOutput = '';
       const legacyChooser = startCLI({ cwd, userDir, conversationId: id, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { legacyOutput = text; });
       legacyChooser.send('/rewind\n');
@@ -475,10 +459,8 @@ describe('compiled CLI process driver', () => {
       const first = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '编辑文件\n/exit\n' });
       expect((await first.done).code).toBe(0);
       const id = findConversationId((await first.done).stderr);
-      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
-      const record = JSON.parse(await readFile(recordPath, 'utf8')) as { backups: unknown[] };
-      record.backups = [];
-      await writeFile(recordPath, JSON.stringify(record));
+      const record = await readStoredSession(userDir, id);
+      await writeLegacySession(userDir, { ...record, backups: [] });
 
       let output = '';
       const resumed = startCLI({ cwd, userDir, conversationId: id, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
@@ -490,7 +472,7 @@ describe('compiled CLI process driver', () => {
       expect(model.requests).toHaveLength(2);
       resumed.end('/exit\n');
       expect((await resumed.done).code).toBe(0);
-      const saved = JSON.parse(await readFile(recordPath, 'utf8')) as { transcript: unknown[] };
+      const saved = await readStoredSession(userDir, id);
       expect(JSON.stringify(saved.transcript)).not.toContain('恢复文件检查点请求');
     } finally {
       await model.close();
@@ -518,7 +500,6 @@ describe('compiled CLI process driver', () => {
       const first = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '编辑文件\n/exit\n' });
       expect((await first.done).code).toBe(0);
       const id = findConversationId((await first.done).stderr);
-      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
       let output = '';
       const resumed = startCLI({ cwd, userDir, conversationId: id, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
       resumed.send('/rewind\n');
@@ -540,7 +521,7 @@ describe('compiled CLI process driver', () => {
 
       resumed.end('/exit\n');
       expect((await resumed.done).code).toBe(0);
-      const saved = JSON.parse(await readFile(recordPath, 'utf8')) as { transcript: unknown[] };
+      const saved = await readStoredSession(userDir, id);
       expect(JSON.stringify(saved.transcript)).toContain('blocked.txt：失败');
       expect(JSON.stringify(saved.transcript)).toContain('good.txt：成功');
       expect(JSON.stringify(saved.transcript)).toContain('last.txt：成功');
@@ -575,8 +556,7 @@ describe('compiled CLI process driver', () => {
       // The generated id is the sole session directory created for this process.
       const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
       expect(id).toBeTruthy();
-      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id!, 'record.json');
-      const running = JSON.parse(await readFile(recordPath, 'utf8')) as { transcript: unknown[]; rounds: Array<{ status: string }>; config: { model: string } };
+      const running = await readStoredSession(userDir, id!);
       expect(JSON.stringify(running.transcript)).toContain('第一轮');
       expect(JSON.stringify(running.transcript)).toContain('已观察到的部分输出');
       expect(running.rounds.map(({ status }) => status)).toEqual(['running']);
@@ -587,7 +567,7 @@ describe('compiled CLI process driver', () => {
       finishResponse();
       child.end('/exit\n');
       expect((await child.done).code).toBe(0);
-      const failed = JSON.parse(await readFile(recordPath, 'utf8')) as { transcript: unknown[]; effectiveHistory: unknown[]; rounds: Array<{ status: string }> };
+      const failed = await readStoredSession(userDir, id!);
       expect(JSON.stringify(failed.transcript)).toContain('第二轮');
       expect(JSON.stringify(failed.effectiveHistory)).not.toContain('第二轮');
       expect(failed.rounds.map(({ status }) => status)).toEqual(['succeeded', 'failed']);
@@ -616,7 +596,7 @@ describe('compiled CLI process driver', () => {
       await waitForRequests(model.requests, 1);
       const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
       if (!id) throw new Error('初始会话未创建');
-      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
+      const recordPath = sessionEventsPath(userDir, id);
       await rm(recordPath);
       await mkdir(recordPath);
       finishResponse();
@@ -651,7 +631,7 @@ describe('compiled CLI process driver', () => {
       expect(ids).toHaveLength(2);
       const records = await Promise.all(ids.map(async (id) => ({
         id,
-        record: JSON.parse(await readFile(join(sessionRoot, id, 'record.json'), 'utf8')) as { workspace: string; transcript: unknown[] },
+        record: await readStoredSession(userDir, id),
       })));
       const previous = records.find(({ record }) => JSON.stringify(record.transcript).includes('保留的原对话'));
       const current = records.find(({ record }) => record.transcript.length === 0);
@@ -695,7 +675,7 @@ describe('compiled CLI process driver', () => {
       expect(ids).toHaveLength(2);
       const records = await Promise.all(ids.map(async (id) => ({
         id,
-        record: JSON.parse(await readFile(join(sessionRoot, id, 'record.json'), 'utf8')) as { transcript: unknown[] },
+        record: await readStoredSession(userDir, id),
       })));
       expect(records.find(({ record }) => JSON.stringify(record.transcript).includes('保留的原对话'))?.record.transcript.length).toBeGreaterThan(0);
       expect(records.find(({ record }) => record.transcript.length === 0)).toBeDefined();
@@ -776,19 +756,17 @@ describe('compiled CLI process driver', () => {
       expect((await first.done).code).toBe(0);
       const [firstId] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
       if (!firstId) throw new Error('初始会话未创建');
-      const sourceRecord = JSON.parse(await readFile(join(userDir, '.qhy-coding-agents', 'sessions', firstId, 'record.json'), 'utf8')) as Record<string, unknown>;
+      const sourceRecord = await readStoredSession(userDir, firstId);
       for (let index = 0; index < 14; index += 1) {
         const id = `viewport-${String(index).padStart(2, '0')}`;
-        const record = {
+        await writeLegacySession(userDir, {
           ...sourceRecord,
           id,
           workspace: secondCwd,
           updatedAt: new Date(Date.UTC(2000, 0, index + 1)).toISOString(),
           title: index === 0 ? `尾部目标\n${'很长的标题'.repeat(30)}` : `候选-${index}`,
-          config: { ...(sourceRecord.config as Record<string, unknown>), workspace: secondCwd },
-        };
-        await mkdir(join(userDir, '.qhy-coding-agents', 'sessions', id), { recursive: true });
-        await writeFile(join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json'), JSON.stringify(record));
+          config: { ...sourceRecord.config, workspace: secondCwd },
+        });
       }
 
       let output = '';
@@ -838,14 +816,12 @@ describe('compiled CLI process driver', () => {
       expect((await create.done).code).toBe(0);
       const [sourceId] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
       if (!sourceId) throw new Error('初始会话未创建');
-      const sessionRoot = join(userDir, '.qhy-coding-agents', 'sessions');
-      const source = JSON.parse(await readFile(join(sessionRoot, sourceId, 'record.json'), 'utf8')) as Record<string, unknown>;
+      const source = await readStoredSession(userDir, sourceId);
       for (const [id, updatedAt] of [
         ['duplicate-title-first', '2100-01-02T00:00:00.000Z'],
         ['duplicate-title-second', '2100-01-01T00:00:00.000Z'],
       ] as const) {
-        await mkdir(join(sessionRoot, id), { recursive: true });
-        await writeFile(join(sessionRoot, id, 'record.json'), JSON.stringify({ ...source, id, title: '同名会话', updatedAt }));
+        await writeLegacySession(userDir, { ...source, id, title: '同名会话', updatedAt });
       }
 
       let output = '';
@@ -934,7 +910,7 @@ describe('compiled CLI process driver', () => {
       interrupted.child.kill('SIGKILL');
       await interrupted.done;
 
-      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
+      const recordPath = sessionEventsPath(userDir, id);
       const interruptedRecord = await readFile(recordPath, 'utf8');
       expect(interruptedRecord).toContain('never-finished-call');
 
@@ -964,14 +940,10 @@ describe('compiled CLI process driver', () => {
       await waitForOutput(() => output, '[工具] Bash：开始', 1);
       const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
       if (!id) throw new Error('中断会话尚未持久化');
-      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
       interrupted.child.kill('SIGINT');
       await interrupted.done;
 
-      const record = JSON.parse(await readFile(recordPath, 'utf8')) as {
-        transcript: Array<{ role: string; content: unknown }>;
-        rounds: Array<{ status: string }>;
-      };
+      const record = await readStoredSession(userDir, id);
       expect(record.rounds.map(({ status }) => status)).toEqual(['cancelled']);
       expect(JSON.stringify(record.transcript)).toContain('cancelled-tool-call');
       expect(record.transcript.some(({ role, content }) => role === 'tool' && JSON.stringify(content).includes('cancelled-tool-call'))).toBe(false);
@@ -996,14 +968,10 @@ describe('compiled CLI process driver', () => {
       await waitForOutput(() => output, '[工具] Bash：开始', 1);
       const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
       if (!id) throw new Error('中断会话尚未持久化');
-      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
       interrupted.child.kill('SIGTERM');
       await interrupted.done;
 
-      const record = JSON.parse(await readFile(recordPath, 'utf8')) as {
-        transcript: Array<{ role: string; content: unknown }>;
-        rounds: Array<{ status: string; error?: { code: string; message: string } }>;
-      };
+      const record = await readStoredSession(userDir, id);
       expect(record.rounds.map(({ status }) => status)).toEqual(['cancelled']);
       expect(JSON.stringify(record.transcript)).toContain('SIGTERM 前已保存的消息');
       expect(record.rounds[0]?.error?.code).toBe('CANCELLED');
@@ -1038,7 +1006,7 @@ describe('compiled CLI process driver', () => {
       await waitForRequests(model.requests, 2);
       const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
       if (!id) throw new Error('中断会话尚未持久化');
-      const recordPath = join(userDir, '.qhy-coding-agents', 'sessions', id, 'record.json');
+      const recordPath = sessionEventsPath(userDir, id);
       const saved = await readFile(recordPath, 'utf8');
       expect(saved).toContain('"toolCallId":"saved-result-call"');
       interrupted.child.kill('SIGKILL');
@@ -1058,7 +1026,7 @@ describe('compiled CLI process driver', () => {
       expect(recovered.filter(({ role, ...message }) => role === 'assistant' && JSON.stringify(message).includes('saved-result-call'))).toHaveLength(1);
       expect(recovered.filter(({ role }) => role === 'tool')).toHaveLength(1);
 
-      const afterRecovery = JSON.parse(await readFile(recordPath, 'utf8')) as { rounds: Array<{ recovered?: boolean }> };
+      const afterRecovery = await readStoredSession(userDir, id);
       expect(afterRecovery.rounds[0]?.recovered).toBe(true);
       const resumedAgain = startCLI({ cwd, userDir, conversationId: id, env: { TEST_MODEL_API_KEY: secret } });
       resumedAgain.end('再确认一次\n/exit\n');

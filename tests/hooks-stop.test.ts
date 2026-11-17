@@ -5,6 +5,7 @@ import { afterEach, expect, it } from 'vitest';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureRequest, FixtureResponse } from './helpers/local-openai-fixture.js';
+import { readStoredSession } from './helpers/session-store.js';
 
 const homes: string[] = [];
 const workspaces: string[] = [];
@@ -55,13 +56,7 @@ function commandHook(command: string, timeoutMs?: number) {
 }
 
 async function record(home: string, conversationId: string) {
-  return JSON.parse(await readFile(
-    join(home, '.qhy-coding-agents', 'sessions', conversationId, 'record.json'),
-    'utf8',
-  )) as {
-    effectiveHistory: Array<{ role: string; content: unknown }>;
-    rounds: Array<{ status: string; messages?: Array<{ role: string; content: unknown }> }>;
-  };
+  return readStoredSession(home, conversationId);
 }
 
 function stopInputs(path: string): Promise<Array<Record<string, unknown>>> {

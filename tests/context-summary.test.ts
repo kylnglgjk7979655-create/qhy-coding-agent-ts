@@ -6,6 +6,8 @@ import { afterEach, expect, it } from 'vitest';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import { startLocalMCP } from './helpers/local-mcp-fixture.js';
+import { readStoredSession } from './helpers/session-store.js';
+import { sessionRecordPath } from '../src/services/session/conversations.js';
 
 let cwd = '';
 const fixtures: Awaited<ReturnType<typeof startLocalOpenAIModel>>[] = [];
@@ -22,14 +24,13 @@ const context = { capacityTokens: 21_200, answerReserveTokens: 700, maxOutputTok
 // 全历史压缩不保留任何原文轮次；摘要输出上限与主模型回答预留相互独立。
 const compactContext = context;
 const historyPath = () => join(cwd, '.agent/conversations/summary.json');
-const recordPath = () => join(cwd, '.qhy-coding-agents', 'sessions', 'summary', 'record.json');
 interface SavedRecord {
   transcript: ModelMessage[];
   effectiveHistory: ModelMessage[];
   summaries: Array<{ text: string; coversThrough: number }>;
 }
 async function readRecord(): Promise<SavedRecord> {
-  return JSON.parse(await readFile(recordPath(), 'utf8')) as SavedRecord;
+  return await readStoredSession(cwd, 'summary') as SavedRecord;
 }
 const recent: ModelMessage[] = [
   { role: 'user', content: '最近第一轮读取' },
@@ -291,7 +292,7 @@ it('长历史整体摘要替换原文，保存检查点并跨进程直接续聊'
   expect(realUserMessages(main)).toEqual([]);
   const wrapper = main.messages.find(({ role }) => role === 'user')!;
   expect(wrapper.content).toContain('[对话摘要]');
-  expect(wrapper.content).toContain(recordPath());
+  expect(wrapper.content).toContain(sessionRecordPath(cwd, 'summary'));
   const saved = JSON.parse(await readFile(historyPath(), 'utf8')) as ModelMessage[];
   expect(saved).toHaveLength(2);
   expect(saved[0]).toEqual({ role: 'user', content: expect.stringContaining(summary) });

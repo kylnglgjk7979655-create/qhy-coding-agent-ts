@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
+import { readStoredSession } from './helpers/session-store.js';
 
 const secret = 'manual-compact-test-key';
 const summary = '目标：手动压缩验收；约束：保留完整原文；关键结果：空闲与执行中均已压缩；未完成事项：人工 QA。';
@@ -45,10 +46,6 @@ async function setup(
   return { cwd, userDir, model };
 }
 
-function recordPath(userDir: string): string {
-  return join(userDir, '.qhy-coding-agents', 'sessions', 'compact', 'record.json');
-}
-
 interface SavedRecord {
   transcript: unknown[];
   effectiveHistory: unknown[];
@@ -56,7 +53,7 @@ interface SavedRecord {
 }
 
 async function readRecord(userDir: string): Promise<SavedRecord> {
-  return JSON.parse(await readFile(recordPath(userDir), 'utf8')) as SavedRecord;
+  return await readStoredSession(userDir, 'compact') as SavedRecord;
 }
 
 async function waitRecord(userDir: string, predicate: (record: SavedRecord) => boolean, describe: () => string): Promise<SavedRecord> {

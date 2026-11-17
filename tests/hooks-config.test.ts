@@ -16,6 +16,7 @@ import {
 } from '../src/services/hooks/hooks-config.js';
 import { createSession, loadSession, sessionRecordPath, startSessionRound } from '../src/services/session/conversations.js';
 import type { ModelConfig } from '../src/services/settings/config.js';
+import { readStoredSession, writeLegacySession } from './helpers/session-store.js';
 import { tempDir } from './helpers/temp-dir.js';
 
 const commandHook = (command: string, timeoutMs?: number) => ({
@@ -175,10 +176,12 @@ describe('Hook 配置模型与分层合并', () => {
     const session = await createSession(home, {
       id: 'hooks-not-persisted', workspace: cwd, config: persistableSessionConfig(config),
     });
-    const raw = JSON.parse(await readFile(sessionRecordPath(home, 'hooks-not-persisted'), 'utf8')) as Record<string, unknown>;
-    expect(raw.config).not.toHaveProperty('hooks');
-    expect(raw.config).not.toHaveProperty('disableAllHooks');
-    expect(JSON.stringify(raw)).not.toContain('secret-hook-command');
+    // JSONL 首行是 create 事件；持久化配置同样不得含 Hook 字段或命令正文。
+    const raw = await readFile(sessionRecordPath(home, 'hooks-not-persisted'), 'utf8');
+    const created = JSON.parse(raw.split('\n')[0]!) as { data: { record: { config: Record<string, unknown> } } };
+    expect(created.data.record.config).not.toHaveProperty('hooks');
+    expect(created.data.record.config).not.toHaveProperty('disableAllHooks');
+    expect(raw).not.toContain('secret-hook-command');
     expect(session.config).not.toHaveProperty('hooks');
   });
 
@@ -191,22 +194,25 @@ describe('Hook 配置模型与分层合并', () => {
     const withHooks = { ...config, hooks: { Stop: [{ hooks: [commandHook('should-not-be-stored')] }] }, disableAllHooks: true };
     await createSession(home, { id: 'legacy-hooks', workspace: cwd, config: withHooks as unknown as ModelConfig });
     const roundId = await startSessionRound(home, 'legacy-hooks', 'hello', withHooks as unknown as ModelConfig);
-    const path = sessionRecordPath(home, 'legacy-hooks');
 
-    const written = JSON.parse(await readFile(path, 'utf8')) as {
-      config: Record<string, unknown>; rounds: Array<{ id: string; config?: Record<string, unknown> }>;
-    };
+    const written = await readStoredSession(home, 'legacy-hooks');
     expect(written.config).not.toHaveProperty('hooks');
     expect(written.rounds.find((round) => round.id === roundId)?.config).not.toHaveProperty('hooks');
+    // 事件日志落盘时同样不得出现 Hook 命令正文。
+    const rawEvents = await readFile(sessionRecordPath(home, 'legacy-hooks'), 'utf8');
+    expect(rawEvents).not.toContain('should-not-be-stored');
 
-    // 模拟旧版本快照：即使记录里已经有 hooks，恢复时也直接忽略。
-    written.config.hooks = { Stop: [{ hooks: [commandHook('stale-hook')] }] };
-    written.config.disableAllHooks = true;
-    const staleRound = written.rounds.find((round) => round.id === roundId);
+    // 模拟升级前的完整 record.json：即使记录里已经有 hooks，恢复时也直接忽略。
+    const stale = written as unknown as {
+      config: Record<string, unknown>; rounds: Array<{ id: string; config?: Record<string, unknown> }>;
+    };
+    stale.config.hooks = { Stop: [{ hooks: [commandHook('stale-hook')] }] };
+    stale.config.disableAllHooks = true;
+    const staleRound = stale.rounds.find((round) => round.id === roundId);
     if (staleRound) {
       staleRound.config = { ...staleRound.config, hooks: { Stop: [{ hooks: [commandHook('stale-round-hook')] }] } };
     }
-    await writeFile(path, JSON.stringify(written));
+    await writeLegacySession(home, written);
 
     const restored = await loadSession(home, 'legacy-hooks');
     expect(restored.config).not.toHaveProperty('hooks');
