@@ -109,6 +109,27 @@ export async function readWorkspaceFile(
   }
 }
 
+async function readCurrentSnapshot(path: string, target: string): Promise<WorkspaceFileSnapshot> {
+  try { return { path, existed: true, content: await readFile(target, 'utf8') }; }
+  catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return { path, existed: false };
+    throw error;
+  }
+}
+
+function assertReadBaseline(
+  path: string,
+  current: WorkspaceFileSnapshot,
+  baseline: WorkspaceFileSnapshot | undefined,
+  allowMissingBaseline: boolean,
+): void {
+  if (current.existed && !baseline && !allowMissingBaseline) throw new Error(`写入冲突：尚未读取文件“${path}”，请先重新读取。`);
+  if (baseline && (baseline.existed !== current.existed || baseline.content !== current.content)) {
+    throw new Error(`写入冲突：文件“${path}”已在读取后变化，请重新读取后再写入。`);
+  }
+  if (!current.existed && baseline?.existed) throw new Error(`写入冲突：文件“${path}”已在读取后删除，请重新读取后再写入。`);
+}
+
 export async function writeControlledWorkspaceFile(
   workspace: string,
   requestedPath: string,
@@ -117,6 +138,7 @@ export async function writeControlledWorkspaceFile(
   beforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>,
   onBackupFailure?: (path: string) => void,
   approvedTarget?: string,
+  allowMissingBaseline = false,
 ): Promise<void> {
   await workspaceWriteLock.run(async () => {
     let target: string;
@@ -124,18 +146,8 @@ export async function writeControlledWorkspaceFile(
       target = await resolveWriteTarget(workspace, requestedPath);
       if (approvedTarget !== undefined && target !== approvedTarget) throw new Error('写入目标已变化');
       const path = relative(workspace, target);
-      let current: WorkspaceFileSnapshot;
-      try { current = { path, existed: true, content: await readFile(target, 'utf8') }; }
-      catch (error) {
-        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') current = { path, existed: false };
-        else throw error;
-      }
-      const baseline = baselines.get(path);
-      if (current.existed && !baseline) throw new Error(`写入冲突：尚未读取文件“${path}”，请先重新读取。`);
-      if (baseline && (baseline.existed !== current.existed || baseline.content !== current.content)) {
-        throw new Error(`写入冲突：文件“${path}”已在读取后变化，请重新读取后再写入。`);
-      }
-      if (!current.existed && baseline?.existed) throw new Error(`写入冲突：文件“${path}”已在读取后删除，请重新读取后再写入。`);
+      const current = await readCurrentSnapshot(path, target);
+      assertReadBaseline(path, current, baselines.get(path), allowMissingBaseline);
       if (beforeWrite) {
         try { await beforeWrite(current); }
         catch { onBackupFailure?.(path); }
@@ -145,6 +157,67 @@ export async function writeControlledWorkspaceFile(
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('写入冲突：')) throw error;
       throw new Error('无法写入文件：父目录必须存在且目标可访问。');
+    }
+  });
+}
+
+/**
+ * 在写入门闩内按读取基线检查后替换单个文件文本。
+ * 返回替换次数；无匹配、多个匹配（未启用 replace_all）或新旧文本相同时抛错且不落盘。
+ */
+export async function editControlledWorkspaceFile(
+  workspace: string,
+  requestedPath: string,
+  oldString: string,
+  newString: string,
+  replaceAll: boolean,
+  baselines: WorkspaceFileBaselines,
+  beforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>,
+  onBackupFailure?: (path: string) => void,
+  approvedTarget?: string,
+  allowMissingBaseline = false,
+): Promise<number> {
+  if (oldString === newString) throw new Error('old_string 与 new_string 相同，未做修改。');
+  return workspaceWriteLock.run(async () => {
+    let target: string;
+    try {
+      target = await resolveWriteTarget(workspace, requestedPath);
+      if (approvedTarget !== undefined && target !== approvedTarget) throw new Error('编辑目标已变化');
+      const path = relative(workspace, target);
+      const current = await readCurrentSnapshot(path, target);
+      if (!current.existed) throw new Error(`无法编辑文件“${path}”：目标不存在。`);
+      assertReadBaseline(path, current, baselines.get(path), allowMissingBaseline);
+      const source = current.content!;
+      let count = 0;
+      let firstMatch = -1;
+      let index = source.indexOf(oldString);
+      while (index >= 0) {
+        if (firstMatch < 0) firstMatch = index;
+        count += 1;
+        index = source.indexOf(oldString, index + oldString.length);
+      }
+      if (count === 0) throw new Error(`未找到要替换的文本，未修改文件“${path}”。`);
+      if (!replaceAll && count > 1) {
+        throw new Error(`找到 ${count} 处匹配，Edit 默认要求唯一匹配；请提供更长的 old_string 或设置 replace_all: true。`);
+      }
+      // 用切片避免 String.replace 把 new_string 中的 $ 解释成替换模式。
+      const content = replaceAll
+        ? source.split(oldString).join(newString)
+        : source.slice(0, firstMatch) + newString + source.slice(firstMatch + oldString.length);
+      const replacements = replaceAll ? count : 1;
+      if (beforeWrite) {
+        try { await beforeWrite(current); }
+        catch { onBackupFailure?.(path); }
+      }
+      await writeFile(target, content, 'utf8');
+      baselines.set(path, { path, existed: true, content });
+      return replacements;
+    } catch (error) {
+      if (error instanceof Error && (
+        error.message.startsWith('写入冲突：') || error.message.startsWith('old_string')
+        || error.message.startsWith('未找到') || error.message.startsWith('找到 ') || error.message.startsWith('无法编辑')
+      )) throw error;
+      throw new Error('无法编辑文件：父目录必须存在且目标可访问。');
     }
   });
 }
