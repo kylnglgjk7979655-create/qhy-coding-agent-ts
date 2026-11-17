@@ -74,6 +74,10 @@ const sandboxConfigSchema = z.strictObject({
 export type SandboxConfig = z.infer<typeof sandboxConfigSchema>;
 export const DEFAULT_SANDBOX = sandboxConfigSchema.parse({});
 
+/** 审批模式：default 为人工审批，auto 为独立模型审批。 */
+export const APPROVAL_MODES = ['default', 'auto'] as const;
+export type ApprovalMode = (typeof APPROVAL_MODES)[number];
+
 /** 沙箱数组字段在三层 settings 中始终取并集，项目层不能借覆盖移除上层保护。 */
 const sandboxArrayKeys = [
   'writePaths', 'writeDenyPaths', 'readDenyPaths', 'readAllowPaths',
@@ -110,7 +114,7 @@ export const configSchema = z.strictObject({
     timeoutMs: z.number().int().min(1).max(3_600_000).default(30_000),
   }).optional(),
   approval: z.strictObject({
-    mode: z.enum(['default', 'auto']).default('default'),
+    mode: z.enum(APPROVAL_MODES).default('default'),
     // 保留旧字段的严格解析，避免旧 settings 因迁移字段形状而破损；运行时不应用其中授权。
     rules: z.array(z.strictObject({
       toolName: z.string().trim().min(1),

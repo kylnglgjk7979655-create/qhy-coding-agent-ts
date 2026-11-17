@@ -9,6 +9,8 @@ import { estimateContextUsage, runAgent } from './query/agent.js';
 import type { ContextUsageEstimate } from './query/agent.js';
 import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession, type BackgroundTaskStatusEntry } from './tools/AgentTool/background-agent-tasks.js';
 import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
+import type { ApprovalMode } from './services/settings/config.js';
+import { approvalModeLabel, createApprovalModeState, parseApprovalModeCommand } from './tools/approval-mode.js';
 import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, saveManualCompaction, sessionRecordPath, sessionTaskOutputDirectory, startSessionRound } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
 import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './services/session/file-checkpoints.js';
@@ -32,10 +34,12 @@ const help = `用法：node dist/cli.js [选项]
   /rewind              预览并确认恢复到消息级文件检查点
   /compact             压缩当前有效历史并保存；空闲时立即生效，执行中在当前工具完成后生效
   /context             显示当前有效历史的估算输入用量、配置容量与使用比例
+  /permission-mode [模式]  查看或切换当前进程的审批模式（default / auto）
 
 选项：
   --workspace <目录>  覆盖配置的工作区（相对当前目录）
   --conversation-id <ID>  继续指定会话（省略时新建会话）
+  --permission-mode <模式>  本次进程使用 default（人工审批）或 auto（模型审批）
   --smoke-tool        强制读取探针文件并验证模型使用结果
   --help              显示帮助
 
@@ -104,6 +108,10 @@ async function main(): Promise<void> {
     if (args.positionals.length > 0) {
       throw new AgentError('CONFIG_ERROR', '交互模式不接受位置参数，请启动后在终端输入需求。');
     }
+    const permissionMode = args.values['permission-mode'];
+    if (permissionMode !== undefined && permissionMode !== 'default' && permissionMode !== 'auto') {
+      throw new AgentError('CONFIG_ERROR', '--permission-mode 只接受 default 或 auto。运行 --help 查看用法。');
+    }
     if (args.values['smoke-tool'] && args.values['conversation-id'] !== undefined) {
       throw new AgentError('CONFIG_ERROR', '--smoke-tool 不能与 --conversation-id 同时使用。');
     }
@@ -152,6 +160,19 @@ async function main(): Promise<void> {
       }
     }
     if (session) releaseSession = await acquireSessionLock(userHome, conversationId);
+    // 审批模式是进程级运行状态：切会话不变，重启后重新取 settings；切换不写回配置或会话记录。
+    const approvalMode = createApprovalModeState(permissionMode ?? config.approval.mode);
+    const currentApprovalMode = (): ApprovalMode => approvalMode.current();
+    const executeApprovalModeCommand = (line: string): boolean => {
+      const command = parseApprovalModeCommand(line);
+      if (command === undefined) return false;
+      if (command.mode !== undefined) approvalMode.switchTo(command.mode);
+      if (command.invalid !== undefined) {
+        process.stdout.write(`\n未知审批模式“${command.invalid}”；可用模式：default、auto。\n`);
+      }
+      process.stdout.write(`当前审批模式：${approvalModeLabel(currentApprovalMode())}。\n`);
+      return true;
+    };
     // 最近读取文件记录跨进程续聊保留；进程内以该记录为准，轮次结束或压缩时持久化。
     const recentFiles = new RecentFileTracker(session?.recentFiles ?? []);
     const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
@@ -165,7 +186,16 @@ async function main(): Promise<void> {
     } else history = [];
     if (smokeTool) {
       activeRound = new AbortController();
-      await runTurn('smoke', config, undefined, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), true);
+      await runTurn({
+        prompt: 'smoke',
+        config,
+        history,
+        userHome,
+        conversationId,
+        signal: AbortSignal.any([cancellation.signal, activeRound.signal]),
+        smokeTool: true,
+        approvalMode: currentApprovalMode,
+      });
       return;
     }
 
@@ -182,7 +212,7 @@ async function main(): Promise<void> {
     };
     let skills = await loadSkills();
 
-    input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
+    input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, executeApprovalModeCommand);
     const fileBaselinesBySession = new Map<string, Map<string, WorkspaceFileSnapshot>>();
     const fileBaselinesForSession = (id: string): Map<string, WorkspaceFileSnapshot> => {
       let baselines = fileBaselinesBySession.get(id);
@@ -283,12 +313,14 @@ async function main(): Promise<void> {
       if (workItem.type === 'compact') {
         try {
           activeRound = new AbortController();
+          input.setBusy(true);
           history = await compactIdleHistory(config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), legacyDirectory, recentFiles, pendingTaskStatuses, skills);
         } catch (error) {
           if (cancellation.signal.aborted) throw error;
           if (publicError(error).code === 'CANCELLED') process.stdout.write('\n用户中断：Interrupt by user\n');
           else process.stdout.write(`\n${formatUserError(error)}\n`);
         } finally {
+          input.setBusy(false);
           activeRound = undefined;
         }
         if (process.stdin.isTTY) input.prompt();
@@ -304,7 +336,25 @@ async function main(): Promise<void> {
         ].join('\n');
         try {
           activeRound = new AbortController();
-          history = await runTurn(notificationPrompt, config, skills, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
+          input.setBusy(true);
+          history = await runTurn({
+            prompt: notificationPrompt,
+            config,
+            skills,
+            history,
+            userHome,
+            conversationId,
+            signal: AbortSignal.any([cancellation.signal, activeRound.signal]),
+            smokeTool: false,
+            humanApprovalControl: input.approve,
+            legacyDirectory,
+            recoveredRoundIds,
+            fileBaselines,
+            consumeCompactionRequest,
+            recentFiles,
+            getTaskStatuses: pendingTaskStatuses,
+            approvalMode: currentApprovalMode,
+          });
           const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
           history = recovered.history;
           recoveredRoundIds = recovered.recoveredRoundIds;
@@ -313,6 +363,7 @@ async function main(): Promise<void> {
           process.stdout.write(`\n${formatUserError(error)}\n`);
           await syncHistoryFromSession();
         } finally {
+          input.setBusy(false);
           activeRound = undefined;
         }
         if (process.stdin.isTTY) input.prompt();
@@ -453,8 +504,26 @@ async function main(): Promise<void> {
       }
       try {
         activeRound = new AbortController();
+        input.setBusy(true);
         const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
-        history = await runTurn(prompt, config, skills, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
+        history = await runTurn({
+          prompt,
+          config,
+          skills,
+          history,
+          userHome,
+          conversationId,
+          signal: turnSignal,
+          smokeTool: false,
+          humanApprovalControl: input.approve,
+          legacyDirectory,
+          recoveredRoundIds,
+          fileBaselines,
+          consumeCompactionRequest,
+          recentFiles,
+          getTaskStatuses: pendingTaskStatuses,
+          approvalMode: currentApprovalMode,
+        });
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
@@ -464,6 +533,7 @@ async function main(): Promise<void> {
         process.stdout.write(`\n${formatUserError(failure)}\n`);
         await syncHistoryFromSession();
       } finally {
+        input.setBusy(false);
         activeRound = undefined;
       }
       if (process.stdin.isTTY) input.prompt();
@@ -541,23 +611,34 @@ async function compactIdleHistory(
   }
 }
 
-async function runTurn(
-  prompt: string,
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  skills: SkillCatalogue | undefined,
-  history: ModelMessage[],
-  userHome: string,
-  conversationId: string,
-  signal: AbortSignal,
-  smokeTool: boolean,
-  approvalControl?: ApprovalControl,
-  legacyDirectory?: string,
-  recoveredRoundIds: string[] = [],
-  fileBaselines: Map<string, WorkspaceFileSnapshot> = new Map(),
-  consumeCompactionRequest?: () => boolean,
-  recentFiles: RecentFileTracker = new RecentFileTracker(),
-  getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[],
-): Promise<ModelMessage[]> {
+interface TurnOptions {
+  prompt: string;
+  config: Awaited<ReturnType<typeof loadConfig>>;
+  skills?: SkillCatalogue;
+  history: ModelMessage[];
+  userHome: string;
+  conversationId: string;
+  signal: AbortSignal;
+  smokeTool: boolean;
+  /** CLI 人工审批控制；仅在当前模式为 default 时使用。 */
+  humanApprovalControl?: ApprovalControl;
+  /** 当前进程的审批模式；每个工具调用进入审批前读取。 */
+  approvalMode?: () => ApprovalMode;
+  legacyDirectory?: string;
+  recoveredRoundIds?: string[];
+  fileBaselines?: Map<string, WorkspaceFileSnapshot>;
+  consumeCompactionRequest?: () => boolean;
+  recentFiles?: RecentFileTracker;
+  getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[];
+}
+
+async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
+  const {
+    prompt, config, skills, history, userHome, conversationId, signal, smokeTool,
+    humanApprovalControl, approvalMode, legacyDirectory,
+    recoveredRoundIds = [], fileBaselines = new Map<string, WorkspaceFileSnapshot>(),
+    consumeCompactionRequest, recentFiles = new RecentFileTracker(), getTaskStatuses,
+  } = options;
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
   let summaryRestoredBase = 0;
@@ -660,7 +741,9 @@ async function runTurn(
         if (requested) manualCompaction = true;
         return requested;
       } } : {}),
-      ...(config.approval.mode === 'default' && approvalControl ? { approvalControl } : {}),
+      // 人工控制只在当前模式为 default 时生效；运行时切换后，后续调用由模型审批或人工审批接管。
+      ...(humanApprovalControl === undefined ? {} : { humanApprovalControl }),
+      ...(approvalMode === undefined ? {} : { approvalMode }),
     });
     signal.throwIfAborted();
     const nextHistory = smokeTool ? history : result.effectiveHistory;
@@ -717,6 +800,7 @@ function parseCliArgs() {
     options: {
       workspace: { type: 'string' },
       'conversation-id': { type: 'string' },
+      'permission-mode': { type: 'string' },
       'smoke-tool': { type: 'boolean' },
       help: { type: 'boolean' },
     },
