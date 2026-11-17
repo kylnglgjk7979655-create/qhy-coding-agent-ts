@@ -669,6 +669,8 @@ describe('compiled CLI process driver', () => {
       const result = await child.done;
 
       expect(result.code).toBe(0);
+      // 非交互输出不写终端控制序列，管道与日志保持可解析。
+      expect(output).not.toContain('\u001b[2J');
       expect(model.requests).toHaveLength(1);
       const sessionRoot = join(userDir, '.qhy-coding-agents', 'sessions');
       const ids = await readdir(sessionRoot);
@@ -696,7 +698,7 @@ describe('compiled CLI process driver', () => {
       await waitForOutput(() => output, '回答', 1);
       child.send('/clear\n');
       await waitForOutput(() => output, '已新建会话：', 1);
-      expect(output).toContain('\u001b[2J');
+      expect(output).toContain('\u001b[2J\u001b[3J\u001b[H');
       // 清屏后窗口只保留新会话提示，旧对话不再可见。
       const screen = output.slice(output.lastIndexOf('\u001b[2J'));
       expect(screen).toContain('已新建会话：');
@@ -704,6 +706,30 @@ describe('compiled CLI process driver', () => {
       expect(screen).not.toContain('回答');
       child.end('/exit\n');
       expect((await child.done).code).toBe(0);
+    } finally {
+      await model.close();
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')('keeps the current screen when /clear fails before creating the new session', async () => {
+    const cwd = await directory('clear-failure-cwd');
+    const userDir = await directory('clear-failure-user');
+    const model = await startLocalOpenAIModel(() => ({ content: '回答' }));
+    try {
+      await configure(cwd, model.baseURL);
+      let output = '';
+      const child = startCLI({ cwd, userDir, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      child.send('保留的原对话\n');
+      await waitForOutput(() => output, '回答', 1);
+      // 等本轮收尾完成、提示符重新出现后再破坏会话目录，避免与轮次末尾的读取竞争。
+      await waitForOutput(() => output, '> ', 2);
+      // 用同名普通文件占住会话目录，令新建会话在写盘阶段失败。
+      const sessionRoot = join(userDir, '.qhy-coding-agents', 'sessions');
+      await rm(sessionRoot, { recursive: true, force: true });
+      await writeFile(sessionRoot, 'occupied');
+      child.send('/clear\n');
+      expect((await child.done).code).not.toBe(0);
+      expect(output).not.toContain('\u001b[2J');
     } finally {
       await model.close();
     }
