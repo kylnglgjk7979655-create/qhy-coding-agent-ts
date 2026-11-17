@@ -24,6 +24,9 @@ import type { ApprovalControl } from './tools/tool-approval.js';
 import { acquireSessionLock } from './services/session/session-lock.js';
 import { generateSummary } from './services/compact/context-summary.js';
 import { RecentFileTracker } from './services/compact/recent-files.js';
+import { createLangfuseTracer } from './services/observability/langfuse.js';
+import type { LangfuseTracer, TraceHandle } from './services/observability/langfuse.js';
+import { AgentObservations } from './services/observability/agent-observations.js';
 
 const help = `用法：node dist/cli.js [选项]
 
@@ -583,7 +586,19 @@ async function compactIdleHistory(
   }
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new AgentError('TIMEOUT', `请求超过 ${config.timeoutMs}ms，已终止。`)), config.timeoutMs);
+  let langfuseTracer: LangfuseTracer | undefined;
+  let langfuseTrace: TraceHandle | undefined;
   try {
+    // 跟踪器构造失败也走正常错误路径，避免遗留未清理的执行时限定时器。
+    langfuseTracer = createLangfuseTracer({ config, env: process.env, sessionId: conversationId });
+    langfuseTrace = langfuseTracer?.startTrace({
+      name: 'conversation.compact',
+      metadata: { conversationId, model: config.model, messageCount: history.length },
+    });
+    const tracing = langfuseTracer === undefined || langfuseTrace === undefined
+      ? undefined
+      : { tracer: langfuseTracer, traceId: langfuseTrace.id };
+    const observations = new AgentObservations(tracing);
     // 空闲压缩与自动压缩共用 Skill 恢复路径，按会话记录中的最近加载顺序补回被摘要移除的正文。
     const current = await loadSession(userHome, conversationId);
     const restore = skills === undefined
@@ -593,21 +608,39 @@ async function compactIdleHistory(
         recentLoads: current.skillLoads ?? [],
         ...(current.skillBodies === undefined ? {} : { bodies: current.skillBodies }),
       };
-    const summary = await generateSummary(config, history, AbortSignal.any([signal, deadline.signal]), sessionRecordPath(userHome, conversationId), {
-      recentFiles: recentFiles.list(),
-      getTaskStatuses,
-      ...(restore === undefined ? {} : { restore }),
-    });
+    const summary = await observations.traceSummary(
+      history.length,
+      (childTracing) => generateSummary(config, history, AbortSignal.any([signal, deadline.signal]), sessionRecordPath(userHome, conversationId), {
+        recentFiles: recentFiles.list(),
+        getTaskStatuses,
+        ...(restore === undefined ? {} : { restore }),
+        ...(childTracing === undefined ? {} : { tracing: childTracing }),
+      }),
+      (result) => result.text,
+    );
     await saveManualCompaction(userHome, conversationId, {
       effectiveHistory: summary.compacted,
       summary: { text: summary.text, restoredMessages: summary.restoredMessages },
       recentFiles: recentFiles.list(),
     });
     if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, summary.compacted).catch(() => undefined);
+    langfuseTrace?.end({
+      output: summary.text,
+      status: 'succeeded',
+      metadata: { compactedMessages: summary.compacted.length, restoredMessages: summary.restoredMessages },
+    });
     process.stdout.write('已压缩当前会话历史。\n');
     return summary.compacted;
+  } catch (error) {
+    langfuseTrace?.end({
+      status: signal.aborted ? 'cancelled' : 'failed',
+      error: { message: error instanceof Error ? error.message : '手动压缩失败。' },
+    });
+    throw error;
   } finally {
     clearTimeout(timer);
+    // 上报在后台完成：Langfuse 不可达或超时不能延迟返回输入提示符。
+    void langfuseTracer?.flush();
   }
 }
 
@@ -646,6 +679,8 @@ async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
   let skillBodies: Record<string, string> = {};
   let bashFailed = false;
   let manualCompaction = false;
+  let langfuseTracer: LangfuseTracer | undefined;
+  let langfuseTrace: TraceHandle | undefined;
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
   log({
@@ -665,8 +700,25 @@ async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
       recentSkillLoads = current.skillLoads ?? [];
       skillBodies = current.skillBodies ?? {};
     }
+    // 默认关闭时 tracer 为 undefined；启用后每轮是独立 trace，会话 ID 关联同一对话。
+    langfuseTracer = createLangfuseTracer({ config, env: process.env, sessionId: conversationId });
+    langfuseTrace = langfuseTracer?.startTrace({
+      name: 'agent.round',
+      input: prompt,
+      metadata: {
+        conversationId,
+        ...(roundId === undefined ? {} : { roundId }),
+        workspace: config.workspace,
+        model: config.model,
+        smokeTool,
+      },
+    });
+    const tracing = langfuseTracer === undefined || langfuseTrace === undefined
+      ? undefined
+      : { tracer: langfuseTracer, traceId: langfuseTrace.id };
     const result = await runAgent(config, prompt, {
       smokeTool,
+      ...(tracing === undefined ? {} : { tracing }),
       history,
       summaryCoverageBase,
       summaryRestoredBase,
@@ -757,6 +809,18 @@ async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }
     if (bashFailed) process.stdout.write('\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n');
+    langfuseTrace?.end({
+      output: result.text,
+      status: 'succeeded',
+      metadata: {
+        steps: result.steps,
+        toolCalls: result.toolCalls,
+        finishReason: result.finishReason,
+        toolSmokePassed: result.toolSmokePassed,
+      },
+    });
+    // 上报在后台完成：不延迟下一轮输入提示符；待发送请求由事件循环保持到结束。
+    void langfuseTracer?.flush();
     process.stdout.write('\n');
     log({
       event: 'run.finished', runId: lastRunId, status: 'succeeded',
@@ -775,6 +839,8 @@ async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
         status: 'cancelled', error: { code: 'CANCELLED', message: 'Interrupt by user' }, recentFiles: recentFiles.list(),
       }).catch(() => undefined);
       process.stdout.write('\n用户中断：Interrupt by user\n');
+      langfuseTrace?.end({ status: 'cancelled', error: { code: 'CANCELLED', message: 'Interrupt by user' } });
+      void langfuseTracer?.flush();
       log({ event: 'run.finished', runId: lastRunId, status: 'cancelled', durationMs: Math.round(performance.now() - lastRunStartedAt), conversationId });
       return history;
     }
@@ -791,6 +857,11 @@ async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
         error: { code: failure.code, message: failure.message }, conversationId,
       });
     }
+    langfuseTrace?.end({
+      status: failure.code === 'CANCELLED' ? 'cancelled' : 'failed',
+      error: { code: failure.code, message: failure.message },
+    });
+    void langfuseTracer?.flush();
     throw error;
   }
 }

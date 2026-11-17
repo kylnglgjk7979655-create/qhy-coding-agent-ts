@@ -35,6 +35,13 @@ export class AgentError extends Error {
   }
 }
 
+/** 用户取消与超时中止可能以 AbortError、ABORT_ERR 或本项目 CANCELLED 出现。 */
+export function isCancellationError(error: unknown): boolean {
+  if (error instanceof AgentError) return error.code === 'CANCELLED';
+  return error instanceof Error
+    && (error.name === 'AbortError' || (error as { code?: unknown }).code === 'ABORT_ERR');
+}
+
 // Provider exceptions can contain request headers, response bodies and keys.
 // Only publish our own messages, never the raw exception or its stack.
 export function publicError(error: unknown): AgentError {

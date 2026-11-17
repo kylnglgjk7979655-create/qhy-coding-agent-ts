@@ -12,6 +12,7 @@ import { registerAgentTool } from './AgentTool/AgentTool.js';
 import type { ApprovalControl } from './tool-approval.js';
 import type { BackgroundAgentTasks } from './AgentTool/background-agent-tasks.js';
 import type { SkillCatalogue } from '../services/skills/skill-registry.js';
+import type { TracingScope } from '../services/observability/langfuse.js';
 
 export interface BuiltInToolContext {
   config: ResolvedConfig;
@@ -29,6 +30,8 @@ export interface BuiltInToolContext {
   onFileRead?: (target: string) => void;
   /** 主 Agent 与子 Agent 共享的 Skill 清单。 */
   skills?: SkillCatalogue;
+  /** 当前运行的跟踪 scope；子 Agent 工具据此创建独立 span。 */
+  tracing?: TracingScope;
   fileWriteCallbacks: {
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;

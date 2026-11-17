@@ -11,6 +11,8 @@ import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isWithinWorkspace } from './workspace-files.js';
 import { matchesCommandPattern } from './BashTool/bash-policy.js';
+import { AgentObservations } from '../services/observability/agent-observations.js';
+import type { TracingScope } from '../services/observability/langfuse.js';
 
 export type ApprovalControl = (call: ToolApprovalRequest, signal: AbortSignal) => Promise<'approve' | 'deny'>;
 
@@ -37,6 +39,8 @@ export async function approveToolCall(
   control?: ApprovalControl,
   humanWait?: { pause: () => void; resume: () => void },
   history: ModelMessage[] = [],
+  /** 审批模型请求的跟踪父级；人工审批没有模型请求，此时不产生 generation。 */
+  tracing?: TracingScope,
 ): Promise<boolean> {
   signal.throwIfAborted();
   const readAction = call.toolName === 'read_file' ? readPermissionAction(config, call) : undefined;
@@ -107,6 +111,7 @@ export async function approveToolCall(
       const prompt = JSON.stringify({ toolName: call.toolName, input: call.input, context });
       assertInputBudget(config, reviewInstructions, [{ role: 'user', content: prompt }]);
       reviewSignal.throwIfAborted();
+      const observations = new AgentObservations(tracing, 'approval.model');
       const result = await generateText({
         model: provider.chat(review?.model ?? config.model),
         system: reviewInstructions,
@@ -114,6 +119,9 @@ export async function approveToolCall(
         maxOutputTokens: (config.context ?? DEFAULT_CONTEXT).answerReserveTokens,
         maxRetries: 0,
         abortSignal: reviewSignal,
+        onLanguageModelCallStart: (event) => observations.startModelCall(event),
+        onLanguageModelCallEnd: (event) => observations.endModelCall(event),
+        onStepError: ({ callId, error }) => observations.failModelCall(callId, error),
       });
       if (result.finishReason !== 'stop' || result.toolCalls.length) throw new Error('Invalid review');
       decision = result.text.trim();

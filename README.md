@@ -127,6 +127,42 @@ pnpm dev --workspace ./demo
 
 自定义 `baseURL` 的服务必须兼容 OpenAI Chat Completions 及函数调用；仅能返回文本不足以认定工具兼容。缺少 settings 时，内置默认值使用 OpenAI 地址、`gpt-4.1-mini-2025-04-14` 和 `OPENAI_API_KEY`。
 
+### Langfuse 可观测性
+
+可选接入 Langfuse Cloud。默认关闭；关闭时不读取 Langfuse 凭据、不创建跟踪器，也不向 Langfuse 发送任何数据。
+
+```json
+{
+  "observability": {
+    "langfuse": {
+      "enabled": true,
+      "baseURL": "https://cloud.langfuse.com"
+    }
+  }
+}
+```
+
+凭据只从环境变量读取，默认变量名为 `LANGFUSE_PUBLIC_KEY` 和 `LANGFUSE_SECRET_KEY`；可在 `publicKeyEnv`、`secretKeyEnv` 中改用其他变量名。显式启用后缺少任一凭据会在启动阶段报配置错误。凭据只用于请求的 `Authorization` 头，不写入 settings、会话记录、普通日志或跟踪事件正文；`baseURL` 默认指向 Langfuse Cloud，自托管时可填写兼容 ingestion 接口的 HTTP(S) 地址。
+
+| 字段 | 含义 |
+| --- | --- |
+| `observability.langfuse.enabled` | 默认 `false`；设为 `true` 后启用跟踪 |
+| `observability.langfuse.baseURL` | 默认 `https://cloud.langfuse.com`；必须是 HTTP(S) 地址且不含凭据、查询参数或片段 |
+| `observability.langfuse.publicKeyEnv` | 默认 `LANGFUSE_PUBLIC_KEY`；只引用环境变量名 |
+| `observability.langfuse.secretKeyEnv` | 默认 `LANGFUSE_SECRET_KEY`；只引用环境变量名 |
+
+启用后按对话轮次生成一条 trace，`sessionId` 使用会话 ID，并在同一 trace 下记录：
+
+- 主 Agent 与子 Agent 的模型请求：模型名称、起止时间、状态、可获取的 token 用量、请求与响应内容；
+- 工具调用：工具名称、参数、结果或错误、执行状态与耗时；
+- 人工审批与模型审批：对应工具、完整参数、审批结果与状态；模型审批自身另记录一次模型请求；
+- 自动压缩与 `/compact` 的摘要请求：摘要 span、模型名称、输入输出与 token 用量；
+- 子 Agent：独立 span 记录委派说明、子 Agent 类型、模型和最终报告，其模型请求与工具调用挂在同一 trace 下。
+
+提示词、模型输出、工具参数和工具结果都会上传到 Langfuse；如需限制内容外泄，请只在可信项目和账号中启用。供应商没有返回费用时，本项目不写 `costDetails`，不按价格表推算费用；模型名称、耗时和 token 用量只会记录实际可获取的值。Langfuse 不可达、请求超时或返回失败时，当前批次按尽力上报处理并丢弃，不阻塞、不重试、不改变 Agent 结果。注意：Langfuse Cloud 若根据自身模型价格配置展示估算费用，属于云端行为，不是本项目上报的数据。
+
+关闭时把 `observability.langfuse.enabled` 设为 `false` 或删除该配置块即可；也可用项目本地 settings 覆盖用户级设置。改动在下次启动或切换会话恢复配置后生效。
+
 2026-11-03 的基础版本曾通过方舟真实模型和 `runtimeInfo` 工具验收，详见 [历史验收记录](docs/verification.md)。当前工具权限、Bash、基础 MCP 与摘要的离线验收入口见 [本地 QA 指南](docs/qa-tool-capabilities.md)；其中 [macOS Bash 沙箱人工验收清单](docs/qa-tool-capabilities.md#macos-bash-沙箱人工验收) 仍待人工执行。早期交互式文件工具的验收项目保留在 [QA 清单](.scratch/interactive-cli-file-tools/qa-checklist.md)。
 
 ## 长对话与历史替换
