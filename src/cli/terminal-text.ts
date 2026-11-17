@@ -1,4 +1,7 @@
-/** 将持久化的 ISO 时间显示为北京时间（固定 UTC+8）的 YYYY-MM-DD HH:mm:ss。 */
+/**
+ * 将含时区的 ISO 时间显示为北京时间（固定 UTC+8）的 YYYY-MM-DD HH:mm:ss。
+ * 无法解析时原样返回，避免隐藏异常记录。
+ */
 export function formatBeijingTime(iso: string): string {
   const time = Date.parse(iso);
   if (Number.isNaN(time)) return iso;
