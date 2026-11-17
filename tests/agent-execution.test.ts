@@ -584,4 +584,43 @@ describe('公共工具执行边界', () => {
     } finally { diagnostic.mockRestore(); }
   });
 
+  it('Hook 事件通知失败被隔离，Hook 与模型流程继续', async () => {
+    workspace = await tempDir('qhy-hook-notify-');
+    await writeFile(join(workspace, 'note.txt'), '保留内容');
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'hook-notify-read', type: 'function', function: {
+        name: 'read_file', arguments: '{"path":"note.txt"}',
+      } }] }
+      : { content: '读取完成。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
+      hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: "printf 'hook-ok'" }] }] },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 3000, maxSteps: 5,
+    };
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as never);
+    try {
+      const phases: string[] = [];
+      const result = await runAgent(config, '读取文件', {
+        smokeTool: false,
+        sessionId: 'hook-notify-isolation',
+        transcriptPath: join(workspace, 'record.json'),
+        onHookEvent: (notification) => {
+          phases.push(notification.phase);
+          throw new Error('Hook 观察者异常');
+        },
+      });
+      const toolMessages = fixture.requests[1]?.messages.filter(({ role }) => role === 'tool') as unknown as Array<{ content: string }>;
+      expect(JSON.parse(toolMessages[0]!.content)).toEqual({ is_error: false, output: { content: '保留内容' } });
+      expect(result.text).toBe('读取完成。');
+      expect(phases).toEqual(['started', 'finished']);
+      const output = write.mock.calls.map(([chunk]) => String(chunk)).join('');
+      expect(output).toContain('Hook 事件通知失败');
+      expect(output).not.toContain('Hook 观察者异常');
+    } finally {
+      write.mockRestore();
+    }
+  });
+
 });

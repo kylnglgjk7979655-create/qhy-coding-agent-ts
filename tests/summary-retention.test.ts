@@ -37,8 +37,8 @@ it('跨进程复用已保存摘要，保留摘要覆盖的完整 transcript 和�
   await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL,
     timeoutMs: 3000, maxSteps: 10, approval: { mode: 'auto' },
-    // 工具定义进入上下文预算后，留出空间让本例仍在第 4 轮触发一次全历史摘要。
-    context: { capacityTokens: 18_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
+    // 工具定义进入上下文预算后，为新增 Claude 风格工具留出空间，让本例仍在第 4 轮触发一次全历史摘要。
+    context: { capacityTokens: 20_200, answerReserveTokens: 700, maxOutputTokens: 1_000 },
   }));
 
   let output = '';
@@ -146,7 +146,7 @@ it('迁移旧版工作区历史时将摘要原文纳入新会话 transcript', as
   await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL,
     timeoutMs: 3000, maxSteps: 10, approval: { mode: 'auto' },
-    context: { capacityTokens: 18_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
+    context: { capacityTokens: 20_200, answerReserveTokens: 700, maxOutputTokens: 1_000 },
   }));
   const legacyHistory = [
     { role: 'user', content: '旧版需求_MARKER' },
@@ -178,7 +178,7 @@ it('摘要压缩校验失败时保留完整 transcript 且不保存无效摘要'
   await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
     model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL: model.baseURL,
     timeoutMs: 3000, maxSteps: 10, approval: { mode: 'auto' },
-    context: { capacityTokens: 18_500, answerReserveTokens: 700, maxOutputTokens: 1_000 },
+    context: { capacityTokens: 20_200, answerReserveTokens: 700, maxOutputTokens: 1_000 },
   }));
   const legacyHistory = [
     { role: 'user', content: '预算失败前的旧需求_MARKER' },

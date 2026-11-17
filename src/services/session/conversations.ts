@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { ModelMessage } from 'ai';
 import type { ModelConfig } from '../settings/config.js';
+import { withoutHookConfig } from '../settings/config.js';
 import { AgentError } from '../../utils/errors.js';
 import { appendRecentSkillLoads } from '../skills/skill-injection.js';
 import { snapshotWorkspaceFile } from '../../tools/workspace-files.js';
@@ -134,7 +135,9 @@ export async function createSession(home: string, options: {
   const path = sessionEventsPath(home, options.id);
   await prepareSessionDirectory(home, options.id);
   try {
-    await writeFile(path, serializeEvent(1, now, { type: 'create', record }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    // Hook 配置不随会话持久化：首个 create 事件同样剔除。
+    const persisted = pruneSessionHookConfig(record);
+    await writeFile(path, serializeEvent(1, now, { type: 'create', record: persisted }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   } catch (error) {
     if (isExist(error)) throw new AgentError('CONFIG_ERROR', `会话已存在：${options.id}。`);
     throw new AgentError('PROVIDER_ERROR', '无法安全保存会话记录。');
@@ -144,11 +147,13 @@ export async function createSession(home: string, options: {
 
 export async function loadSession(home: string, conversationId: string, options: SessionLoadOptions = {}): Promise<SessionRecord> {
   const state = await readSessionState(home, conversationId, options);
+  // 旧快照/事件里的 hooks 直接忽略；恢复对话时按当前 settings 重新加载。
+  const record = pruneSessionHookConfig(state.record);
   if (state.legacy && options.convertLegacy !== false) {
     // 首次打开旧会话时按需转换；转换失败不阻塞只读续聊，后续写入会重试。
-    await writeLegacyConversion(home, conversationId, state.record, state.eventsEmpty).catch(() => undefined);
+    await writeLegacyConversion(home, conversationId, record, state.eventsEmpty).catch(() => undefined);
   }
-  return state.record;
+  return record;
 }
 
 export function reconstructSessionHistory(session: SessionRecord): { history: ModelMessage[]; recoveredRoundIds: string[] } {
@@ -250,13 +255,14 @@ export async function loadOrCreateSession(home: string, options: {
 }
 
 export async function saveSession(home: string, record: SessionRecord): Promise<void> {
-  if (!isSessionRecord(record)) throw new AgentError('CONFIG_ERROR', '会话记录结构无效，未保存。');
-  const previous = await loadSession(home, record.id);
-  if (previous.workspace !== record.workspace) throw new AgentError('CONFIG_ERROR', '会话工作区不可变更。');
+  const session = pruneSessionHookConfig(record);
+  if (!isSessionRecord(session)) throw new AgentError('CONFIG_ERROR', '会话记录结构无效，未保存。');
+  const previous = await loadSession(home, session.id);
+  if (previous.workspace !== session.workspace) throw new AgentError('CONFIG_ERROR', '会话工作区不可变更。');
   // 显式 saveSession 保留全量替换语义，作为兼容入口；常规轮次更新走增量事件。
-  await commitSession(home, record.id, () => ({
+  await commitSession(home, session.id, () => ({
     type: 'record',
-    record: { ...record, updatedAt: new Date().toISOString() },
+    record: { ...session, updatedAt: new Date().toISOString() },
   }), { snapshot: true });
 }
 
@@ -594,9 +600,10 @@ async function commitSession(
   options: { snapshot?: boolean } = {},
 ): Promise<SessionRecord> {
   const state = await readSessionState(home, conversationId);
-  const mutation = await build(state.record);
+  // Hook 配置不随会话持久化：写入前统一剔除会话级与轮次级 config 中的 Hook 字段。
+  const mutation = pruneSessionMutation(await build(state.record));
   const at = new Date().toISOString();
-  const next = applySessionMutation(state.record, mutation, at);
+  const next = pruneSessionHookConfig(applySessionMutation(state.record, mutation, at));
   if (!isSessionRecord(next)) throw new AgentError('CONFIG_ERROR', '会话记录结构无效，未保存。');
   const eventsPath = sessionEventsPath(home, conversationId);
   let seq = state.seq;
@@ -825,9 +832,12 @@ async function readSessionState(home: string, conversationId: string, options: S
 }
 
 function isCreateMutation(value: unknown): value is Extract<SessionMutation, { type: 'create' }> {
-  return typeof value === 'object' && value !== null
-    && (value as { type?: unknown }).type === 'create'
-    && isSessionRecord((value as { record?: unknown }).record);
+  if (typeof value !== 'object' || value === null) return false;
+  const record = (value as { record?: unknown }).record;
+  return (value as { type?: unknown }).type === 'create'
+    && typeof record === 'object' && record !== null && !Array.isArray(record)
+    // 旧事件可能带 Hook 配置：先剔除再校验，保持旧日志可恢复。
+    && isSessionRecord(pruneSessionHookConfig(record as SessionRecord));
 }
 
 function splitEventLines(content: Buffer, options: SessionLoadOptions): string[] {
@@ -881,8 +891,11 @@ async function readLegacyRecord(home: string, conversationId: string): Promise<S
   }
   try {
     const value: unknown = JSON.parse(raw);
-    if (!isSessionRecord(value) || value.id !== conversationId) throw new Error('Invalid session');
-    return normalizeRecord(value, conversationId);
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid session');
+    // 旧 record.json 可能含 Hook 配置：读取时先剔除，避免敏感命令随会话恢复。
+    const session = pruneSessionHookConfig(value as SessionRecord);
+    if (!isSessionRecord(session) || session.id !== conversationId) throw new Error('Invalid session');
+    return normalizeRecord(session, conversationId);
   } catch {
     throw new AgentError('PROVIDER_ERROR', '会话记录格式无效或已损坏，未覆盖原记录。');
   }
@@ -890,11 +903,13 @@ async function readLegacyRecord(home: string, conversationId: string): Promise<S
 
 /** 旧记录没有 recentFiles 字段或标题时补齐；不改变原始 record.json。 */
 function normalizeRecord(value: SessionRecord, conversationId: string): SessionRecord {
-  if (!isSessionRecord(value) || value.id !== conversationId) throw corruptSessionError();
+  // 事件与快照里的旧记录同样剔除 Hook 配置，保证读出的会话不再携带命令正文。
+  const session = pruneSessionHookConfig(value);
+  if (!isSessionRecord(session) || session.id !== conversationId) throw corruptSessionError();
   return {
-    ...value,
-    recentFiles: value.recentFiles ?? [],
-    title: value.title?.trim() ? value.title : deriveSessionTitle(value.transcript),
+    ...session,
+    recentFiles: session.recentFiles ?? [],
+    title: session.title?.trim() ? session.title : deriveSessionTitle(session.transcript),
   };
 }
 
@@ -987,11 +1002,44 @@ function isStoredSessionEvent(value: unknown): value is StoredSessionEvent {
 function isSessionSnapshot(value: unknown): value is SessionSnapshot {
   if (typeof value !== 'object' || value === null) return false;
   const snapshot = value as Partial<SessionSnapshot>;
+  const record = snapshot.record;
   return snapshot.v === snapshotVersion
     && typeof snapshot.id === 'string'
     && Number.isSafeInteger(snapshot.eventSeq) && snapshot.eventSeq! > 0
     && Number.isSafeInteger(snapshot.byteOffset) && snapshot.byteOffset! >= 0
-    && isSessionRecord(snapshot.record);
+    && typeof record === 'object' && record !== null && !Array.isArray(record)
+    && isSessionRecord(pruneSessionHookConfig(record as SessionRecord));
+}
+
+/** Hook 配置不随会话持久化：读写记录时统一剔除会话级与轮次级 config 中的 Hook 字段。 */
+function pruneSessionHookConfig(record: SessionRecord): SessionRecord {
+  const config = typeof record.config === 'object' && record.config !== null
+    ? withoutHookConfig(record.config)
+    : record.config;
+  const rounds = Array.isArray(record.rounds)
+    ? record.rounds.map(pruneRoundHookConfig)
+    : record.rounds;
+  return { ...record, config, rounds };
+}
+
+function pruneRoundHookConfig(round: SessionRecord['rounds'][number]): SessionRecord['rounds'][number] {
+  return typeof round?.config === 'object' && round.config !== null
+    ? { ...round, config: withoutHookConfig(round.config) }
+    : round;
+}
+
+/** 事件数据中的记录与轮次级配置同样在落盘前剔除 Hook 字段。 */
+function pruneSessionMutation(mutation: SessionMutation): SessionMutation {
+  switch (mutation.type) {
+    case 'create':
+    case 'record':
+      return { ...mutation, record: pruneSessionHookConfig(mutation.record) };
+    case 'round-start':
+    case 'round-finish':
+      return { ...mutation, round: pruneRoundHookConfig(mutation.round) };
+    default:
+      return mutation;
+  }
 }
 
 function isSessionRecord(value: unknown): value is SessionRecord {
@@ -1043,7 +1091,7 @@ function deriveTitleFromText(text: string): string {
 function isModelConfig(value: unknown): value is ModelConfig {
   if (typeof value !== 'object' || value === null) return false;
   const config = value as Partial<ModelConfig>;
-  const fields = ['provider', 'model', 'apiKeyEnv', 'baseURL', 'workspace', 'timeoutMs', 'maxSteps', 'explore', 'context', 'mcp', 'bash', 'approval', 'permissions'];
+  const fields = ['provider', 'model', 'apiKeyEnv', 'baseURL', 'workspace', 'timeoutMs', 'maxSteps', 'explore', 'context', 'mcp', 'bash', 'approval', 'permissions', 'observability'];
   return Object.keys(value).every((field) => fields.includes(field))
     && config.provider === 'openai'
     && typeof config.model === 'string'
@@ -1055,7 +1103,23 @@ function isModelConfig(value: unknown): value is ModelConfig {
       && Object.keys(config.explore).every((field) => ['model', 'loadRootAgents'].includes(field))
       && (config.explore.model === undefined || (typeof config.explore.model === 'string' && config.explore.model.trim() !== ''))
       && (config.explore.loadRootAgents === undefined || typeof config.explore.loadRootAgents === 'boolean')))
+    && (config.observability === undefined || isObservabilityConfig(config.observability))
     && typeof config.approval === 'object' && config.approval !== null;
+}
+
+/** 会话配置只保存环境变量名与非敏感地址；凭据值不会出现在记录中。 */
+function isObservabilityConfig(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const observability = value as { langfuse?: unknown };
+  if (!Object.keys(value).every((field) => field === 'langfuse')) return false;
+  const langfuse = observability.langfuse;
+  if (typeof langfuse !== 'object' || langfuse === null) return false;
+  const record = langfuse as Record<string, unknown>;
+  return Object.keys(record).every((field) => ['enabled', 'baseURL', 'publicKeyEnv', 'secretKeyEnv'].includes(field))
+    && typeof record.enabled === 'boolean'
+    && typeof record.baseURL === 'string'
+    && typeof record.publicKeyEnv === 'string'
+    && typeof record.secretKeyEnv === 'string';
 }
 
 function isRoundRecord(value: unknown): value is SessionRecord['rounds'][number] {

@@ -1,6 +1,6 @@
 # qhy-coding-agent-ts
 
-基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `read_file`、`write_file`、`runtimeInfo` 和 `Bash`，可读取工作区文件，并在工具策略允许或所选审批通过后修改文件、运行命令。Bash 可在 macOS Seatbelt 沙箱内执行；沙箱默认关闭，v1 仅支持 macOS，其他平台按不可用处理。审批默认由独立模型完成，也可切换人工模式。会话记录保存在用户目录 `~/.qhy-coding-agents/sessions/`，支持用 conversation ID 跨进程继续对话。
+基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `Read`、`Write`、`Edit`、`Bash`、`Glob`、`Grep`、`TodoWrite`、`WebFetch` 和 `WebSearch`，并保留 `read_file`、`write_file`、`glob`、`grep` 旧名称；可读取、搜索和修改工作区文件，记录待办，访问公开网页或使用 Tavily 搜索网络，并在工具策略允许或所选审批通过后运行命令。Bash 可在 macOS Seatbelt 沙箱内执行；沙箱默认关闭，v1 仅支持 macOS，其他平台按不可用处理。审批默认由独立模型完成，也可切换人工模式。会话记录保存在用户目录 `~/.qhy-coding-agents/sessions/`，支持用 conversation ID 跨进程继续对话。
 
 通过 `ToolLoopAgent.stream()` 运行工具循环，每个对话轮次使用独立的 `maxSteps` 限制，默认 20 步。Agent 可通过 Bash 运行项目测试，文件工具与 Bash 共用策略、审批、串行执行和结果路径；启用沙箱后，Bash 的读写与网络还受沙箱计划和本机网络代理约束。
 
@@ -73,6 +73,8 @@ pnpm exec node dist/cli.js --workspace ./demo --conversation-id "$CONVERSATION_I
 
 输入 `/compact` 主动压缩当前有效历史：空闲时完成摘要和保存后立即返回输入界面，不额外发起主模型续做请求；执行中收到时登记请求，在当前工具结果写入历史后、同轮下一次主模型请求前压缩并继续任务。手动压缩失败时显示错误并返回输入，原有效历史保持不变；压缩不重置主模型步骤额度或延长执行时限。
 
+输入 `/context` 查看当前有效历史的上下文用量估算：显示估算输入 token、配置的 `context.capacityTokens` 和占比，并明确标注为估算。估算沿用主模型请求的序列化口径，包含内置系统提示、可用工具定义与当前有效历史；命令不发起模型请求、不修改会话记录，也不连接远程 MCP 服务，因此配置的 MCP 工具定义未计入。空对话也可执行；消息增加、自动压缩或 `/compact` 改变有效历史后再次执行会显示更新后的值。
+
 维护者人工 QA：在真实终端启动 CLI，输入两条不同消息后运行 `/resume`，确认标题、更新时间与工作区可辨认，方向键移动和回车会续聊对应会话；打开“查看全部会话”选择其他工作区会话，再验证取消不会切换。对同一文件完成两次不同修改后运行 `/rewind`，选择较早用户消息，确认预览和最终恢复的是该消息执行前的内容；再试一次，在预览后从另一个终端修改目标文件，确认首次 `yes` 只刷新预览，第二次确认才恢复。用 Esc 和 `/cancel` 分别取消，确认文件不变；用管道运行 `/resume` 或 `/rewind`，确认选择立即退出且普通输入仍可继续。
 
 维护者人工 QA：在真实终端进行两轮对话后输入 `/compact`，确认显示压缩成功提示、回到输入界面且没有新增主模型请求；再提交一个需要工具调用的任务，在工具执行期间输入 `/compact`，确认工具完成后同一轮继续执行并给出最终回答；分别在摘要请求等待时按 Ctrl+C、以及让摘要服务返回错误，确认显示中断或失败提示、回到输入界面且原有效历史保持不变。
@@ -120,10 +122,51 @@ pnpm dev --workspace ./demo
 | `explore.model` | 可选；Explore 默认模型，未配置时使用主 Agent 的 `model`。`agent` 单次调用可用 `model` 覆盖；连接地址和凭据沿用主 Agent |
 | `explore.loadRootAgents` | 可选，默认 `false`；设为 `true` 后向 Explore 提供工作区根目录的 `AGENTS.md`，文件缺失时继续调查，不自动加载子目录中的同名文件 |
 | `bash.timeoutMs` | 可选，默认 30,000ms，范围 1–3,600,000ms；单次命令上限，同时受整轮剩余时限约束；`bash` 只接受此字段 |
+| `webSearch.provider` | 可选，当前只接受 `tavily`，默认 `tavily` |
+| `webSearch.apiKeyEnv` | 可选，默认 `TAVILY_API_KEY`；启动时从该环境变量读取凭据，缺失不阻止启动或其他工具 |
+| `webSearch.baseURL` | 可选，默认 `https://api.tavily.com`；必须是无内嵌凭据、查询参数及片段的 HTTP(S) 地址 |
+| `webSearch.timeoutMs` | 可选，默认 30,000ms，范围 1–3,600,000ms；单次搜索超时 |
+| `webSearch.maxResults` | 可选，默认 5，范围 1–20；单次调用的 `max_results` 可覆盖默认值 |
 
 未知字段、无效类型及越界数值会在网络请求前报错。自动重试关闭，避免鉴权失败反复请求。Ctrl+C 会中止当前请求。
 
 自定义 `baseURL` 的服务必须兼容 OpenAI Chat Completions 及函数调用；仅能返回文本不足以认定工具兼容。缺少 settings 时，内置默认值使用 OpenAI 地址、`gpt-4.1-mini-2025-04-14` 和 `OPENAI_API_KEY`。
+
+### Langfuse 可观测性
+
+可选接入 Langfuse Cloud。默认关闭；关闭时不读取 Langfuse 凭据、不创建跟踪器，也不向 Langfuse 发送任何数据。
+
+```json
+{
+  "observability": {
+    "langfuse": {
+      "enabled": true,
+      "baseURL": "https://cloud.langfuse.com"
+    }
+  }
+}
+```
+
+凭据只从环境变量读取，默认变量名为 `LANGFUSE_PUBLIC_KEY` 和 `LANGFUSE_SECRET_KEY`；可在 `publicKeyEnv`、`secretKeyEnv` 中改用其他变量名。显式启用后缺少任一凭据会在启动阶段报配置错误。凭据只用于请求的 `Authorization` 头，不写入 settings、会话记录、普通日志或跟踪事件正文；`baseURL` 默认指向 Langfuse Cloud，自托管时可填写兼容 ingestion 接口的 HTTP(S) 地址。
+
+| 字段 | 含义 |
+| --- | --- |
+| `observability.langfuse.enabled` | 默认 `false`；设为 `true` 后启用跟踪 |
+| `observability.langfuse.baseURL` | 默认 `https://cloud.langfuse.com`；必须是 HTTP(S) 地址且不含凭据、查询参数或片段 |
+| `observability.langfuse.publicKeyEnv` | 默认 `LANGFUSE_PUBLIC_KEY`；只引用环境变量名 |
+| `observability.langfuse.secretKeyEnv` | 默认 `LANGFUSE_SECRET_KEY`；只引用环境变量名 |
+
+启用后按对话轮次生成一条 trace，`sessionId` 使用会话 ID，并在同一 trace 下记录：
+
+- 主 Agent 与子 Agent 的模型请求：模型名称、起止时间、状态、可获取的 token 用量、请求与响应内容；
+- 工具调用：工具名称、参数、结果或错误、执行状态与耗时；
+- 人工审批与模型审批：对应工具、完整参数、审批结果与状态；模型审批自身另记录一次模型请求；
+- 自动压缩与 `/compact` 的摘要请求：摘要 span、模型名称、输入输出与 token 用量；
+- 子 Agent：独立 span 记录委派说明、子 Agent 类型、模型和最终报告，其模型请求与工具调用挂在同一 trace 下。
+
+提示词、模型输出、工具参数和工具结果都会上传到 Langfuse；如需限制内容外泄，请只在可信项目和账号中启用。供应商没有返回费用时，本项目不写 `costDetails`，不按价格表推算费用；模型名称、耗时和 token 用量只会记录实际可获取的值。Langfuse 不可达、请求超时或返回失败时，当前批次按尽力上报处理并丢弃，不阻塞、不重试、不改变 Agent 结果。注意：Langfuse Cloud 若根据自身模型价格配置展示估算费用，属于云端行为，不是本项目上报的数据。
+
+关闭时把 `observability.langfuse.enabled` 设为 `false` 或删除该配置块即可；也可用项目本地 settings 覆盖用户级设置。改动在下次启动或切换会话恢复配置后生效。
 
 2026-11-03 的基础版本曾通过方舟真实模型和 `runtimeInfo` 工具验收，详见 [历史验收记录](docs/verification.md)。当前工具权限、Bash、基础 MCP 与摘要的离线验收入口见 [本地 QA 指南](docs/qa-tool-capabilities.md)；其中 [macOS Bash 沙箱人工验收清单](docs/qa-tool-capabilities.md#macos-bash-沙箱人工验收) 仍待人工执行。早期交互式文件工具的验收项目保留在 [QA 清单](.scratch/interactive-cli-file-tools/qa-checklist.md)。
 
@@ -161,14 +204,41 @@ pnpm dev --workspace ./demo
 
 | 工具 | 能力 |
 | --- | --- |
-| `read_file` | 接收 `path`，按权限规则读取文本文件并将内容返回给 Agent |
-| `write_file` | 接收 `path` 和 `content`，完整替换目标文件；文件不存在时创建，不自动创建父目录 |
+| `Read` | 接收 `file_path`，可选 `offset`（从 1 开始）和 `limit`（默认最多 2000 行），按权限规则读取文本文件并返回选中内容和行数信息 |
+| `read_file` | 接收 `path`，按权限规则读取完整文本文件；保留用于兼容旧调用 |
+| `Write` | 接收 `file_path` 和 `content`，创建或完整重写目标文件；不自动创建父目录 |
+| `write_file` | 接收 `path` 和 `content`，完整替换目标文件；要求先读取既有文件，保留用于兼容旧调用 |
+| `Edit` | 接收 `file_path`、`old_string`、`new_string` 和可选 `replace_all`（默认 `false`）。需先读取目标文件；默认要求 `old_string` 在文件中唯一匹配；无匹配或多处匹配时失败且不修改文件，`replace_all: true` 时替换全部匹配 |
+| `Glob` / `glob` | 接收 `pattern` 和可选 `path`，按 glob 模式查找工作区文件 |
+| `Grep` / `grep` | 接收 `pattern`（正则）、可选 `path` 和 `glob`，返回相对路径、行号和命中文本 |
+| `TodoWrite` | 接收 `todos` 完整列表，每项包含 `content`、`status`（`pending`、`in_progress`、`completed`）和可选 `activeForm`；调用以新列表替换旧状态，最多一个任务处于 `in_progress` |
+| `WebFetch` | 接收 `url` 和 `prompt`，读取公开 HTTP/HTTPS 网页文本；拒绝本机、内网、链路本地和云 metadata 地址，并逐次校验重定向目标 |
+| `WebSearch` | 接收 `query`，可选 `allowed_domains`、`blocked_domains` 和 `max_results`；首期使用 Tavily，凭据从环境变量读取 |
 | `runtimeInfo` | 返回工作区绝对路径和本轮运行探针 |
 | `Bash` | 接收 `command`、可选 `cwd` 和 `disableSandbox`，在沙箱可用时从工作区默认目录或经审批的其他目录运行沙箱内独立 shell；沙箱关闭、不可用按 fail-open 回退或豁免获准时以宿主方式执行 |
 
-相对路径从配置的工作区解析。`read_file` 和 `write_file` 可按权限规则或逐次审批访问工作区外的目标；工作区外读取默认需要审批，写入默认进入当前审批策略。符号链接按解析后的实际目标匹配权限。`glob` 和 `grep` 默认搜索工作区，指定工作区外搜索根时需要审批；权限规则可对搜索范围分别允许、要求审批或拒绝。工具权限始终是应用层策略，不能替代隔离：启用沙箱后，Bash 命令的读写与网络限制来自沙箱计划和本机代理；沙箱关闭、不可用按 fail-open 回退或豁免获准时，Bash 以宿主当前用户权限执行，可访问工作区外资源。远程 MCP 不受 Bash 沙箱约束。审批通过不会自动回滚已经发生的副作用。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
+相对路径从配置的工作区解析。`Read`、`Write` 和 `Edit` 与旧名称工具共用同一套受控写入基线：同一进程内并发写入会检测读取后变化；`Write` 可在目标未被本进程读取时直接创建或重写，`Edit` 与旧 `write_file` 一样要求先读取。文件工具可按权限规则或逐次审批访问工作区外的目标；工作区外读取默认需要审批，写入默认进入当前审批策略。符号链接按解析后的实际目标匹配权限。`Glob`/`glob` 和 `Grep`/`grep` 默认搜索工作区，指定工作区外搜索根时需要审批；权限规则可对搜索范围分别允许、要求审批或拒绝。工具权限始终是应用层策略，不能替代隔离：启用沙箱后，Bash 命令的读写与网络限制来自沙箱计划和本机代理；沙箱关闭、不可用按 fail-open 回退或豁免获准时，Bash 以宿主当前用户权限执行，可访问工作区外资源。远程 MCP 不受 Bash 沙箱约束。审批通过不会自动回滚已经发生的副作用。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
 
-终端实时显示 `[工具] read_file：开始`、`[工具] read_file：成功`、`[工具] read_file：失败` 或 `[工具] read_file：拒绝` 等执行状态，不直接打印工具参数、文件内容或原始异常。一次调用只显示一个终结状态；普通调用失败后，同批后续调用仍会执行，Agent 会收到各次工具结果并决定如何继续。Agent 的最终回答可以按用户要求引用文件内容。
+终端实时显示 `[工具] Read：开始`、`[工具] Read：成功`、`[工具] Read：失败` 或 `[工具] Write：拒绝` 等执行状态，不直接打印工具参数、文件内容或原始异常。一次调用只显示一个终结状态；普通调用失败后，同批后续调用仍会执行，Agent 会收到各次工具结果并决定如何继续。Agent 的最终回答可以按用户要求引用文件内容。
+
+## 网络工具
+
+`WebFetch` 只允许公开的 HTTP/HTTPS 地址。执行前会解析主机并在每次重定向时重新校验，拒绝回环、私网、链路本地、云 metadata、保留地址及 `localhost`、`.local`、`.internal` 等名称；不接受带用户名或密码的 URL。读取使用 30 秒独立超时，响应正文最多 5 MiB，返回内容最多 100,000 字符；仅支持文本、JSON、XML 和 JavaScript 等文本类型。地址无效、被拒绝、超时、重定向过多或内容类型不支持时返回明确工具错误，不影响同批其他工具。`prompt` 用于说明希望获取的信息；工具本身不调用模型提炼，返回清洗后的网页文本，由 Agent 按 `prompt` 分析。
+
+`WebSearch` 首期接入 Tavily。未配置 API Key 时调用返回明确错误，启动和其他工具不受影响；额度耗尽、鉴权失败、服务失败、响应无效或超时也分别返回可区分的错误。搜索服务通过 `WebSearchProvider` 接口解耦，后续可增加其他服务实现。
+
+```json
+{
+  "webSearch": {
+    "provider": "tavily",
+    "apiKeyEnv": "TAVILY_API_KEY",
+    "timeoutMs": 30000,
+    "maxResults": 5
+  }
+}
+```
+
+`provider` 目前只接受 `tavily`；`apiKeyEnv` 指向保存 API Key 的环境变量，默认 `TAVILY_API_KEY`，启动时从环境读取，凭据不会写入工具参数、日志或会话记录。省略 `baseURL` 时使用 `https://api.tavily.com`；如需本地夹具可配置 HTTP(S) 形式的服务地址。`timeoutMs` 范围为 1–3,600,000 毫秒，`maxResults` 范围为 1–20，单次调用的 `max_results` 可覆盖默认值。`WebFetch` 与 `WebSearch` 未配置权限规则时默认进入当前审批。
 
 ## Bash 与操作系统沙箱
 
@@ -237,7 +307,7 @@ Bash 在支持 POSIX 进程组的系统（Linux/macOS）上使用 PATH 中的 `b
 
 退出码为 0 时返回 `is_error: false`；非零退出、启动失败、单命令超时和 fail-closed 拒绝返回 `is_error: true`、`TOOL_EXECUTION_ERROR` 及可用输出。沙箱内出现 `Operation not permitted` 时提示为策略拦截，便于区分命令自身错误。超时结果保留终止信号，错误消息说明超时；取消和整轮超时走轮次停止通路。
 
-沙箱只约束 Bash 及其子进程。`read_file`、`write_file`、远程 MCP、审查模型和 CLI 其他进程不在其内；沙箱关闭、按 fail-open 回退或豁免获准时，Bash 仍以宿主用户权限运行。常规验证通过本地模型夹具、受控进程和 macOS Seatbelt 集成测试完成，Linux 等平台只验证不可用路径，不能代替最终人工 QA。
+沙箱只约束 Bash 及其子进程。`Read`、`Write`、`Edit`、`read_file`、`write_file`、远程 MCP、审查模型和 CLI 其他进程不在其内；沙箱关闭、按 fail-open 回退或豁免获准时，Bash 仍以宿主用户权限运行。常规验证通过本地模型夹具、受控进程和 macOS Seatbelt 集成测试完成，Linux 等平台只验证不可用路径，不能代替最终人工 QA。
 
 ## 工具策略与审批
 
@@ -246,16 +316,16 @@ Bash 在支持 POSIX 进程组的系统（Linux/macOS）上使用 PATH 中的 `b
 ```json
 {
   "permissions": {
-    "allow": ["Read(src/**)", "Glob(src/**)", "Grep(src/**)", "Bash(pnpm test)", "MCP(alpha/lookup)"],
+    "allow": ["Read(src/**)", "Edit(src/**)", "Glob(src/**)", "Grep(src/**)", "Bash(pnpm test)", "WebSearch", "WebFetch(domain:example.com)", "MCP(alpha/lookup)"],
     "ask": ["Write(src/**)", "Bash(git push:*)"],
-    "deny": ["Read(.env)", "Bash(rm:*)", "MCP(alpha/*)"]
+    "deny": ["Read(.env)", "Bash(rm:*)", "WebFetch(domain:internal.example)", "MCP(alpha/*)"]
   }
 }
 ```
 
-`Read`、`Write`、`Glob`、`Grep` 可不带参数以匹配该类全部目标，也可带路径模式；相对路径从工作区解析，支持 `*`、`?`、`**`。`Bash` 必须带命令规则：精确匹配完整命令，末尾 `:*` 匹配该前缀及其后续参数，并要求参数边界相符，例如 `Bash(git push:*)`。复合命令按其中每个简单命令分别检查；可识别的管道、串接和重定向等语法额外要求逐次审批，无法可靠解析的控制结构则作为无效参数拒绝。`MCP` 可匹配所有服务，或用 `服务名/工具名`、`服务名/*` 匹配远端工具。`Agent`、`RuntimeInfo` 分别控制 Agent 委派与运行信息工具。
+`Read`、`Write`、`Edit`、`Glob`、`Grep` 可不带参数以匹配该类全部目标，也可带路径模式；相对路径从工作区解析，支持 `*`、`?`、`**`。`Edit` 调用同时受 `Edit` 与 `Write` 规则约束，任一规则更严格时按 `deny`、`ask`、`allow` 的优先级生效，单独配置 `Edit(...)` 不会影响 `Write`。`Bash` 必须带命令规则：精确匹配完整命令，末尾 `:*` 匹配该前缀及其后续参数，并要求参数边界相符，例如 `Bash(git push:*)`。复合命令按其中每个简单命令分别检查；可识别的管道、串接和重定向等语法额外要求逐次审批，无法可靠解析的控制结构则作为无效参数拒绝。`MCP` 可匹配所有服务，或用 `服务名/工具名`、`服务名/*` 匹配远端工具。`WebFetch` 可不带参数，或用 `WebFetch(domain:example.com)`、`WebFetch(domain:*.example.com)` 按主机匹配；`WebSearch` 和 `TodoWrite` 不带参数。`Agent`、`RuntimeInfo` 分别控制 Agent 委派与运行信息工具。
 
-权限按工具能力独立生效：例如 `Read(src/**)` 不会授权 `Write(src/**)`，`Bash(pnpm test)` 也不会授权其他命令。匹配规则的动作优先级为 `deny`、`ask`、`allow`；未匹配时，工作区内读取、搜索、`runtimeInfo` 和 Agent 默认允许，写入、Bash、MCP 默认进入当前审批，工作区外读取默认需要审批。显式 `allow` 可免除相应逐次审批，`deny` 不可由审批放行。Glob/Grep 对被拒绝路径予以排除，对需审批路径暂停该次搜索并在人工审批界面展示范围。
+权限按工具能力独立生效：例如 `Read(src/**)` 不会授权 `Write(src/**)`，`Bash(pnpm test)` 也不会授权其他命令。匹配规则的动作优先级为 `deny`、`ask`、`allow`；未匹配时，工作区内读取、搜索、`TodoWrite`、`runtimeInfo` 和 Agent 默认允许，写入、Bash、WebFetch、WebSearch、MCP 默认进入当前审批，工作区外读取默认需要审批。显式 `allow` 可免除相应逐次审批，`deny` 不可由审批放行。Glob/Grep 对被拒绝路径予以排除，对需审批路径暂停该次搜索并在人工审批界面展示范围。
 
 设置分层时，`permissions.allow`、`permissions.ask`、`permissions.deny` 与 `permissions.sandbox` 的数组字段各自跨层合并并去重；其他对象字段递归合并，其他数组由更具体层整体替换。旧版 `approval.rules` 不再提供运行授权；请迁移到 `permissions`，无效或未迁移的旧规则不会覆盖默认权限。
 
@@ -308,11 +378,262 @@ Bash 调用在审批前已生成沙箱执行计划，人工和模型审批详情
 }
 ```
 
-`approval.mode` 接受 `default`（默认人工审批）和 `auto`（独立模型审批）。`ask` 在两种模式下分别交给人工或模型审批。人工模式逐次展示工具名称、调用 ID 和完整参数，例如 `[人工审批 1] write_file`。输入 `approve 1` 批准，或 `deny 1` 拒绝；数字须与当前提示一致。答复只对应本次调用，不能用旧编号批准后续调用。无效输入（包括新的用户需求）不会被当作批准；请完成审批后再提交新需求。进入等待前已经排队的需求仍作为后续对话处理，不能成为审批答复。
+`approval.mode` 接受 `default`（默认人工审批）和 `auto`（独立模型审批）。`ask` 在两种模式下分别交给人工或模型审批。人工模式逐次展示工具名称、调用 ID 和完整参数，例如 `[人工审批 1] write_file`。
 
-人工等待独立上限 `approval.humanTimeoutMs` 默认五分钟（300,000ms），范围为 1–3,600,000 毫秒；它与模型审批上限分别配置。非交互管道、输入关闭或等待超时直接拒绝本次调用，其他普通调用继续，不请求模型代为审批。人工等待不消耗整轮执行预算；批准或拒绝后继续使用等待前的剩余时间，多次等待不会重置已消耗时间。Ctrl+C、SIGTERM 和公共入口的父级取消信号仍能立即中断等待并停止本轮。公共入口在人工模式下未提供 `approvalControl` 时直接拒绝。
+交互会话中输入 `/permission-mode` 可查看当前审批模式，输入 `/permission-mode default` 或 `/permission-mode auto` 可切换。启动时也可用 `--permission-mode default|auto` 指定本次进程的初始模式，与 Claude Code 的同名启动参数对应；取值沿用本项目的审批语义，只接受 `default` 和 `auto`。切换只作用于当前 CLI 进程，不写入 settings 或会话记录，重启后仍使用 settings 中的 `approval.mode`。切换只影响之后进入审批的工具调用；已经等待中的人工或模型审批按进入审批时的模式完成，不会因为切到 `auto` 而被自动批准。权限规则及逐次审批语义不因切换改变。
 
-完整参数仅在人工审批界面展示，便于判断待执行操作；普通进度、执行事件和日志不输出完整参数、结果或原始异常。观察回调失败只输出诊断，不替代审批也不改变决定。常规验证使用本地模型夹具与假凭据；自动测试不能代替最终人工 QA。
+交互终端使用键盘菜单，不需要输入 `approve` 编号：按 `1` / `2` / `3`（或 `↑`/`↓`）选择后回车确认，`Esc` 拒绝本次。选项包括“批准本次”“拒绝本次”，以及工具默认审批下的“本会话始终批准当前工具类型”。会话批准按工具名隔离，只跳过该工具默认产生的审批，不扩展到其他工具；显式 `ask` 仍逐次询问，`deny` 仍在审批前拒绝，退出进程后自动失效。为避免审批期间输入的文字被误当作批准，没有显式选择时单独回车不会确认。并发调用按到达顺序逐一显示菜单，批复一项后显示下一项。
+
+非交互管道保留文本审批协议：看到 `approve N` / `deny N` 提示后可输入对应答复；答复只对应本次调用，不能用旧编号批准后续调用。无效输入（包括新的用户需求）不会被当作批准；请完成审批后再提交新需求。进入等待前已经排队的需求仍作为后续对话处理，不能成为审批答复。
+
+人工等待独立上限 `approval.humanTimeoutMs` 默认五分钟（300,000ms），范围为 1–3,600,000 毫秒；它与模型审批上限分别配置。输入关闭或等待超时直接拒绝当前调用，其他普通调用继续，不请求模型代为审批。人工等待不消耗整轮执行预算；批准或拒绝后继续使用等待前的剩余时间，多次等待不会重置已消耗时间。Ctrl+C、SIGTERM 和公共入口的父级取消信号仍能立即中断等待并停止本轮。公共入口在人工模式下未提供 `approvalControl` 时直接拒绝。
+
+完整参数仅在人工审批界面展示，便于判断待执行操作；普通进度只输出工具名与安全的参数摘要（例如路径、命令），不输出文件内容、完整 JSON、执行结果或原始异常。观察回调失败只输出诊断，不替代审批也不改变决定。常规验证使用本地模型夹具与假凭据；自动测试不能代替最终人工 QA。
+
+## Hook 扩展点
+
+`hooks` 允许用户命令挂载到六个生命周期事件。v1 只有同步 `command` 类型：Hook 通过 `/bin/sh -c <command>` 在独立进程组中运行，工作目录固定为工作区，继承 CLI 环境，以 CLI 当前用户权限执行。Hook 不是操作系统沙箱，也不受 `permissions`、工具审批或 Bash 沙箱约束；设计与完整契约见 [ADR 0007](docs/adr/0007-hooks.md)。
+
+### 配置层级与形状
+
+Hook 配置位于三层 settings 的顶层 `hooks`，合并顺序为：
+
+```text
+~/.agent/settings.json                         用户级
+<工作区>/.agent/settings.json                  项目级
+<工作区>/.agent/settings.local.json            项目本地
+```
+
+同一事件的数组按用户级 → 项目级 → 项目本地拼接；事件、matcher、command 和 timeoutMs 完全相同的 Hook 视为重复，保留第一条并输出 warning。项目层不能通过覆盖删除上层 Hook。配置形状为“事件名 → matcher 组数组 → Hook 数组”：
+
+```json
+{
+  "disableAllHooks": false,
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          { "type": "command", "command": "sh .agent/hooks/session-start.sh", "timeoutMs": 15000 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "sh .agent/hooks/prompt.sh" }] }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|write_file",
+        "hooks": [{ "type": "command", "command": "sh .agent/hooks/pre-tool.sh" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^mcp_",
+        "hooks": [{ "type": "command", "command": "sh .agent/hooks/post-tool.sh" }]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "write_file",
+        "hooks": [{ "type": "command", "command": "sh .agent/hooks/tool-failure.sh" }]
+      }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "sh .agent/hooks/stop.sh" }] }
+    ]
+  }
+}
+```
+
+`HookCommand` 只有三个字段：`type` 必须为 `command`；`command` 去除首尾空白后必须非空；`timeoutMs` 必须是 `1..600000` 的整数。未知事件、未知字段、空 `hooks` 数组、未知类型、越界超时和非法 matcher 正则在加载阶段以 `CONFIG_ERROR` 拒绝，不会留下“配置了但永不匹配”的静默状态。顶层 `disableAllHooks` 默认 `false`，只影响本次加载的 Hook，不写入会话记录。
+
+### 事件与 matcher
+
+| 事件 | 触发时机 | matcher 查询字段 |
+| --- | --- | --- |
+| `SessionStart` | 新建对话或恢复既有对话时，在任何用户提交和模型请求之前 | `source`（`startup` / `resume`） |
+| `UserPromptSubmit` | 真实用户提交消息之后、第一次模型请求之前 | 无 |
+| `PreToolUse` | 工具 `prepare` 与执行事件之后、权限策略与审批之前 | `tool_name` |
+| `PostToolUse` | 工具执行成功返回之后 | `tool_name` |
+| `PostToolUseFailure` | 工具执行抛错之后，例如 Bash 非零退出、超时或执行失败 | `tool_name` |
+| `Stop` | 最终回答产生之后、轮次结束之前 | 无 |
+
+参数错误、未知工具和权限拒绝在 `execute` 前发生，不触发 `PostToolUse` 或 `PostToolUseFailure`；工具执行抛错由 `PostToolUseFailure` 接收，`PostToolUse` 只对应成功返回。
+
+**matcher 不是 glob。** 它按以下顺序解析：
+
+1. 省略、空字符串或 `*`：匹配全部。
+2. 完全由 `A-Za-z0-9_` 组成的字符串：按精确名称匹配，例如 `Bash`。
+3. 由 `|` 分隔且每段都是精确名称的字符串：按名称列表匹配，例如 `Bash|Read`。
+4. 其他字符串：按 JavaScript 正则解析并在加载阶段试编译，例如 `^mcp_`；非法正则直接拒绝。
+
+`UserPromptSubmit` 与 `Stop` 没有 matcher 查询字段，写任何 matcher 都不会过滤，所有 Hook 都会运行。
+
+### stdin 字段
+
+Hook 从 stdin 收到恰好一个 JSON 对象。所有事件共有：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `session_id` | string | 对话标识；子 Agent 的工具事件沿用父对话标识 |
+| `transcript_path` | string | 会话记录路径；子 Agent 指向父对话记录 |
+| `cwd` | string | 工作区绝对路径，同时是 Hook 进程的工作目录 |
+| `approval_mode` | `model` \| `human` | 由 `approval.mode` 映射：`auto` → `model`，`default` → `human` |
+| `hook_event_name` | string | 当前事件名 |
+| `agent_id` | string，可选 | 仅子 Agent 工具事件；本次委派工具调用 ID |
+| `agent_type` | string，可选 | 仅子 Agent 工具事件 |
+
+事件专有字段：
+
+| 事件 | 额外字段 |
+| --- | --- |
+| `SessionStart` | `source`：`startup` 或 `resume` |
+| `UserPromptSubmit` | `prompt`：真实用户提交的原始文本 |
+| `PreToolUse` | `tool_name`、`tool_input`（`prepare` 后、即将审批和执行的输入）、`tool_use_id` |
+| `PostToolUse` | `tool_name`、`tool_input`、`tool_response`（`{ is_error: false, output }`）、`tool_use_id` |
+| `PostToolUseFailure` | `tool_name`、`tool_input`、`error`（字符串）、`error_code`（取 `INVALID_TOOL_ARGUMENTS`、`UNKNOWN_TOOL`、`TOOL_EXECUTION_ERROR`、`PERMISSION_DENIED` 之一，v1 通常为 `TOOL_EXECUTION_ERROR`）、`tool_use_id` |
+| `Stop` | `stop_hook_active`（本次是否由 Stop 阻止后的续跑触发）、`last_assistant_message` |
+
+`tool_input` 不是模型原始参数，而是工具 `prepare` 之后的输入；`tool_use_id` 用于关联同一工具调用的三个事件。协议版本 `HOOK_PROTOCOL_VERSION = 1` 是代码常量，不写入 stdin。
+
+### 退出码、stdout 与结论
+
+| 退出码或边界 | 结果 |
+| --- | --- |
+| `0` | `success`：解析 stdout；去除首尾空白后以 `{` 开头按 JSON，否则按普通 stdout |
+| `2` | `blocking`：理由取 stderr，空时使用默认文案 |
+| 其他非零 | `non_blocking_error` + `failureKind: exit_code`，只提示不阻止 |
+| 超时 | `non_blocking_error` + `timeout` |
+| 启动失败 | `non_blocking_error` + `spawn_error` |
+| stdout 超过 1 MiB | `non_blocking_error` + `output_limit`，终止该 Hook 进程组 |
+| 调用方取消 | `cancelled`，与 Hook 自身故障区分 |
+
+stdout 期望恰好一个 JSON 对象；日志、警告和调试信息写 stderr。以 `{` 开头但 JSON 无效，或已知字段类型不符时，按 `non_blocking_error` + `invalid_json` 处理；未知 JSON 字段忽略。退出码 `2` 时只读取 stderr，不解析 stdout。
+
+| stdout JSON 字段 | 类型 | 用途 |
+| --- | --- | --- |
+| `continue` | boolean | `UserPromptSubmit` 为 `false` 时保留原 prompt 但停止本轮；`Stop` 为 `false` 时禁止续跑 |
+| `preventContinuation` | boolean | 仅 `Stop`：禁止随后的自动续跑 |
+| `suppressOutput` | boolean | 隐藏普通 stdout 的用户提示与日志展示，不改变 JSON 处理和模型注入 |
+| `decision` | `block` | 按事件表示阻止 |
+| `reason` | string | 阻止或停止理由 |
+| `systemMessage` | string | 只给用户看的提示，不进入模型上下文 |
+| `hookSpecificOutput.permissionDecision` | `allow` \| `deny` \| `ask` | 仅 `PreToolUse` 的权限结论 |
+| `hookSpecificOutput.permissionDecisionReason` | string | 权限结论说明，用于审批展示 |
+| `hookSpecificOutput.updatedInput` | object | 仅 `PreToolUse` 的参数改写候选，须通过工具 `inputSchema` |
+| `hookSpecificOutput.additionalContext` | string | 附加上下文或工具反馈 |
+
+`decision: "block"` 因事件而异：`PreToolUse` 等价于 `deny` 并在审批前短路；`UserPromptSubmit` 取消本轮且不保留原 prompt；`PostToolUse` / `PostToolUseFailure` 只追加反馈，不撤销副作用、不改变工具结果；`Stop` 请求一次续跑。`PreToolUse` 的多个结论按 `deny > ask > allow` 聚合，`allow` 仍须经过权限规则，不是通行证。`updatedInput` 校验失败只把该 Hook 记为 `invalid_updated_input`，回退原参数继续审批；多个有效改写按配置顺序取最后一个，`deny` 优先于任何改写。
+
+普通 stdout（退出码 `0` 的非 JSON 输出）按事件区分：
+
+| 事件 | 普通 stdout 行为 |
+| --- | --- |
+| `SessionStart` | 作为 `<hook-context event="SessionStart">` 附加上下文注入模型 |
+| `UserPromptSubmit` | 作为 `<hook-context event="UserPromptSubmit">` 附加上下文注入模型 |
+| `PreToolUse` | 只显示 `[hook]` 用户提示，不进入模型；v1 的 `additionalContext` 也不注入 |
+| `PostToolUse` | 只显示 `[hook]` 用户提示，不改变工具结果 |
+| `PostToolUseFailure` | 只显示 `[hook]` 用户提示，不改变工具错误 |
+| `Stop` | 只显示 `[hook]` 用户提示，不注入续跑请求 |
+
+`systemMessage` 始终只给用户；`additionalContext` 在被使用时只进入模型；`suppressOutput` 只隐藏普通 stdout 的用户展示，不改变前两者的归属。`PreToolUse` 需要向审批说明时使用 `permissionDecisionReason`，需要提示用户时使用 `systemMessage`。
+
+### 默认超时
+
+单个 Hook 未配置 `timeoutMs` 时按事件取默认值；配置值统一上限为 600,000ms。同一事件匹配到的 Hook 并行启动并等待全部完成，结果与注入消息按配置顺序排列；任一 Hook 的超时、故障或输出超限只影响自身。
+
+| 事件 | 默认超时 |
+| --- | --- |
+| `SessionStart` | 60,000ms |
+| `UserPromptSubmit` | 10,000ms |
+| `PreToolUse` | 60,000ms |
+| `PostToolUse` | 60,000ms |
+| `PostToolUseFailure` | 60,000ms |
+| `Stop` | 60,000ms |
+
+超时或取消会向整个进程组发送 `SIGKILL`，包含孙进程；直接子进程退出后会回收残留进程组，避免后台孙进程继承管道导致挂起。`PreToolUse`、`PostToolUse`、`PostToolUseFailure` 运行期间暂停整轮剩余时限，结束后恢复；`SessionStart`、`UserPromptSubmit`、`Stop` 在 `runAgent` 之外运行，由各自超时和轮次取消信号约束。
+
+### 信任门禁与禁用
+
+只要任一事件下存在带 Hook 的组，任何 Hook 执行前都会运行信任门禁：
+
+1. 工作区 realpath 与规范化 hooks 配置 hash 同时匹配用户目录 `~/.qhy-coding-agents/trusted.json` 时视为已信任。
+2. 否则，`--trust-hooks` 或 `QHY_TRUST_HOOKS=1` 是显式 opt-in：写入当前 hash 后启用。
+3. 否则，交互终端展示完整命令清单（事件、matcher、命令和可选 `timeoutMs`）并要求确认；只有输入 `yes` 或 `y` 才启用，其他输入、输入关闭或非交互终端都会禁用本次运行的全部 Hook。
+4. 非交互终端（stdin 或 stdout 不是 TTY）打印禁用警告，普通对话继续；仓库不能给自己授权。
+
+`disableAllHooks: true` 与 `--no-hooks` 优先于信任判断：命中时不加载、不提示、不执行任何 Hook。信任记录只保存在 CLI 用户目录，工作区内的同名文件永远不会被读取；记录要求常规文件、非符号链接、权限不宽于 `0600`，目录为 `0700`。hash 只覆盖 `hooks` 配置，修改模型、权限等无关 settings 不触发重新确认；修改事件、matcher、命令或 `timeoutMs` 会。记录损坏、权限过宽或写入失败都按未信任处理或只警告，不会绕过门禁。
+
+### 最小可运行示例
+
+在已有可运行模型配置的工作区中创建 Hook 脚本：
+
+```sh
+mkdir -p .agent/hooks
+cat > .agent/hooks/session-start.sh <<'SH'
+#!/bin/sh
+# stdin 是事件 JSON；追加到固定日志，不写入会话历史。
+cat >> .agent/hooks/events.jsonl
+printf '\n' >> .agent/hooks/events.jsonl
+# 非 JSON stdout：SessionStart 会把它作为隐藏附加上下文提供给模型。
+printf '当前会话由 qhy hooks 记录。\n'
+SH
+```
+
+在项目级 `.agent/settings.json` 中加入：
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          { "type": "command", "command": "sh .agent/hooks/session-start.sh", "timeoutMs": 5000 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+构建并启动；首次使用显式信任，脚本会收到 `SessionStart` 的 stdin JSON 并写入 `.agent/hooks/events.jsonl`：
+
+```sh
+pnpm build
+pnpm exec node dist/cli.js --workspace . --trust-hooks
+```
+
+若省略 `--trust-hooks` 且终端是非交互的，本次运行会以“未信任的 Hook 配置”禁用全部 Hook；交互终端则应先按提示核对命令并输入 `yes`。
+
+### 输出上限与注入时序
+
+| 常量 | 值 | 行为 |
+| --- | --- | --- |
+| stdout | 1 MiB | 终止该 Hook 进程组，结果 `output_limit`，只提示不阻止 |
+| stderr | 64 KiB | 保留前 64 KiB 并追加 `[hook stderr 已截断]`，继续读取丢弃剩余内容 |
+| 注入文本 | 8,000 个 Unicode 字符 | 所有进入模型的 Hook 文本截断并附加省略标记 |
+| 用户可见 `[hook]` 行 | 500 个字符 | 截断并加省略号 |
+
+Hook 注入都是独立的隐藏 `user` 消息，不折入工具结果，不改变工具调用与结果配对：
+
+| 事件 | 注入内容 | 位置与可见时机 |
+| --- | --- | --- |
+| `SessionStart(startup)` | 成功运行的 `additionalContext` 或普通 stdout；`exit 2` 的 stderr 理由 | 新建对话历史首部，第一次模型请求可见 |
+| `SessionStart(resume)` | 同上 | 重建历史尾部，恢复后的下一次模型请求可见 |
+| `UserPromptSubmit` | 成功运行的 `additionalContext` 或普通 stdout | 用户消息之后、本轮第一次模型请求之前 |
+| `PreToolUse` | 不注入模型 | `updatedInput` 影响审批与执行，`permissionDecisionReason` 只用于审批展示 |
+| `PostToolUse` / `PostToolUseFailure` | `exit 2` / `decision: block` 的理由与成功的 `additionalContext` | 整批工具结果之后的隐藏用户消息，同轮下一次主模型请求可见 |
+| `Stop` | `exit 2` / `decision: block` 的理由 | 最终回答之后，仅一次续跑请求可见；第二次 Stop 的反馈丢弃 |
+
+同名包装为 `<hook-context event="...">` 或 `<hook-feedback event="..." hook="事件:配置顺序">`。注入在单个 CLI 进程内按每次运行的随机标识去重，不扫描命令输出，也不跨进程持久化。`Stop` 最多续跑一次且使用本轮剩余 `maxSteps`；第二次运行时 `stop_hook_active` 为 `true`，再次阻止只记录日志。
+
+Hook 范围还受运行场景约束：`--smoke-tool` 不运行信任门禁和任何 Hook；后台任务通知形成的轮次不触发 `SessionStart` 与 `UserPromptSubmit`，但工具事件和 `Stop` 照常触发；子 Agent 只触发三个工具事件，stdin 沿用父对话 `session_id` / `transcript_path` 并附加 `agent_id` / `agent_type`，不触发 `SessionStart`、`UserPromptSubmit` 与 `Stop`。
+
+用户提示写 stderr，形如 `[hook] <事件>: <理由>`；Hook 故障只提示不阻止。结构化日志只记录事件、配置顺序、耗时、退出码、outcome、failureKind 和输出字节数，默认不包含 stdin、参数或输出正文；显式设置 `QHY_HOOK_DEBUG=1` 才追加完整 stdout/stderr。Hook 等价于以当前用户权限执行远程代码，信任门禁只解决“仓库不能静默让其命令执行”，不能替代隔离。
+
+Hook 的人工与黑盒验收清单见 [本地 QA 指南](docs/qa-tool-capabilities.md#hook-人工与黑盒验收)。
 
 ## 远程 MCP 工具
 
@@ -341,7 +662,7 @@ Bash 调用在审批前已生成沙箱执行计划，人工和模型审批详情
 
 每个对话轮次在请求主模型前重新连接并发现工具（包括分页），本轮固定名称、描述和参数 schema；服务端变化在下一轮发现后生效。工具名为 `mcp_<服务名>_<远端名称>`，例如 `mcp_alpha_echo`，远端非字母、数字、下划线、连字符名称转换为 UTF-8 十六进制后缀。工具名最多 64 字符；转换后冲突、远端重复名称或名称过长均明确报错，不静默覆盖。不会将服务端 instructions 加入系统提示。
 
-MCP 工具通过现有 registry 使用相同的参数校验、策略、逐次审批、串行执行、调用 ID、统一结果和执行事件。默认进入所选审批，远端只读提示不自动豁免；固定规则使用公布后的完整名称。等待或拒绝期间可发生连接与发现，但不会发送 `tools/call`。人工审批展示完整参数，普通进度不显示参数或结果。
+MCP 工具通过现有 registry 使用相同的参数校验、策略、逐次审批、串行执行、调用 ID、统一结果和执行事件。默认进入所选审批，远端只读提示不自动豁免；固定规则使用公布后的完整名称。等待或拒绝期间可发生连接与发现，但不会发送 `tools/call`。人工审批展示完整参数，普通进度只显示工具名与参数摘要。
 
 远端 JSON Schema 的同一份快照用于公布及本地校验，支持常见的 draft-07、2019-09、2020-12 约束（未指定方言时采用 2020-12；format 按注解处理）；不支持的 schema 明确报错。参数错误在审批和远端操作前拒绝。成功时 `output` 保留 MCP 业务结果，远端 `isError` 返回普通 `TOOL_EXECUTION_ERROR` 并保留业务输出，同批后续调用继续。连接或发现失败只使相应服务本轮不可用，并提供简短提示。
 
@@ -387,13 +708,13 @@ pnpm exec node dist/cli.js --workspace ./demo --smoke-tool
 
 ## 日志与失败状态
 
-stdout 输出回答、交互提示、工具名称和单轮错误；stderr 输出每行一个 JSON 事件，可独立保存日志：
+stdout 输出回答、交互提示、工具名称和单轮错误。交互终端把同一模型步的工具调用聚合为一个紧凑块，每个调用一行 `工具名(参数摘要) · 状态`，状态原地刷新；文件内容、完整 JSON 和执行结果不进入普通进度。非交互管道继续逐行输出 `[工具] 名称：状态` 事件，便于日志和自动测试。stderr 输出每行一个 JSON 事件，可独立保存日志：
 
 ```sh
 pnpm exec node dist/cli.js --workspace ./demo 2> run.jsonl
 ```
 
-每轮生成新的 run ID。`run.started` 记录模型配置、工作区及请求状态；`run.finished` 记录成功或失败，成功轮次还包含步数、工具调用次数和 token 用量。普通对话日志包含 `conversationId`，冒烟日志不包含该字段。启动配置错误也有终态记录。日志不包含密钥、用户需求或原始 provider 错误响应；轮次耗时从开始处理该条消息计算。
+每轮生成新的 run ID。`run.started` 记录模型配置、工作区及请求状态；`run.finished` 记录成功或失败，成功轮次还包含步数、工具调用次数和 token 用量。普通对话日志包含 `conversationId`，冒烟日志不包含该字段。启动配置错误也有终态记录。启动或重载 Skill 时，被跳过目录以 `skill.skipped` 事件记录 `path` 与 `reason`；交互模式改为在 stderr 显示可读提示。日志不包含密钥、用户需求或原始 provider 错误响应；轮次耗时从开始处理该条消息计算。
 
 交互模式中，鉴权失败、超时、步数上限等普通轮次错误会记录错误码并继续等待输入；随后 `/exit` 仍可使进程以 0 退出，应结合每轮日志判断结果。下表的非零退出码适用于错误导致进程结束的场景，例如启动失败、冒烟失败或取消退出。
 

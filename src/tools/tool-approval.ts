@@ -11,6 +11,8 @@ import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isWithinWorkspace } from './workspace-files.js';
 import { matchesCommandPattern } from './BashTool/bash-policy.js';
+import { AgentObservations } from '../services/observability/agent-observations.js';
+import type { TracingScope } from '../services/observability/langfuse.js';
 
 export type ApprovalControl = (call: ToolApprovalRequest, signal: AbortSignal) => Promise<'approve' | 'deny'>;
 
@@ -37,16 +39,23 @@ export async function approveToolCall(
   control?: ApprovalControl,
   humanWait?: { pause: () => void; resume: () => void },
   history: ModelMessage[] = [],
+  /** 审批模型请求的跟踪父级；人工审批没有模型请求，此时不产生 generation。 */
+  tracing?: TracingScope,
 ): Promise<boolean> {
   signal.throwIfAborted();
-  const readAction = call.toolName === 'read_file' ? readPermissionAction(config, call) : undefined;
-  const writeAction = call.toolName === 'write_file' ? pathPermissionAction(config, call, 'Write') : undefined;
-  const searchAction = call.toolName === 'glob' || call.toolName === 'grep'
-    ? pathPermissionAction(config, call, call.toolName === 'glob' ? 'Glob' : 'Grep') : undefined;
+  const readAction = isReadTool(call.toolName) ? readPermissionAction(config, call) : undefined;
+  // Edit 同时受 Edit 与 Write 规则约束，避免用户配置的 Edit(...) 规则被静默忽略。
+  const writeAction = isWriteTool(call.toolName)
+    ? pathPermissionAction(config, call, call.toolName === 'Edit' ? ['Edit', 'Write'] : ['Write']) : undefined;
+  const searchAction = isSearchTool(call.toolName)
+    ? pathPermissionAction(config, call, isGlobTool(call.toolName) ? 'Glob' : 'Grep') : undefined;
   const searchAsks = call.details?.searchAsk !== undefined;
-  const searchOutsideWorkspace = (call.toolName === 'glob' || call.toolName === 'grep')
+  const searchOutsideWorkspace = isSearchTool(call.toolName)
     && searchAction === undefined && call.details?.target !== undefined
     && !isWithinWorkspace(config.workspace, call.details.target);
+  const webFetchAction = call.toolName === 'WebFetch' ? webFetchPermissionAction(config, call) : undefined;
+  const webSearchAction = call.toolName === 'WebSearch' ? basicToolPermissionAction(config, 'WebSearch') : undefined;
+  const todoAction = call.toolName === 'TodoWrite' ? basicToolPermissionAction(config, 'TodoWrite') : undefined;
   const bashActions = call.toolName === 'Bash' ? bashPermissionActions(config, call) : [];
   const mcpAction = mcpPermissionAction(config, call);
   const basicToolAction = ['agent', 'runtimeInfo'].includes(call.toolName)
@@ -54,16 +63,33 @@ export async function approveToolCall(
   const bashDenied = bashActions.includes('deny');
   const bashAllowed = bashActions.length > 0 && bashActions.every((action) => action === 'allow');
   const bashRequiresApproval = call.toolName === 'Bash' && call.details?.bashRequiresApproval === 'true';
-  const readOutsideWorkspace = call.toolName === 'read_file' && readAction === undefined && !isReadTargetInWorkspace(config, call);
-  const permissionAction = mcpAction ?? basicToolAction ?? readAction ?? writeAction ?? searchAction;
-  const permissionRequiresApproval = permissionAction === 'ask' || readOutsideWorkspace || searchOutsideWorkspace || searchAsks
-    || bashActions.includes('ask') || bashRequiresApproval;
+  const readOutsideWorkspace = isReadTool(call.toolName) && readAction === undefined && !isReadTargetInWorkspace(config, call);
+  const permissionAction = mcpAction ?? webFetchAction ?? webSearchAction ?? todoAction
+    ?? basicToolAction ?? readAction ?? writeAction ?? searchAction;
+  // 网络工具未显式 allow/deny 时默认进入审批；TodoWrite 只修改本次运行内状态。
+  const webRequiresApproval = (call.toolName === 'WebFetch' && webFetchAction === undefined)
+    || (call.toolName === 'WebSearch' && webSearchAction === undefined);
+  // 显式 ask/范围规则每次重新确认；会话批准只能跳过 readOutsideWorkspace 这类工具默认审批。
+  const explicitAsk = permissionAction === 'ask' || searchAsks || bashActions.includes('ask');
+  const permissionRequiresApproval = explicitAsk || readOutsideWorkspace || searchOutsideWorkspace
+    || webRequiresApproval || bashRequiresApproval;
+  const hookAsk = call.hookPermission?.decision === 'ask';
+  const hookAllow = call.hookPermission?.decision === 'allow';
+  const controlledCall: ToolApprovalRequest = {
+    ...structuredClone(call),
+    approvalKind: explicitAsk ? 'explicit' : 'default',
+  };
   if (permissionAction === 'deny' || bashDenied) return false;
-  if (call.toolName === 'Bash' && bashAllowed && !permissionRequiresApproval) return true;
-  // 范围要求审批时，不能被另一条宽泛 allow 跳过。
-  if (!permissionRequiresApproval && permissionAction === 'allow') return true;
-  if (!permissionRequiresApproval
-    && ['read_file', 'glob', 'grep', 'runtimeInfo', 'agent', 'skill'].includes(call.toolName)) return true;
+  // ask 强制审批，即使权限规则原本允许；allow 不能绕过规则里的 deny/ask。
+  if (!hookAsk) {
+    // Hook allow 只跳过“规则未要求审批”的默认审批；工作区外读取/搜索、需审批 Bash 等范围审批仍然生效。
+    if (hookAllow && !permissionRequiresApproval) return true;
+    if (call.toolName === 'Bash' && bashAllowed && !permissionRequiresApproval) return true;
+    // 范围要求审批时，不能被另一条宽泛 allow 跳过。
+    if (!permissionRequiresApproval && permissionAction === 'allow') return true;
+    if (!permissionRequiresApproval
+      && ['read_file', 'Read', 'glob', 'Glob', 'grep', 'Grep', 'runtimeInfo', 'agent', 'skill', 'TodoWrite'].includes(call.toolName)) return true;
+  }
 
   if (config.approval.mode === 'default') {
     if (!control) return false;
@@ -72,7 +98,7 @@ export async function approveToolCall(
     const timer = setTimeout(() => timeout.abort(), config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
     const humanSignal = AbortSignal.any([signal, timeout.signal]);
     try {
-      const decision = await waitForDecision(control, structuredClone(call), humanSignal);
+      const decision = await waitForDecision(control, controlledCall, humanSignal);
       signal.throwIfAborted();
       return !timeout.signal.aborted && decision === 'approve';
     } catch {
@@ -91,7 +117,7 @@ export async function approveToolCall(
     let decision: string;
     if (control) {
       // 可等待的控制接口独立于仅用于观察的执行事件，且不能延长审批上限。
-      decision = await waitForDecision(control, structuredClone(call), reviewSignal);
+      decision = await waitForDecision(control, controlledCall, reviewSignal);
     } else {
       const review = config.approval.model;
       const baseURL = review?.baseURL ?? config.baseURL;
@@ -100,13 +126,19 @@ export async function approveToolCall(
         ...(baseURL === undefined ? {} : { baseURL }),
       });
       const context = {
-        environment: { workspace: config.workspace, toolDetails: call.details ?? {} },
+        environment: {
+          workspace: config.workspace,
+          toolDetails: call.details ?? {},
+          // PreToolUse 的 ask 理由作为审批说明，供独立审查模型判断。
+          ...(call.hookPermission === undefined ? {} : { preToolUse: call.hookPermission }),
+        },
         rules: { permissions: config.permissions ?? {} },
         history: extractApprovalHistory(history),
       };
       const prompt = JSON.stringify({ toolName: call.toolName, input: call.input, context });
       assertInputBudget(config, reviewInstructions, [{ role: 'user', content: prompt }]);
       reviewSignal.throwIfAborted();
+      const observations = new AgentObservations(tracing, 'approval.model');
       const result = await generateText({
         model: provider.chat(review?.model ?? config.model),
         system: reviewInstructions,
@@ -114,6 +146,9 @@ export async function approveToolCall(
         maxOutputTokens: (config.context ?? DEFAULT_CONTEXT).answerReserveTokens,
         maxRetries: 0,
         abortSignal: reviewSignal,
+        onLanguageModelCallStart: (event) => observations.startModelCall(event),
+        onLanguageModelCallEnd: (event) => observations.endModelCall(event),
+        onStepError: ({ callId, error }) => observations.failModelCall(callId, error),
       });
       if (result.finishReason !== 'stop' || result.toolCalls.length) throw new Error('Invalid review');
       decision = result.text.trim();
@@ -184,9 +219,17 @@ function historicalToolInput(toolName: string, input: unknown): unknown {
   const fields: Record<string, string[]> = {
     Bash: ['command'],
     read_file: ['path'],
+    Read: ['file_path', 'offset', 'limit'],
     write_file: ['path', 'content'],
+    Write: ['file_path', 'content'],
+    Edit: ['file_path', 'old_string', 'new_string', 'replace_all'],
     glob: ['pattern', 'path'],
+    Glob: ['pattern', 'path'],
     grep: ['pattern', 'path', 'glob'],
+    Grep: ['pattern', 'path', 'glob'],
+    TodoWrite: ['todos'],
+    WebFetch: ['url', 'prompt'],
+    WebSearch: ['query', 'allowed_domains', 'blocked_domains', 'max_results'],
     runtimeInfo: [],
     skill: ['name'],
     agent: ['description', 'prompt', 'subagent_type', 'model', 'background'],
@@ -248,32 +291,66 @@ function mcpPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest):
   return undefined;
 }
 
-function basicToolPermissionAction(config: ResolvedConfig, permission: 'Agent' | 'RuntimeInfo'): 'allow' | 'ask' | 'deny' | undefined {
+function basicToolPermissionAction(
+  config: ResolvedConfig,
+  permission: 'Agent' | 'RuntimeInfo' | 'TodoWrite' | 'WebSearch',
+): 'allow' | 'ask' | 'deny' | undefined {
   for (const action of ['deny', 'ask', 'allow'] as const) {
     if ((config.permissions?.[action] ?? []).includes(permission)) return action;
   }
   return undefined;
 }
 
+function webFetchPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest): 'allow' | 'ask' | 'deny' | undefined {
+  const inputUrl = typeof call.input === 'object' && call.input !== null && 'url' in call.input
+    && typeof call.input.url === 'string' ? call.input.url : undefined;
+  let hostname: string | undefined;
+  try { hostname = inputUrl === undefined ? undefined : new URL(inputUrl).hostname.toLowerCase(); }
+  catch { hostname = undefined; }
+  const matches = (rule: string): boolean => {
+    const match = /^WebFetch(?:\(domain:(.+)\))?$/u.exec(rule);
+    if (!match) return false;
+    if (match[1] === undefined) return true;
+    if (hostname === undefined) return false;
+    const pattern = match[1].toLowerCase();
+    const expression = globExpression(pattern);
+    return expression.test(hostname);
+  };
+  for (const action of ['deny', 'ask', 'allow'] as const) {
+    if ((config.permissions?.[action] ?? []).some(matches)) return action;
+  }
+  return undefined;
+}
+
+function isReadTool(name: string): boolean { return name === 'read_file' || name === 'Read'; }
+function isWriteTool(name: string): boolean { return name === 'write_file' || name === 'Write' || name === 'Edit'; }
+function isSearchTool(name: string): boolean { return ['glob', 'Glob', 'grep', 'Grep'].includes(name); }
+function isGlobTool(name: string): boolean { return name === 'glob' || name === 'Glob'; }
+
 function readPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest): 'allow' | 'ask' | 'deny' | undefined {
   return pathPermissionAction(config, call, 'Read');
 }
 
-function pathPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest, permission: 'Read' | 'Write' | 'Glob' | 'Grep'): 'allow' | 'ask' | 'deny' | undefined {
-  const inputPath = typeof call.input === 'object' && call.input !== null && 'path' in call.input
-    && typeof call.input.path === 'string' ? call.input.path : undefined;
+type PathPermission = 'Read' | 'Write' | 'Edit' | 'Glob' | 'Grep';
+
+function pathPermissionAction(config: ResolvedConfig, call: ToolApprovalRequest, permissions: PathPermission | readonly PathPermission[]): 'allow' | 'ask' | 'deny' | undefined {
+  const permissionNames = typeof permissions === 'string' ? [permissions] : permissions;
+  const inputPath = typeof call.input === 'object' && call.input !== null
+    ? ('file_path' in call.input && typeof call.input.file_path === 'string' ? call.input.file_path
+      : 'path' in call.input && typeof call.input.path === 'string' ? call.input.path : undefined)
+    : undefined;
   const requestedPath = call.details?.requestedPath ?? inputPath;
   const target = call.details?.target;
   if (!requestedPath || !target) return undefined;
   const paths = [resolveUserPath(config, requestedPath), target].map(canonicalizePermissionPath);
-  const matches = (rule: string): boolean => {
+  const matches = (rule: string): boolean => permissionNames.some((permission) => {
     const match = new RegExp(`^${permission}(?:\\((.+)\\))?$`, 'u').exec(rule);
     if (!match) return false;
     if (match[1] === undefined) return true;
     const pattern = canonicalizePermissionPath(resolveUserPath(config, match[1]));
     const expression = globExpression(pattern);
     return paths.some((path) => expression.test(path));
-  };
+  });
   for (const action of ['deny', 'ask', 'allow'] as const) {
     if ((config.permissions?.[action] ?? []).some(matches)) return action;
   }

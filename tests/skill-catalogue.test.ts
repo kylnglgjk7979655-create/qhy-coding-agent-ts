@@ -50,7 +50,9 @@ describe('Skill 注册与清单', () => {
       await writeSkill(join(userDir, '.qhy-coding-agents', 'skills'), 'global-skill', 'name: global-skill\ndescription: 全局 Skill 说明', 'GLOBAL_BODY_MARKER');
 
       const cli = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '查看 Skill 清单\n/exit\n' });
-      expect((await cli.done).code).toBe(0);
+      const { code, stderr } = await cli.done;
+      expect(code).toBe(0);
+      expect(skillDiagnostics(stderr)).toEqual([]);
       expect(model.requests).toHaveLength(1);
       const instructions = systemText(model.requests[0]!);
       expect(instructions).toContain('project-skill');
@@ -113,6 +115,74 @@ describe('Skill 注册与清单', () => {
       expect(instructions).not.toContain('missing-description');
       expect(instructions).not.toContain('missing-name');
       expect(instructions).not.toContain('没有 frontmatter 的正文');
+    } finally {
+      await model.close();
+    }
+  });
+
+  it('跳过无效 Skill 时向 stderr 报告路径与原因，有效 Skill 仍正常注册', async () => {
+    const cwd = await directory('skill-catalogue-diagnostics-cwd');
+    const userDir = await directory('skill-catalogue-diagnostics-user');
+    const model = await startLocalOpenAIModel(() => ({ content: '已完成。' }));
+    try {
+      await configure(cwd, model.baseURL);
+      const projectSkills = join(cwd, '.qhy-coding-agent', 'skills');
+      await writeSkill(projectSkills, 'valid', 'name: valid\ndescription: 有效说明', '有效正文');
+      await writeSkill(projectSkills, 'missing-description', 'name: missing-description', '缺少说明');
+      await writeSkill(projectSkills, 'missing-name', 'description: 缺少名称', '缺少名称');
+      await writeSkill(projectSkills, 'malformed', 'name: malformed\ndescription: "UNTERMINATED', '损坏正文');
+      await mkdir(join(projectSkills, 'no-frontmatter'), { recursive: true });
+      await writeFile(join(projectSkills, 'no-frontmatter', 'SKILL.md'), '没有 frontmatter 的正文');
+      await mkdir(join(projectSkills, 'no-skill-file'), { recursive: true });
+      await writeFile(join(projectSkills, 'not-a-directory'), '不是目录');
+
+      const cli = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret }, input: '检查无效 Skill\n/exit\n' });
+      const { code, stderr } = await cli.done;
+      expect(code).toBe(0);
+      expect(model.requests).toHaveLength(1);
+      expect(systemText(model.requests[0]!)).toContain('有效说明');
+
+      const diagnostics = new Map(skillDiagnostics(stderr).map(({ path, reason }) => [path, reason]));
+      const reasonFor = (name: string): string => {
+        const reason = diagnostics.get(join(projectSkills, name));
+        expect(reason, `缺少 ${name} 的诊断`).toBeDefined();
+        return reason ?? '';
+      };
+      expect(reasonFor('missing-description')).toMatch(/缺少必填字段.*description/);
+      expect(reasonFor('missing-name')).toMatch(/缺少必填字段.*name/);
+      expect(reasonFor('malformed')).toMatch(/frontmatter.*格式无效/);
+      expect(reasonFor('no-frontmatter')).toMatch(/缺少 frontmatter/);
+      expect(reasonFor('no-skill-file')).toMatch(/无法读取 SKILL\.md/);
+      expect(diagnostics.has(join(projectSkills, 'valid'))).toBe(false);
+      expect(diagnostics.has(join(projectSkills, 'not-a-directory'))).toBe(false);
+      // 非交互模式的 stderr 保持逐行 JSON，诊断不破坏可独立保存的运行日志。
+      expect(stderr.split('\n').filter((line) => line.trim() !== '').every((line) => line.startsWith('{'))).toBe(true);
+    } finally {
+      await model.close();
+    }
+  });
+
+  it('重载 Skill 时同样报告被跳过目录的诊断', async () => {
+    const cwd = await directory('skill-catalogue-reload-cwd');
+    const userDir = await directory('skill-catalogue-reload-user');
+    const model = await startLocalOpenAIModel(() => ({ content: '已完成。' }));
+    try {
+      await configure(cwd, model.baseURL);
+      const cli = startCLI({
+        cwd, userDir, conversationId: 'reload-diagnostics', env: { TEST_MODEL_API_KEY: secret },
+      });
+      cli.send('第一轮\n');
+      await waitForRequests(model.requests, 1);
+
+      const projectSkills = join(cwd, '.qhy-coding-agent', 'skills');
+      await writeSkill(projectSkills, 'broken-after-start', 'name: broken-after-start', '运行时出现的无效 Skill');
+      cli.end('/resume reload-diagnostics\n/exit\n');
+      const { code, stderr } = await cli.done;
+      expect(code).toBe(0);
+      const diagnostics = skillDiagnostics(stderr);
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]?.path).toBe(join(projectSkills, 'broken-after-start'));
+      expect(diagnostics[0]?.reason).toMatch(/缺少必填字段.*description/);
     } finally {
       await model.close();
     }
@@ -288,6 +358,25 @@ describe('Skill 注册与清单', () => {
     }
   });
 });
+
+/** 非交互运行的诊断是 stderr JSON 事件；提取 `skill.skipped` 的路径与原因。 */
+function skillDiagnostics(stderr: string): Array<{ path: string; reason: string }> {
+  const diagnostics: Array<{ path: string; reason: string }> = [];
+  for (const line of stderr.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof event !== 'object' || event === null) continue;
+    const record = event as Record<string, unknown>;
+    if (record.event !== 'skill.skipped' || typeof record.path !== 'string' || typeof record.reason !== 'string') continue;
+    diagnostics.push({ path: record.path, reason: record.reason });
+  }
+  return diagnostics;
+}
 
 async function waitForRequests(requests: unknown[], count: number): Promise<void> {
   const deadline = Date.now() + 3000;

@@ -67,7 +67,7 @@ cd "$QA_ROOT"
 
 ## 小预算、摘要及失败保护
 
-生成配置刻意使用小预算：`capacityTokens: 19500`、`answerReserveTokens: 700`、`maxOutputTokens: 1000`，自动压缩阈值为 19500 − 1000 − 13000 = 5500。这是 QA 设置，产品默认值仍为 128000、8192、20000。估算覆盖系统提示、消息与实际工具定义，不要求与服务端精确 token 数相同。
+生成配置刻意使用小预算：`capacityTokens: 21200`、`answerReserveTokens: 700`、`maxOutputTokens: 1000`，自动压缩阈值为 21200 − 1000 − 13000 = 7200。这是 QA 设置，产品默认值仍为 128000、8192、20000。估算覆盖系统提示、消息与实际工具定义，不要求与服务端精确 token 数相同。
 
 退出当前 CLI，用同一启动命令将 conversation ID 换为 `qa-summary`，输入 `growth`。它先批准写入 `kept.txt`、调用 alpha，再读取 `large.txt`；增长会在下一次主模型请求前触发独立摘要。预期本次增加主模型请求 2 次、审批 2 次、摘要 1 次、alpha 调用 1 次，最终回复 `夹具完成：压缩后继续`。全部有效历史（含当前轮工具调用与结果）进入摘要，压缩后主模型只收到 `[对话摘要]` 续接包装，较早的 `原文标记` 不再出现。
 
@@ -218,6 +218,131 @@ PATH="$QA_ROOT/limited-bin" HOME="$QA_ROOT/qa-home" \
 | 逐项结果 | SBX-01–SBX-27 的通过/失败/阻塞/未覆盖及证据 |
 | 缺陷 | 现象、实际命令与参数、预期、日志或文件状态、修复状态 |
 | 人工 QA 状态 | 仍在执行时保持“待执行”；全部适用项通过后才可标记完成，受环境阻塞和未人工覆盖项须单独列出 |
+
+## Hook 人工与黑盒验收
+
+Hook 的自动化回归覆盖配置校验、分层合并与去重、信任记录、六个事件、参数改写、反馈注入、受众区分、子 Agent 范围、后台通知轮次、Stop 续跑和输出上限。Linux 自动测试不能替代真实终端的人工交互；**本节全部人工项当前处于待执行状态**，在逐项记录版本、环境和结果之前，不得把 Hook 人工 QA 标记为完成。
+
+先构建并执行相关回归：
+
+```sh
+pnpm build
+pnpm exec vitest run tests/hooks-config.test.ts tests/hooks-trust.test.ts tests/hooks-runner.test.ts \
+  tests/hooks-session-start.test.ts tests/hooks-user-prompt-submit.test.ts \
+  tests/hooks-pre-tool-use.test.ts tests/hooks-post-tool-use.test.ts \
+  tests/hooks-post-tool-use-failure.test.ts tests/hooks-stop.test.ts \
+  tests/hooks-subagent-scope.test.ts tests/hooks-round-scope.test.ts \
+  tests/hooks-output-observability.test.ts
+```
+
+### 准备
+
+使用可丢弃目录、独立 `HOME` 和本地 QA 夹具。夹具写在独立目录中；不要把测试 Hook 配置进真实用户 settings。
+
+```sh
+REPO=/绝对路径/qhy-coding-agent-ts
+cd "$REPO"
+pnpm build
+CLI_NODE="$(pnpm exec node -p process.execPath)"
+export PATH="$(dirname "$CLI_NODE"):$PATH"
+QA_PARENT="$(mktemp -d)"
+FIXTURE_DIR="$QA_PARENT/qa-local-hooks"
+pnpm exec tsx tests/helpers/local-qa-fixture.ts --directory "$FIXTURE_DIR" --scenario normal
+```
+
+终端 A 出现 `QA_READY` 后，在终端 B 准备 Hook 脚本。脚本把每次 stdin 追加到 `qa-hooks/events.jsonl`，并按第一个参数模拟不同结论；它只用于验收，不属于产品。
+
+```sh
+mkdir -p "$FIXTURE_DIR/home" "$FIXTURE_DIR/work/.agent/hooks" "$FIXTURE_DIR/work/qa-hooks"
+cat > "$FIXTURE_DIR/work/.agent/hooks/hook.mjs" <<'JS'
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+
+const mode = process.argv[2] ?? 'record';
+let input = '';
+for await (const chunk of process.stdin) input += chunk;
+const text = input.trim();
+mkdirSync('qa-hooks', { recursive: true });
+appendFileSync('qa-hooks/events.jsonl', `${text}\n`);
+const data = text === '' ? {} : JSON.parse(text);
+const event = data.hook_event_name ?? 'unknown';
+const emit = (value) => process.stdout.write(JSON.stringify(value));
+
+if (mode === 'context') {
+  emit({ systemMessage: `SYSTEM-${event}`, hookSpecificOutput: { additionalContext: `CONTEXT-${event}` } });
+} else if (mode === 'plain') {
+  process.stdout.write(`PLAIN-${event}\n`);
+} else if (mode === 'rewrite' && event === 'PreToolUse'
+  && data.tool_name === 'write_file' && data.tool_input?.path === 'note.txt') {
+  emit({ hookSpecificOutput: { updatedInput: { path: 'note.txt', content: 'hook-rewritten' } } });
+} else if (mode === 'bad-rewrite' && event === 'PreToolUse'
+  && data.tool_name === 'write_file' && data.tool_input?.path === 'note.txt') {
+  emit({ hookSpecificOutput: { updatedInput: { path: 7, content: 'invalid' } } });
+} else if (mode === 'stop-once' && event === 'Stop') {
+  if (!existsSync('qa-hooks/stop-continued')) {
+    writeFileSync('qa-hooks/stop-continued', '1');
+    emit({ decision: 'block', reason: 'STOP-CONTINUE-ONCE' });
+  }
+} else if (mode === 'timeout') {
+  writeFileSync('qa-hooks/hook-shell.pid', String(process.pid));
+  const child = spawn('sleep', ['30'], { stdio: 'ignore' });
+  writeFileSync('qa-hooks/hook-child.pid', String(child.pid));
+  await new Promise(() => {});
+} else if (mode === 'output-limit') {
+  process.stdout.write('x'.repeat(1024 * 1024 + 1));
+  await new Promise(() => {});
+}
+JS
+```
+
+在编辑器中把以下 `hooks` 对象加入 `$FIXTURE_DIR/work/.agent/settings.json` 顶层，与 `model`、`approval` 同级。每次修改 settings 后重启 CLI；配置只在启动时读取。修改 Hook 命令、matcher 或超时会令已有信任失效；后续单项可加 `--trust-hooks` 跳过重复确认，或在交互提示中输入 `yes`。`qa-hooks/events.jsonl` 跨检查累积；逐项判定前先记录当前行数或清空文件，再只比较本次新增条目。
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "matcher": "startup|resume", "hooks": [{ "type": "command", "command": "node .agent/hooks/hook.mjs context", "timeoutMs": 10000 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "node .agent/hooks/hook.mjs context" }] }],
+    "PreToolUse": [{ "matcher": "Bash|write_file", "hooks": [{ "type": "command", "command": "node .agent/hooks/hook.mjs context" }] }],
+    "PostToolUse": [{ "matcher": "Bash|write_file", "hooks": [{ "type": "command", "command": "node .agent/hooks/hook.mjs context" }] }],
+    "PostToolUseFailure": [{ "matcher": "Bash|write_file", "hooks": [{ "type": "command", "command": "node .agent/hooks/hook.mjs context" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node .agent/hooks/hook.mjs record" }] }]
+  }
+}
+```
+
+启动命令如下；`HOME` 必须指向独立目录，使信任记录和会话记录都可清理：
+
+```sh
+cd "$FIXTURE_DIR/work"
+HOME="$FIXTURE_DIR/home" TEST_MODEL_API_KEY=local-qa-model QA_MCP_HEADER=local-qa-mcp \
+  "$CLI_NODE" "$REPO/dist/cli.js" --workspace "$FIXTURE_DIR/work" --conversation-id qa-hooks
+```
+
+### 信任与禁用
+
+- [ ] **HOOK-01 交互确认后启用**：在真实 TTY 启动上述命令且尚无信任记录。确认界面列出全部 Hook 的事件、matcher、命令和可选 `timeoutMs`；输入 `yes` 后 SessionStart 执行，`qa-hooks/events.jsonl` 出现 `SessionStart`。检查 `$FIXTURE_DIR/home/.qhy-coding-agents/trusted.json` 存在，文件权限 `0600`、目录权限 `0700`，内容含 64 位十六进制 hash；终端出现 `[hook] SessionStart: SYSTEM-SessionStart`，但不出现 `CONTEXT-SessionStart`。
+- [ ] **HOOK-02 拒绝确认**：删除 `trusted.json`，重新启动并输入 `no` 或其他非 `yes` 内容。终端显示“已禁用全部 Hook”，本次不追加任何 Hook 事件，也不生成信任记录；普通对话仍可继续并用 `/exit` 退出。
+- [ ] **HOOK-03 非 TTY 未信任禁用**：删除 `trusted.json`，用管道启动且不带显式 opt-in：`printf '/exit\n' | HOME="$FIXTURE_DIR/home" TEST_MODEL_API_KEY=local-qa-model QA_MCP_HEADER=local-qa-mcp "$CLI_NODE" "$REPO/dist/cli.js" --workspace "$FIXTURE_DIR/work"`。stderr 出现“检测到未信任的 Hook 配置，已禁用全部 Hook”，事件日志无新增，信任记录不存在。stdout 不是 TTY 或 stdin 关闭同样适用。
+- [ ] **HOOK-04 显式 opt-in**：分别使用 `--trust-hooks` 与 `QHY_TRUST_HOOKS=1` 启动。两者都应跳过确认、执行 Hook 并写入信任记录；`QHY_TRUST_HOOKS` 只接受去空白后等于 `1` 的值。
+- [ ] **HOOK-05 全局禁用优先**：在已有信任记录时，用 `--no-hooks` 启动；事件日志无新增，不显示确认提示或未信任警告。再把 `"disableAllHooks": true` 加入 settings 并重启，结果相同。两项均优先于信任判断。
+- [ ] **HOOK-06 配置变化使信任失效**：先把 `disableAllHooks` 恢复为 `false` 并在已有信任记录时修改任一 Hook 的 `command`、`matcher` 或 `timeoutMs`，重启。交互终端应重新展示确认；非 TTY 应禁用全部 Hook。只修改 `model`、`approval` 等无关字段时不应重新确认。
+
+### 事件、受众与改写
+
+- [ ] **HOOK-07 六个事件与 stdin**：使用上面的基础配置和新的会话 ID（例如启动时加 `--conversation-id qa-events`；与 HOOK-01 的 `qa-hooks` 区分），输入 `mixed`，随后 `/exit`。`qa-hooks/events.jsonl` 应包含全部六个事件：`SessionStart`（`source: "startup"`）、`UserPromptSubmit`（`prompt: "mixed"`）、`PreToolUse`（匹配 `Bash` / `write_file`）、`PostToolUse`、`PostToolUseFailure`（`mixed` 的 `bash-failure` 以非零退出让 Bash `execute` 抛错）、`Stop`。检查每条记录都有 `session_id`、`transcript_path`、`cwd`、`approval_mode: "model"`、`hook_event_name`；工具事件含 `tool_name`、`tool_use_id`，`PostToolUse` 含 `tool_response`。用同一 `--conversation-id qa-events` 重启并输入 `recover`，应新增一条 `SessionStart` 且 `source: "resume"`。
+- [ ] **HOOK-08 受众与普通 stdout**：用新的会话 ID 在 `context` 模式下输入 `mixed`，终端只显示 `[hook] ... SYSTEM-<事件>`；会话记录 `$FIXTURE_DIR/home/.qhy-coding-agents/sessions/<会话 ID>/record.json` 的 `effectiveHistory` 只在 `SessionStart` / `UserPromptSubmit` 中出现 `<hook-context ...>CONTEXT-<事件>`，在工具事件中出现 `<hook-feedback ...>CONTEXT-PostToolUse>`，且不出现 `SYSTEM-` 文本。`PreToolUse` 的 `CONTEXT-PreToolUse` 不进入记录。把某个事件改为 `plain` 模式后重启：`SessionStart` / `UserPromptSubmit` 的 `PLAIN-<事件>` 作为隐藏上下文进入记录；`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop` 的普通 stdout 只显示 `[hook]` 行，不进入模型历史。`suppressOutput: true` 只隐藏该行，不改变上下文注入。
+- [ ] **HOOK-09 updatedInput**：把 `PreToolUse` 的命令改为 `node .agent/hooks/hook.mjs rewrite`，用新的会话 ID 重启并输入 `mixed`。事件日志中的 `PreToolUse.tool_input.content` 仍是原始值 `private-file-content`；最终 `work/note.txt` 内容为 `hook-rewritten`，说明改写通过校验后用于审批与执行。再把命令改为 `node .agent/hooks/hook.mjs bad-rewrite`，用新的会话 ID 重启并输入 `mixed`；应出现 `[hook] PreToolUse: Hook 故障：updatedInput 未通过工具参数校验`，回退原参数继续审批，`note.txt` 内容保持 `private-file-content`，非法参数不得写入。
+- [ ] **HOOK-10 PostToolUseFailure**：本地夹具的 `mixed` 指令包含 `bash-failure`（`printf private-command-output; exit 7`），Bash `execute` 会因非零退出抛错并触发该事件。确认事件日志中的 `PostToolUseFailure` stdin 含 `tool_name: "Bash"`、`error` 与 `error_code: "TOOL_EXECUTION_ERROR"`；工具结果仍为 `is_error: true`，会话记录在整批工具结果之后出现 `<hook-feedback event="PostToolUseFailure">`，已产生的标准输出和副作用不被撤销。`invalid`、`unknown`、`denied` 等审批前失败不应产生该事件。
+
+### 超时、上限与 Stop
+
+- [ ] **HOOK-11 超时与进程树**：把 `SessionStart` 的 Hook 命令改为 `node .agent/hooks/hook.mjs timeout` 并设置 `"timeoutMs": 1000`，用 `--trust-hooks` 重启。等待超过一秒，终端出现 `[hook] SessionStart: Hook 故障：执行超时（已忽略，不影响对话）`，CLI 继续进入输入循环。读取 `qa-hooks/hook-shell.pid` 与 `qa-hooks/hook-child.pid`，在另一终端执行 `ps -o pid,stat,command -p <PID>`；Hook 脚本进程与 `sleep` 子进程都不应仍在运行（Linux 可能短暂显示已结束的 `Z` 状态）。等待超过 30 秒后，不得出现新的 `sleep` 结果或残留进程。取消或超时都不能只凭提示文本断言进程已清理。
+- [ ] **HOOK-12 输出上限**：把同一命令改为 `output-limit` 并设置 `"timeoutMs": 60000`，用 `--trust-hooks` 重启。stdout 超过 1 MiB 后应出现 `[hook] SessionStart: Hook 故障：stdout 超过 1 MiB，已终止`，结果按 `output_limit` 只提示不阻止；Hook 进程组被终止，会话继续。检查没有残留 `hook.mjs` 进程。
+- [ ] **HOOK-13 Stop 单次续跑**：把 `Stop` 命令改为 `node .agent/hooks/hook.mjs stop-once`，删除 `qa-hooks/stop-continued`，用 `--trust-hooks` 和全新会话 ID 输入一次 `recover`。终端 A 的 `status` 中 `mainRequests` 应增加 2（第一次回答加一次续跑），不是 1 或更多；本次新增事件日志应恰好有两条 `Stop`，第一条 `stop_hook_active: false`，第二条 `true`。第一次理由 `STOP-CONTINUE-ONCE` 只进入续跑请求，第二次不再阻止；最终回答来自续跑，不能出现第三次 `Stop` 或循环续跑。
+
+### 记录与判定
+
+记录提交号、操作系统、Node.js / pnpm 版本、使用的 settings（隐去凭据）、逐项结果（通过 / 失败 / 阻塞 / 未覆盖）、命令与事件日志摘录、信任记录权限、进程 PID 检查结果和缺陷编号。真实模型未参与的项目注明环境限制，不以自动测试或代码审查代替人工结论。执行记录追加到 [verification.md](verification.md)，全部适用项通过后才可把 Hook 人工 QA 标记为完成。
 
 ## 权限规则回归与人工 QA
 

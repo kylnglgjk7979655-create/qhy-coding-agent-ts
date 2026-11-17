@@ -1,5 +1,32 @@
 # 基础 CLI 验收记录
 
+## Issue #175 Hook README 与人工 QA 指南
+
+日期：2026-11-16。分支 `agent/parent-151`，父需求 #151 的子任务。本轮在 `README.md` 新增 Hook 章节，覆盖三层配置、`command` 类型、matcher 规则与查询字段、stdin 字段、退出码与 stdout 契约、普通 stdout 归属、默认超时、信任门禁、最小可运行示例、输出上限和注入时序；在[本地 QA 指南](qa-tool-capabilities.md#hook-人工与黑盒验收)新增 Hook 人工与黑盒验收清单（HOOK-01–HOOK-13）。没有修改运行时代码或产品行为；另稳定了 `tests/hooks-runner.test.ts` 中不等待用例的 stdin 时序。
+
+| 检查 | 结果 |
+| --- | --- |
+| `pnpm check` | 通过（修复后连续两次）：TypeScript 严格类型检查、ESM 构建；Vitest 57 个测试文件通过、2 个跳过，678 项测试通过、20 项跳过（测试运行 145.24 秒、145.14 秒） |
+| 相对 Markdown 链接检查 | 通过：README、QA 指南、ADR 0007 与验收记录的相对链接 0 缺失 |
+| QA Hook 脚本语法检查 | 通过：`node --check` 对文档内示例脚本成功 |
+| `git diff --check` | 通过：文档与测试补丁无空白错误 |
+| Hook 人工 QA（HOOK-01–HOOK-13） | 待执行；本轮未运行真实 TTY 信任确认、真实 Hook 命令、PostToolUseFailure 路径或进程 PID 检查，不宣称人工验收已通过 |
+
+修复前，完整检查多次在 `tests/hooks-runner.test.ts`“直接子进程退出后回收后台孙进程”用例上因进程回收时序返回 `non_blocking_error` 而失败；单文件复跑 10/10 通过，但负载下可复现。该用例不关心 stdin，现先执行 `cat > /dev/null` 消费 stdin，再退出并验证后台孙进程回收，避免把 EPIPE 竞态误判为 `spawn_error`。该中间失败未记为通过；修复后连续两次完整检查通过。清单中的自动化回归只证明测试覆盖；真实 TTY 交互、信任记录权限、六个事件的终端受众、`updatedInput` 实际写入、PostToolUseFailure 路径、超时进程树清理与 Stop 单次续跑仍需在本地按清单逐项留证。执行前不得把本节或 QA 指南中的待执行项写成通过。
+
+## Issue #174 Hook ADR 与术语
+
+日期：2026-11-16。分支 `agent/parent-151`，父需求 #151 的子任务。本轮新增 [ADR 0007](adr/0007-hooks.md) 并同步 `GLOSSARY.md` 的 Hook 词条；没有修改运行时代码或测试。父需求原计划使用 ADR 0005，但该编号已由父需求 #136 的 [Bash 沙箱](adr/0005-bash-sandbox.md) 使用；合并 main 后 0006 又由父需求 #152 的 [Claude 风格工具与网络访问](adr/0006-claude-style-tools-and-network-access.md) 使用，因此本决策落为 0007，ADR 开头已记录该编号调整。
+
+| 检查 | 结果 |
+| --- | --- |
+| `pnpm check` | 通过：TypeScript 严格类型检查、ESM 构建；Vitest 57 个测试文件通过、2 个跳过，678 项测试通过、20 项跳过（最终测试运行 144.55 秒） |
+| 相对 Markdown 链接检查 | 通过：ADR 0007 与术语表的相对链接 0 缺失 |
+| `git diff --check` | 通过：文档补丁无空白错误 |
+| Hook 人工 QA | 待执行；本轮只同步文档，未运行真实 TTY 信任确认、真实 Hook 命令或人工验收清单 |
+
+ADR 按 `src/services/hooks/`、`src/query/agent.ts`、`src/cli.ts`、`src/services/settings/config.ts` 和既有 Hook 测试核对事件范围、配置合并、信任门禁、退出码、输出上限、注入时序与 Stop 续跑边界；文档不改变运行时行为。
+
 ## PR #147 整体审查补强
 
 日期：2026-11-15。在父需求 #136 共享 PR 的整体审查中修复：CONNECT 显式 `:80` 被 WHATWG URL 默认端口归一化误判为非法目标、失败命令的结果丢失“未隔离执行/豁免未获准”通知、豁免获准路径短暂启动本机代理；并补充 IPv4-compatible 危险地址判定与相关测试，修正 QA 清单 SBX-12 的预期描述。

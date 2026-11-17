@@ -18,6 +18,27 @@ describe('configuration', () => {
     expect(JSON.stringify(loggableConfig(config))).not.toContain('test-secret');
   });
 
+  it('解析 Tavily 搜索默认值并从环境读取凭据，缺失凭据不阻止启动', async () => {
+    await mkdir(join(cwd, '.agent'), { recursive: true });
+    await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({ webSearch: { timeoutMs: 5000 } }));
+    const config = await loadConfig({ cwd, workspace: '.', env: { OPENAI_API_KEY: 'key', TAVILY_API_KEY: 'tavily-key' } });
+    expect(config.webSearch).toEqual({
+      provider: 'tavily', apiKeyEnv: 'TAVILY_API_KEY', timeoutMs: 5000, maxResults: 5,
+    });
+    expect(config.webSearchApiKey).toBe('tavily-key');
+
+    const missing = await loadConfig({ cwd, workspace: '.', env: { OPENAI_API_KEY: 'key' } });
+    expect(missing.webSearchApiKey).toBeUndefined();
+    expect(missing.webSearch?.provider).toBe('tavily');
+  });
+
+  it('拒绝无效的网络搜索配置', () => {
+    expect(configSchema.safeParse({ webSearch: { provider: 'other' } }).success).toBe(false);
+    expect(configSchema.safeParse({ webSearch: { maxResults: 0 } }).success).toBe(false);
+    expect(configSchema.safeParse({ webSearch: { timeoutMs: 0 } }).success).toBe(false);
+    expect(configSchema.safeParse({ webSearch: { unknown: true } }).success).toBe(false);
+  });
+
   it('resolves config and workspace relative to cwd, with CLI override taking priority', async () => {
     await mkdir(join(cwd, '.agent'), { recursive: true });
     await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({ apiKeyEnv: 'CUSTOM_KEY' }));
