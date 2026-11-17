@@ -2,16 +2,18 @@ import { z } from 'zod';
 import { grepWorkspace, inspectWorkspaceSearch, validateSearchRoot } from '../workspace-search.js';
 import type { BuiltInToolContext } from '../register-built-in-tools.js';
 import type { ToolRegistry } from '../tool-registry.js';
-import { searchPathAction } from '../tool-permission-policy.js';
+import { searchPathAction, toPermissionRuleSet } from '../tool-permission-policy.js';
 
 export function registerGrepTool(
   registry: ToolRegistry,
   { config }: BuiltInToolContext,
   names: readonly ('grep' | 'Grep')[] = ['grep', 'Grep'],
 ): void {
-  const rules = {
-    allow: config.permissions?.allow ?? [], ask: config.permissions?.ask ?? [], deny: config.permissions?.deny ?? [],
-  };
+  const rules = toPermissionRuleSet(config.permissions);
+  // 搜索根与遍历剪枝共用同一份规则事实，避免准备阶段与执行阶段出现分歧。
+  const permission = (path: string) => searchPathAction({
+    rules, workspace: config.workspace, capability: 'Grep', path,
+  });
   const register = (name: string): void => {
     registry.register({
       name,
@@ -26,9 +28,6 @@ export function registerGrepTool(
       }),
       prepare: async (input) => {
         const target = await validateSearchRoot(config.workspace, input.path);
-        const permission = (path: string) => searchPathAction({
-          rules, workspace: config.workspace, capability: 'Grep', path,
-        });
         const rootDenied = permission(target) === 'deny';
         const scope = rootDenied ? { asks: [], excluded: [] } : await inspectWorkspaceSearch(config.workspace, input.path, permission);
         return {
@@ -43,7 +42,7 @@ export function registerGrepTool(
       execute: (input) => grepWorkspace(
         config.workspace,
         input,
-        (path) => searchPathAction({ rules, workspace: config.workspace, capability: 'Grep', path }),
+        permission,
         input.approvedSearchAsks,
         input.approvedSearchRoot,
       ),

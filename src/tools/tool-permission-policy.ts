@@ -20,6 +20,19 @@ export interface PermissionRuleSet {
   readonly deny: readonly string[];
 }
 
+/** 配置中的权限列表到策略输入的规范形；省略 permissions 时视为空规则。 */
+export function toPermissionRuleSet(permissions: {
+  readonly allow?: readonly string[] | undefined;
+  readonly ask?: readonly string[] | undefined;
+  readonly deny?: readonly string[] | undefined;
+} | undefined): PermissionRuleSet {
+  return {
+    allow: permissions?.allow ?? [],
+    ask: permissions?.ask ?? [],
+    deny: permissions?.deny ?? [],
+  };
+}
+
 export interface ParsedPermissionRule {
   readonly capability: PermissionCapability;
   readonly argument?: string;
@@ -48,7 +61,8 @@ export interface PermissionDecision {
   readonly reason: 'rule' | 'default' | 'outside-workspace' | 'search-scope' | 'bash-extra-approval';
 }
 
-type PathCapability = 'Read' | 'Write' | 'Edit' | 'Glob' | 'Grep';
+const PATH_CAPABILITIES = ['Read', 'Write', 'Edit', 'Glob', 'Grep'] as const;
+type PathCapability = (typeof PATH_CAPABILITIES)[number];
 const PERMISSION_ACTIONS = ['deny', 'ask', 'allow'] as const;
 
 const rulePattern = /^(Read|Write|Edit|Glob|Grep|Bash|MCP|Agent|RuntimeInfo|TodoWrite|WebFetch|WebSearch)(?:\(([^()]+)\))?$/u;
@@ -95,10 +109,8 @@ export function searchPathAction(input: {
   const absolutePath = canonicalizePermissionPath(resolve(input.path));
   const matches = (rule: string): boolean => {
     const parsed = parsePermissionRule(rule);
-    if (parsed === undefined || parsed.capability !== input.capability) return false;
-    if (parsed.argument === undefined) return true;
-    const pattern = canonicalizePermissionPath(resolveUserPath(input.workspace, parsed.argument));
-    return globExpression(pattern).test(absolutePath);
+    return parsed !== undefined && parsed.capability === input.capability
+      && pathRuleMatches(parsed, input.workspace, [absolutePath]);
   };
   return firstMatchingAction(input.rules, matches);
 }
@@ -206,12 +218,27 @@ function pathAction(
   const paths = [resolveUserPath(workspace, requestedPath), target].map(canonicalizePermissionPath);
   return firstMatchingAction(rules, (rule) => {
     const parsed = parsePermissionRule(rule);
-    if (parsed === undefined || !capabilities.includes(parsed.capability as PathCapability)) return false;
-    if (parsed.argument === undefined) return true;
-    const pattern = canonicalizePermissionPath(resolveUserPath(workspace, parsed.argument));
-    const expression = globExpression(pattern);
-    return paths.some((path) => expression.test(path));
+    return parsed !== undefined
+      && isPathCapability(parsed.capability)
+      && capabilities.includes(parsed.capability)
+      && pathRuleMatches(parsed, workspace, paths);
   });
+}
+
+/** 路径规则同时匹配请求路径与解析后的实际目标；省略参数时匹配整个能力。 */
+function pathRuleMatches(
+  parsed: ParsedPermissionRule,
+  workspace: string,
+  paths: readonly string[],
+): boolean {
+  if (parsed.argument === undefined) return true;
+  const pattern = canonicalizePermissionPath(resolveUserPath(workspace, parsed.argument));
+  const expression = globExpression(pattern);
+  return paths.some((path) => expression.test(path));
+}
+
+function isPathCapability(capability: PermissionCapability): capability is PathCapability {
+  return (PATH_CAPABILITIES as readonly PermissionCapability[]).includes(capability);
 }
 
 function bashAction(rules: PermissionRuleSet, command: string): PermissionAction | undefined {

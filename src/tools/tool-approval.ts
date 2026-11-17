@@ -6,8 +6,7 @@ import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS } from '../services/
 import { AgentError } from '../utils/errors.js';
 import type { ToolApprovalRequest } from './tool-registry.js';
 import { assertInputBudget } from '../services/compact/context-summary.js';
-import { evaluatePermission } from './tool-permission-policy.js';
-import type { PermissionRuleSet } from './tool-permission-policy.js';
+import { evaluatePermission, toPermissionRuleSet } from './tool-permission-policy.js';
 import { AgentObservations } from '../services/observability/agent-observations.js';
 import type { TracingScope } from '../services/observability/langfuse.js';
 
@@ -40,12 +39,11 @@ export async function approveToolCall(
   tracing?: TracingScope,
 ): Promise<boolean> {
   signal.throwIfAborted();
-  const rules: PermissionRuleSet = {
-    allow: config.permissions?.allow ?? [],
-    ask: config.permissions?.ask ?? [],
-    deny: config.permissions?.deny ?? [],
-  };
-  const decision = evaluatePermission({ rules, workspace: config.workspace, facts: call.permission });
+  const decision = evaluatePermission({
+    rules: toPermissionRuleSet(config.permissions),
+    workspace: config.workspace,
+    facts: call.permission,
+  });
   const hookAsk = call.hookPermission?.decision === 'ask';
   const hookAllow = call.hookPermission?.decision === 'allow';
   // Hook allow 可跳过工具默认审批，但不能跳过规则/范围审批；网络工具的默认审批仍保留。

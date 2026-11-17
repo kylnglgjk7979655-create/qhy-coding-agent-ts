@@ -70,8 +70,9 @@ async function prepareUpdatedInput(
   staticPermission: ToolPermissionFacts | undefined,
 ) {
   try {
+    // 注册时已保证无 prepare 的静态工具带常量权限事实。
     return definition.prepare === undefined
-      ? { input, ...(staticPermission === undefined ? {} : { permission: staticPermission }) }
+      ? { input, permission: staticPermission! }
       : await definition.prepare(input);
   } catch {
     process.stderr.write('[hook] PreToolUse: updatedInput 无法准备，已回退原输入（不影响工具）。\n');
