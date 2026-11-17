@@ -1,3 +1,16 @@
+/**
+ * 将含时区的 ISO 时间显示为北京时间（固定 UTC+8）的 YYYY-MM-DD HH:mm:ss。
+ * 无法解析时原样返回，避免隐藏异常记录。
+ */
+export function formatBeijingTime(iso: string): string {
+  const time = Date.parse(iso);
+  if (Number.isNaN(time)) return iso;
+  // 北京时间没有夏令时，直接平移后按 UTC 字段格式化，避免依赖进程时区。
+  const beijing = new Date(time + 8 * 60 * 60 * 1000);
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${beijing.getUTCFullYear()}-${pad(beijing.getUTCMonth() + 1)}-${pad(beijing.getUTCDate())} ${pad(beijing.getUTCHours())}:${pad(beijing.getUTCMinutes())}:${pad(beijing.getUTCSeconds())}`;
+}
+
 export function visibleText(text: string): string {
   return text.replaceAll('\u001b', '␛').replace(/[\r\n]+/gu, ' ').replace(/[\u0000-\u001a\u001c-\u001f\u007f]/gu, '�');
 }

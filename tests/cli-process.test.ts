@@ -882,6 +882,10 @@ describe('compiled CLI process driver', () => {
       const initialScreen = output.slice(output.lastIndexOf('\u001b[2J'));
       expect(initialScreen).toContain('duplicate-title-first');
       expect(initialScreen).toContain('duplicate-title-second');
+      // 会话列表的更新时间按北京时间展示，而不是持久化的 UTC ISO 文本。
+      expect(initialScreen).toContain('2100-01-02 08:00:00');
+      expect(initialScreen).toContain('2100-01-01 08:00:00');
+      expect(initialScreen).not.toContain('2100-01-02T00:00:00.000Z');
       chooser.send('\u001b[B\r');
       await waitForOutput(() => output, '已继续会话：duplicate-title-second', 1);
       chooser.end('/exit\n');

@@ -11,12 +11,13 @@ import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession, type Back
 import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, persistableSessionConfig, restoreSessionConfig } from './services/settings/config.js';
 import type { ApprovalMode } from './services/settings/config.js';
 import { approvalModeLabel, createApprovalModeState, parseApprovalModeCommand } from './tools/approval-mode.js';
-import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, saveManualCompaction, sessionRecordPath, sessionTaskOutputDirectory, startSessionRound, type SessionLoadWarning } from './services/session/conversations.js';
+import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, saveManualCompaction, sessionRecordPath, sessionTaskOutputDirectory, startSessionRound, type SessionLoadWarning, type SessionRecord } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
 import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './services/session/file-checkpoints.js';
 import type { FileRewindPlan } from './services/session/file-checkpoints.js';
 import { AgentError, publicError } from './utils/errors.js';
 import { CliInput } from './cli/cli-input.js';
+import { formatBeijingTime } from './cli/terminal-text.js';
 import { CommandRegistry } from './cli/commands.js';
 import { ToolActivityRenderer } from './cli/tool-activity.js';
 import { loadSkillCatalogue } from './services/skills/skill-registry.js';
@@ -102,6 +103,11 @@ function formatUserError(error: unknown): string {
   const failure = publicError(error);
   const code = isInteractiveTerminal() ? `（${failure.code}）` : '';
   return `错误${code}：${failure.message}`;
+}
+
+/** `/resume` 当前工作区与全部工作区两个列表共用同一明细格式：北京时间、工作区与会话 ID。 */
+function sessionChoiceDetail(session: Pick<SessionRecord, 'updatedAt' | 'workspace' | 'id'>): string {
+  return `${formatBeijingTime(session.updatedAt)} · ${session.workspace} · ${session.id}`;
 }
 
 // 用量按发送前估算展示，不声称与服务端精确 token 计数一致；MCP 定义需连接远端才能发现，不计入。
@@ -650,7 +656,7 @@ input.setBusy(true);
         const sessions = await listSessions(userHome, all ? undefined : config.workspace);
         const choices: Array<{ label: string; detail: string; value: { kind: 'session'; id: string } | { kind: 'all' } }> = sessions.map((session) => ({
           label: session.title || '未命名会话',
-          detail: `${session.updatedAt} · ${session.workspace} · ${session.id}`,
+          detail: sessionChoiceDetail(session),
           value: { kind: 'session' as const, id: session.id },
         }));
         if (!all) choices.push({ label: '查看全部会话', detail: '包括其他工作区的会话', value: { kind: 'all' as const } });
@@ -666,7 +672,7 @@ input.setBusy(true);
             }
             const allChoices = allSessions.map((session) => ({
               label: session.title || '未命名会话',
-              detail: `${session.updatedAt} · ${session.workspace} · ${session.id}`,
+              detail: sessionChoiceDetail(session),
               value: session.id,
             }));
             const selectedId = await input.select('全部工作区会话', allChoices);
