@@ -1,6 +1,6 @@
 # qhy-coding-agent-ts
 
-基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `read_file`、`write_file`、`runtimeInfo` 和 `Bash`，可读取工作区文件，并在工具策略允许或所选审批通过后修改文件、运行命令。Bash 可在 macOS Seatbelt 沙箱内执行；沙箱默认关闭，v1 仅支持 macOS，其他平台按不可用处理。审批默认由独立模型完成，也可切换人工模式。会话记录保存在用户目录 `~/.qhy-coding-agents/sessions/`，支持用 conversation ID 跨进程继续对话。
+基于 AI SDK 7 的交互式 CLI Agent：启动后逐条输入需求，流式查看回答，输入 `/exit` 结束对话。Agent 提供 `Read`、`Write`、`Edit`、`Bash`、`Glob`、`Grep`、`TodoWrite`、`WebFetch` 和 `WebSearch`，并保留 `read_file`、`write_file`、`glob`、`grep` 旧名称；可读取、搜索和修改工作区文件，记录待办，访问公开网页或使用 Tavily 搜索网络，并在工具策略允许或所选审批通过后运行命令。Bash 可在 macOS Seatbelt 沙箱内执行；沙箱默认关闭，v1 仅支持 macOS，其他平台按不可用处理。审批默认由独立模型完成，也可切换人工模式。会话记录保存在用户目录 `~/.qhy-coding-agents/sessions/`，支持用 conversation ID 跨进程继续对话。
 
 通过 `ToolLoopAgent.stream()` 运行工具循环，每个对话轮次使用独立的 `maxSteps` 限制，默认 20 步。Agent 可通过 Bash 运行项目测试，文件工具与 Bash 共用策略、审批、串行执行和结果路径；启用沙箱后，Bash 的读写与网络还受沙箱计划和本机网络代理约束。
 
@@ -73,6 +73,8 @@ pnpm exec node dist/cli.js --workspace ./demo --conversation-id "$CONVERSATION_I
 
 输入 `/compact` 主动压缩当前有效历史：空闲时完成摘要和保存后立即返回输入界面，不额外发起主模型续做请求；执行中收到时登记请求，在当前工具结果写入历史后、同轮下一次主模型请求前压缩并继续任务。手动压缩失败时显示错误并返回输入，原有效历史保持不变；压缩不重置主模型步骤额度或延长执行时限。
 
+输入 `/context` 查看当前有效历史的上下文用量估算：显示估算输入 token、配置的 `context.capacityTokens` 和占比，并明确标注为估算。估算沿用主模型请求的序列化口径，包含内置系统提示、可用工具定义与当前有效历史；命令不发起模型请求、不修改会话记录，也不连接远程 MCP 服务，因此配置的 MCP 工具定义未计入。空对话也可执行；消息增加、自动压缩或 `/compact` 改变有效历史后再次执行会显示更新后的值。
+
 维护者人工 QA：在真实终端启动 CLI，输入两条不同消息后运行 `/resume`，确认标题、更新时间与工作区可辨认，方向键移动和回车会续聊对应会话；打开“查看全部会话”选择其他工作区会话，再验证取消不会切换。对同一文件完成两次不同修改后运行 `/rewind`，选择较早用户消息，确认预览和最终恢复的是该消息执行前的内容；再试一次，在预览后从另一个终端修改目标文件，确认首次 `yes` 只刷新预览，第二次确认才恢复。用 Esc 和 `/cancel` 分别取消，确认文件不变；用管道运行 `/resume` 或 `/rewind`，确认选择立即退出且普通输入仍可继续。
 
 维护者人工 QA：在真实终端进行两轮对话后输入 `/compact`，确认显示压缩成功提示、回到输入界面且没有新增主模型请求；再提交一个需要工具调用的任务，在工具执行期间输入 `/compact`，确认工具完成后同一轮继续执行并给出最终回答；分别在摘要请求等待时按 Ctrl+C、以及让摘要服务返回错误，确认显示中断或失败提示、回到输入界面且原有效历史保持不变。
@@ -120,10 +122,51 @@ pnpm dev --workspace ./demo
 | `explore.model` | 可选；Explore 默认模型，未配置时使用主 Agent 的 `model`。`agent` 单次调用可用 `model` 覆盖；连接地址和凭据沿用主 Agent |
 | `explore.loadRootAgents` | 可选，默认 `false`；设为 `true` 后向 Explore 提供工作区根目录的 `AGENTS.md`，文件缺失时继续调查，不自动加载子目录中的同名文件 |
 | `bash.timeoutMs` | 可选，默认 30,000ms，范围 1–3,600,000ms；单次命令上限，同时受整轮剩余时限约束；`bash` 只接受此字段 |
+| `webSearch.provider` | 可选，当前只接受 `tavily`，默认 `tavily` |
+| `webSearch.apiKeyEnv` | 可选，默认 `TAVILY_API_KEY`；启动时从该环境变量读取凭据，缺失不阻止启动或其他工具 |
+| `webSearch.baseURL` | 可选，默认 `https://api.tavily.com`；必须是无内嵌凭据、查询参数及片段的 HTTP(S) 地址 |
+| `webSearch.timeoutMs` | 可选，默认 30,000ms，范围 1–3,600,000ms；单次搜索超时 |
+| `webSearch.maxResults` | 可选，默认 5，范围 1–20；单次调用的 `max_results` 可覆盖默认值 |
 
 未知字段、无效类型及越界数值会在网络请求前报错。自动重试关闭，避免鉴权失败反复请求。Ctrl+C 会中止当前请求。
 
 自定义 `baseURL` 的服务必须兼容 OpenAI Chat Completions 及函数调用；仅能返回文本不足以认定工具兼容。缺少 settings 时，内置默认值使用 OpenAI 地址、`gpt-4.1-mini-2025-04-14` 和 `OPENAI_API_KEY`。
+
+### Langfuse 可观测性
+
+可选接入 Langfuse Cloud。默认关闭；关闭时不读取 Langfuse 凭据、不创建跟踪器，也不向 Langfuse 发送任何数据。
+
+```json
+{
+  "observability": {
+    "langfuse": {
+      "enabled": true,
+      "baseURL": "https://cloud.langfuse.com"
+    }
+  }
+}
+```
+
+凭据只从环境变量读取，默认变量名为 `LANGFUSE_PUBLIC_KEY` 和 `LANGFUSE_SECRET_KEY`；可在 `publicKeyEnv`、`secretKeyEnv` 中改用其他变量名。显式启用后缺少任一凭据会在启动阶段报配置错误。凭据只用于请求的 `Authorization` 头，不写入 settings、会话记录、普通日志或跟踪事件正文；`baseURL` 默认指向 Langfuse Cloud，自托管时可填写兼容 ingestion 接口的 HTTP(S) 地址。
+
+| 字段 | 含义 |
+| --- | --- |
+| `observability.langfuse.enabled` | 默认 `false`；设为 `true` 后启用跟踪 |
+| `observability.langfuse.baseURL` | 默认 `https://cloud.langfuse.com`；必须是 HTTP(S) 地址且不含凭据、查询参数或片段 |
+| `observability.langfuse.publicKeyEnv` | 默认 `LANGFUSE_PUBLIC_KEY`；只引用环境变量名 |
+| `observability.langfuse.secretKeyEnv` | 默认 `LANGFUSE_SECRET_KEY`；只引用环境变量名 |
+
+启用后按对话轮次生成一条 trace，`sessionId` 使用会话 ID，并在同一 trace 下记录：
+
+- 主 Agent 与子 Agent 的模型请求：模型名称、起止时间、状态、可获取的 token 用量、请求与响应内容；
+- 工具调用：工具名称、参数、结果或错误、执行状态与耗时；
+- 人工审批与模型审批：对应工具、完整参数、审批结果与状态；模型审批自身另记录一次模型请求；
+- 自动压缩与 `/compact` 的摘要请求：摘要 span、模型名称、输入输出与 token 用量；
+- 子 Agent：独立 span 记录委派说明、子 Agent 类型、模型和最终报告，其模型请求与工具调用挂在同一 trace 下。
+
+提示词、模型输出、工具参数和工具结果都会上传到 Langfuse；如需限制内容外泄，请只在可信项目和账号中启用。供应商没有返回费用时，本项目不写 `costDetails`，不按价格表推算费用；模型名称、耗时和 token 用量只会记录实际可获取的值。Langfuse 不可达、请求超时或返回失败时，当前批次按尽力上报处理并丢弃，不阻塞、不重试、不改变 Agent 结果。注意：Langfuse Cloud 若根据自身模型价格配置展示估算费用，属于云端行为，不是本项目上报的数据。
+
+关闭时把 `observability.langfuse.enabled` 设为 `false` 或删除该配置块即可；也可用项目本地 settings 覆盖用户级设置。改动在下次启动或切换会话恢复配置后生效。
 
 2026-11-03 的基础版本曾通过方舟真实模型和 `runtimeInfo` 工具验收，详见 [历史验收记录](docs/verification.md)。当前工具权限、Bash、基础 MCP 与摘要的离线验收入口见 [本地 QA 指南](docs/qa-tool-capabilities.md)；其中 [macOS Bash 沙箱人工验收清单](docs/qa-tool-capabilities.md#macos-bash-沙箱人工验收) 仍待人工执行。早期交互式文件工具的验收项目保留在 [QA 清单](.scratch/interactive-cli-file-tools/qa-checklist.md)。
 
@@ -161,14 +204,41 @@ pnpm dev --workspace ./demo
 
 | 工具 | 能力 |
 | --- | --- |
-| `read_file` | 接收 `path`，按权限规则读取文本文件并将内容返回给 Agent |
-| `write_file` | 接收 `path` 和 `content`，完整替换目标文件；文件不存在时创建，不自动创建父目录 |
+| `Read` | 接收 `file_path`，可选 `offset`（从 1 开始）和 `limit`（默认最多 2000 行），按权限规则读取文本文件并返回选中内容和行数信息 |
+| `read_file` | 接收 `path`，按权限规则读取完整文本文件；保留用于兼容旧调用 |
+| `Write` | 接收 `file_path` 和 `content`，创建或完整重写目标文件；不自动创建父目录 |
+| `write_file` | 接收 `path` 和 `content`，完整替换目标文件；要求先读取既有文件，保留用于兼容旧调用 |
+| `Edit` | 接收 `file_path`、`old_string`、`new_string` 和可选 `replace_all`（默认 `false`）。需先读取目标文件；默认要求 `old_string` 在文件中唯一匹配；无匹配或多处匹配时失败且不修改文件，`replace_all: true` 时替换全部匹配 |
+| `Glob` / `glob` | 接收 `pattern` 和可选 `path`，按 glob 模式查找工作区文件 |
+| `Grep` / `grep` | 接收 `pattern`（正则）、可选 `path` 和 `glob`，返回相对路径、行号和命中文本 |
+| `TodoWrite` | 接收 `todos` 完整列表，每项包含 `content`、`status`（`pending`、`in_progress`、`completed`）和可选 `activeForm`；调用以新列表替换旧状态，最多一个任务处于 `in_progress` |
+| `WebFetch` | 接收 `url` 和 `prompt`，读取公开 HTTP/HTTPS 网页文本；拒绝本机、内网、链路本地和云 metadata 地址，并逐次校验重定向目标 |
+| `WebSearch` | 接收 `query`，可选 `allowed_domains`、`blocked_domains` 和 `max_results`；首期使用 Tavily，凭据从环境变量读取 |
 | `runtimeInfo` | 返回工作区绝对路径和本轮运行探针 |
 | `Bash` | 接收 `command`、可选 `cwd` 和 `disableSandbox`，在沙箱可用时从工作区默认目录或经审批的其他目录运行沙箱内独立 shell；沙箱关闭、不可用按 fail-open 回退或豁免获准时以宿主方式执行 |
 
-相对路径从配置的工作区解析。`read_file` 和 `write_file` 可按权限规则或逐次审批访问工作区外的目标；工作区外读取默认需要审批，写入默认进入当前审批策略。符号链接按解析后的实际目标匹配权限。`glob` 和 `grep` 默认搜索工作区，指定工作区外搜索根时需要审批；权限规则可对搜索范围分别允许、要求审批或拒绝。工具权限始终是应用层策略，不能替代隔离：启用沙箱后，Bash 命令的读写与网络限制来自沙箱计划和本机代理；沙箱关闭、不可用按 fail-open 回退或豁免获准时，Bash 以宿主当前用户权限执行，可访问工作区外资源。远程 MCP 不受 Bash 沙箱约束。审批通过不会自动回滚已经发生的副作用。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
+相对路径从配置的工作区解析。`Read`、`Write` 和 `Edit` 与旧名称工具共用同一套受控写入基线：同一进程内并发写入会检测读取后变化；`Write` 可在目标未被本进程读取时直接创建或重写，`Edit` 与旧 `write_file` 一样要求先读取。文件工具可按权限规则或逐次审批访问工作区外的目标；工作区外读取默认需要审批，写入默认进入当前审批策略。符号链接按解析后的实际目标匹配权限。`Glob`/`glob` 和 `Grep`/`grep` 默认搜索工作区，指定工作区外搜索根时需要审批；权限规则可对搜索范围分别允许、要求审批或拒绝。工具权限始终是应用层策略，不能替代隔离：启用沙箱后，Bash 命令的读写与网络限制来自沙箱计划和本机代理；沙箱关闭、不可用按 fail-open 回退或豁免获准时，Bash 以宿主当前用户权限执行，可访问工作区外资源。远程 MCP 不受 Bash 沙箱约束。审批通过不会自动回滚已经发生的副作用。文件访问失败会作为工具结果返回给 Agent，让它解释问题或继续处理。
 
-终端实时显示 `[工具] read_file：开始`、`[工具] read_file：成功`、`[工具] read_file：失败` 或 `[工具] read_file：拒绝` 等执行状态，不直接打印工具参数、文件内容或原始异常。一次调用只显示一个终结状态；普通调用失败后，同批后续调用仍会执行，Agent 会收到各次工具结果并决定如何继续。Agent 的最终回答可以按用户要求引用文件内容。
+终端实时显示 `[工具] Read：开始`、`[工具] Read：成功`、`[工具] Read：失败` 或 `[工具] Write：拒绝` 等执行状态，不直接打印工具参数、文件内容或原始异常。一次调用只显示一个终结状态；普通调用失败后，同批后续调用仍会执行，Agent 会收到各次工具结果并决定如何继续。Agent 的最终回答可以按用户要求引用文件内容。
+
+## 网络工具
+
+`WebFetch` 只允许公开的 HTTP/HTTPS 地址。执行前会解析主机并在每次重定向时重新校验，拒绝回环、私网、链路本地、云 metadata、保留地址及 `localhost`、`.local`、`.internal` 等名称；不接受带用户名或密码的 URL。读取使用 30 秒独立超时，响应正文最多 5 MiB，返回内容最多 100,000 字符；仅支持文本、JSON、XML 和 JavaScript 等文本类型。地址无效、被拒绝、超时、重定向过多或内容类型不支持时返回明确工具错误，不影响同批其他工具。`prompt` 用于说明希望获取的信息；工具本身不调用模型提炼，返回清洗后的网页文本，由 Agent 按 `prompt` 分析。
+
+`WebSearch` 首期接入 Tavily。未配置 API Key 时调用返回明确错误，启动和其他工具不受影响；额度耗尽、鉴权失败、服务失败、响应无效或超时也分别返回可区分的错误。搜索服务通过 `WebSearchProvider` 接口解耦，后续可增加其他服务实现。
+
+```json
+{
+  "webSearch": {
+    "provider": "tavily",
+    "apiKeyEnv": "TAVILY_API_KEY",
+    "timeoutMs": 30000,
+    "maxResults": 5
+  }
+}
+```
+
+`provider` 目前只接受 `tavily`；`apiKeyEnv` 指向保存 API Key 的环境变量，默认 `TAVILY_API_KEY`，启动时从环境读取，凭据不会写入工具参数、日志或会话记录。省略 `baseURL` 时使用 `https://api.tavily.com`；如需本地夹具可配置 HTTP(S) 形式的服务地址。`timeoutMs` 范围为 1–3,600,000 毫秒，`maxResults` 范围为 1–20，单次调用的 `max_results` 可覆盖默认值。`WebFetch` 与 `WebSearch` 未配置权限规则时默认进入当前审批。
 
 ## Bash 与操作系统沙箱
 
@@ -237,7 +307,7 @@ Bash 在支持 POSIX 进程组的系统（Linux/macOS）上使用 PATH 中的 `b
 
 退出码为 0 时返回 `is_error: false`；非零退出、启动失败、单命令超时和 fail-closed 拒绝返回 `is_error: true`、`TOOL_EXECUTION_ERROR` 及可用输出。沙箱内出现 `Operation not permitted` 时提示为策略拦截，便于区分命令自身错误。超时结果保留终止信号，错误消息说明超时；取消和整轮超时走轮次停止通路。
 
-沙箱只约束 Bash 及其子进程。`read_file`、`write_file`、远程 MCP、审查模型和 CLI 其他进程不在其内；沙箱关闭、按 fail-open 回退或豁免获准时，Bash 仍以宿主用户权限运行。常规验证通过本地模型夹具、受控进程和 macOS Seatbelt 集成测试完成，Linux 等平台只验证不可用路径，不能代替最终人工 QA。
+沙箱只约束 Bash 及其子进程。`Read`、`Write`、`Edit`、`read_file`、`write_file`、远程 MCP、审查模型和 CLI 其他进程不在其内；沙箱关闭、按 fail-open 回退或豁免获准时，Bash 仍以宿主用户权限运行。常规验证通过本地模型夹具、受控进程和 macOS Seatbelt 集成测试完成，Linux 等平台只验证不可用路径，不能代替最终人工 QA。
 
 ## 工具策略与审批
 
@@ -246,16 +316,16 @@ Bash 在支持 POSIX 进程组的系统（Linux/macOS）上使用 PATH 中的 `b
 ```json
 {
   "permissions": {
-    "allow": ["Read(src/**)", "Glob(src/**)", "Grep(src/**)", "Bash(pnpm test)", "MCP(alpha/lookup)"],
+    "allow": ["Read(src/**)", "Edit(src/**)", "Glob(src/**)", "Grep(src/**)", "Bash(pnpm test)", "WebSearch", "WebFetch(domain:example.com)", "MCP(alpha/lookup)"],
     "ask": ["Write(src/**)", "Bash(git push:*)"],
-    "deny": ["Read(.env)", "Bash(rm:*)", "MCP(alpha/*)"]
+    "deny": ["Read(.env)", "Bash(rm:*)", "WebFetch(domain:internal.example)", "MCP(alpha/*)"]
   }
 }
 ```
 
-`Read`、`Write`、`Glob`、`Grep` 可不带参数以匹配该类全部目标，也可带路径模式；相对路径从工作区解析，支持 `*`、`?`、`**`。`Bash` 必须带命令规则：精确匹配完整命令，末尾 `:*` 匹配该前缀及其后续参数，并要求参数边界相符，例如 `Bash(git push:*)`。复合命令按其中每个简单命令分别检查；可识别的管道、串接和重定向等语法额外要求逐次审批，无法可靠解析的控制结构则作为无效参数拒绝。`MCP` 可匹配所有服务，或用 `服务名/工具名`、`服务名/*` 匹配远端工具。`Agent`、`RuntimeInfo` 分别控制 Agent 委派与运行信息工具。
+`Read`、`Write`、`Edit`、`Glob`、`Grep` 可不带参数以匹配该类全部目标，也可带路径模式；相对路径从工作区解析，支持 `*`、`?`、`**`。`Edit` 调用同时受 `Edit` 与 `Write` 规则约束，任一规则更严格时按 `deny`、`ask`、`allow` 的优先级生效，单独配置 `Edit(...)` 不会影响 `Write`。`Bash` 必须带命令规则：精确匹配完整命令，末尾 `:*` 匹配该前缀及其后续参数，并要求参数边界相符，例如 `Bash(git push:*)`。复合命令按其中每个简单命令分别检查；可识别的管道、串接和重定向等语法额外要求逐次审批，无法可靠解析的控制结构则作为无效参数拒绝。`MCP` 可匹配所有服务，或用 `服务名/工具名`、`服务名/*` 匹配远端工具。`WebFetch` 可不带参数，或用 `WebFetch(domain:example.com)`、`WebFetch(domain:*.example.com)` 按主机匹配；`WebSearch` 和 `TodoWrite` 不带参数。`Agent`、`RuntimeInfo` 分别控制 Agent 委派与运行信息工具。
 
-权限按工具能力独立生效：例如 `Read(src/**)` 不会授权 `Write(src/**)`，`Bash(pnpm test)` 也不会授权其他命令。匹配规则的动作优先级为 `deny`、`ask`、`allow`；未匹配时，工作区内读取、搜索、`runtimeInfo` 和 Agent 默认允许，写入、Bash、MCP 默认进入当前审批，工作区外读取默认需要审批。显式 `allow` 可免除相应逐次审批，`deny` 不可由审批放行。Glob/Grep 对被拒绝路径予以排除，对需审批路径暂停该次搜索并在人工审批界面展示范围。
+权限按工具能力独立生效：例如 `Read(src/**)` 不会授权 `Write(src/**)`，`Bash(pnpm test)` 也不会授权其他命令。匹配规则的动作优先级为 `deny`、`ask`、`allow`；未匹配时，工作区内读取、搜索、`TodoWrite`、`runtimeInfo` 和 Agent 默认允许，写入、Bash、WebFetch、WebSearch、MCP 默认进入当前审批，工作区外读取默认需要审批。显式 `allow` 可免除相应逐次审批，`deny` 不可由审批放行。Glob/Grep 对被拒绝路径予以排除，对需审批路径暂停该次搜索并在人工审批界面展示范围。
 
 设置分层时，`permissions.allow`、`permissions.ask`、`permissions.deny` 与 `permissions.sandbox` 的数组字段各自跨层合并并去重；其他对象字段递归合并，其他数组由更具体层整体替换。旧版 `approval.rules` 不再提供运行授权；请迁移到 `permissions`，无效或未迁移的旧规则不会覆盖默认权限。
 
@@ -310,13 +380,15 @@ Bash 调用在审批前已生成沙箱执行计划，人工和模型审批详情
 
 `approval.mode` 接受 `default`（默认人工审批）和 `auto`（独立模型审批）。`ask` 在两种模式下分别交给人工或模型审批。人工模式逐次展示工具名称、调用 ID 和完整参数，例如 `[人工审批 1] write_file`。输入 `approve 1` 批准，或 `deny 1` 拒绝；数字须与当前提示一致。答复只对应本次调用，不能用旧编号批准后续调用。无效输入（包括新的用户需求）不会被当作批准；请完成审批后再提交新需求。进入等待前已经排队的需求仍作为后续对话处理，不能成为审批答复。
 
+交互会话中输入 `/permission-mode` 可查看当前审批模式，输入 `/permission-mode default` 或 `/permission-mode auto` 可切换。启动时也可用 `--permission-mode default|auto` 指定本次进程的初始模式，与 Claude Code 的同名启动参数对应；取值沿用本项目的审批语义，只接受 `default` 和 `auto`。切换只作用于当前 CLI 进程，不写入 settings 或会话记录，重启后仍使用 settings 中的 `approval.mode`。切换只影响之后进入审批的工具调用；已经等待中的人工或模型审批按进入审批时的模式完成，不会因为切到 `auto` 而被自动批准。权限规则及逐次审批语义不因切换改变。
+
 人工等待独立上限 `approval.humanTimeoutMs` 默认五分钟（300,000ms），范围为 1–3,600,000 毫秒；它与模型审批上限分别配置。非交互管道、输入关闭或等待超时直接拒绝本次调用，其他普通调用继续，不请求模型代为审批。人工等待不消耗整轮执行预算；批准或拒绝后继续使用等待前的剩余时间，多次等待不会重置已消耗时间。Ctrl+C、SIGTERM 和公共入口的父级取消信号仍能立即中断等待并停止本轮。公共入口在人工模式下未提供 `approvalControl` 时直接拒绝。
 
 完整参数仅在人工审批界面展示，便于判断待执行操作；普通进度、执行事件和日志不输出完整参数、结果或原始异常。观察回调失败只输出诊断，不替代审批也不改变决定。常规验证使用本地模型夹具与假凭据；自动测试不能代替最终人工 QA。
 
 ## Hook 扩展点
 
-`hooks` 允许用户命令挂载到六个生命周期事件。v1 只有同步 `command` 类型：Hook 通过 `/bin/sh -c <command>` 在独立进程组中运行，工作目录固定为工作区，继承 CLI 环境，以 CLI 当前用户权限执行。Hook 不是操作系统沙箱，也不受 `permissions`、工具审批或 Bash 沙箱约束；设计与完整契约见 [ADR 0006](docs/adr/0006-hooks.md)。
+`hooks` 允许用户命令挂载到六个生命周期事件。v1 只有同步 `command` 类型：Hook 通过 `/bin/sh -c <command>` 在独立进程组中运行，工作目录固定为工作区，继承 CLI 环境，以 CLI 当前用户权限执行。Hook 不是操作系统沙箱，也不受 `permissions`、工具审批或 Bash 沙箱约束；设计与完整契约见 [ADR 0007](docs/adr/0007-hooks.md)。
 
 ### 配置层级与形状
 
@@ -638,7 +710,7 @@ stdout 输出回答、交互提示、工具名称和单轮错误；stderr 输出
 pnpm exec node dist/cli.js --workspace ./demo 2> run.jsonl
 ```
 
-每轮生成新的 run ID。`run.started` 记录模型配置、工作区及请求状态；`run.finished` 记录成功或失败，成功轮次还包含步数、工具调用次数和 token 用量。普通对话日志包含 `conversationId`，冒烟日志不包含该字段。启动配置错误也有终态记录。日志不包含密钥、用户需求或原始 provider 错误响应；轮次耗时从开始处理该条消息计算。
+每轮生成新的 run ID。`run.started` 记录模型配置、工作区及请求状态；`run.finished` 记录成功或失败，成功轮次还包含步数、工具调用次数和 token 用量。普通对话日志包含 `conversationId`，冒烟日志不包含该字段。启动配置错误也有终态记录。启动或重载 Skill 时，被跳过目录以 `skill.skipped` 事件记录 `path` 与 `reason`；交互模式改为在 stderr 显示可读提示。日志不包含密钥、用户需求或原始 provider 错误响应；轮次耗时从开始处理该条消息计算。
 
 交互模式中，鉴权失败、超时、步数上限等普通轮次错误会记录错误码并继续等待输入；随后 `/exit` 仍可使进程以 0 退出，应结合每轮日志判断结果。下表的非零退出码适用于错误导致进程结束的场景，例如启动失败、冒烟失败或取消退出。
 

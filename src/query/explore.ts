@@ -1,7 +1,7 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { isStepCount, ToolLoopAgent } from 'ai';
 import type { ModelMessage } from 'ai';
-import type { ResolvedConfig } from '../services/settings/config.js';
+import type { ApprovalMode, ResolvedConfig } from '../services/settings/config.js';
 import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
 import { registerFileReadTool } from '../tools/FileReadTool/FileReadTool.js';
 import { registerGlobTool } from '../tools/GlobTool/GlobTool.js';
@@ -21,6 +21,9 @@ import {
 import type { HookCommandRun, HookEventResult } from '../services/hooks/hook-engine.js';
 import type { SubagentHookScope } from '../services/hooks/hook-scope.js';
 import type { PostToolUseFailureHookInput, PostToolUseHookInput, PreToolUseHookInput } from '../services/hooks/hook-runner.js';
+import { AgentObservations } from '../services/observability/agent-observations.js';
+import type { TracingScope } from '../services/observability/langfuse.js';
+import { resolveApproval } from '../tools/approval-mode.js';
 
 const exploreInstructions = [
   '你是只读 Explore 调查 Agent。使用独立的新对话，只调查用户指定的工作区问题。',
@@ -32,16 +35,27 @@ const exploreInstructions = [
   '不得把部分搜索、失败读取或尚未解决的问题描述为完整核实。最终报告说明结论、相关文件位置和所有重要调查限制。',
 ].join('\n');
 
+export interface ExploreOptions {
+  modelOverride?: string;
+  signal?: AbortSignal;
+  approvalControl?: ApprovalControl;
+  /** CLI 人工审批控制；仅在当前模式为 default 时使用。 */
+  humanApprovalControl?: ApprovalControl;
+  approvalMode?: () => ApprovalMode;
+  skills?: SkillCatalogue;
+  /** Explore 的工具 Hook 范围；沿用父对话标识并附加本子 Agent 的身份。 */
+  hookScope?: SubagentHookScope;
+  /** 本轮 Langfuse 跟踪；子 Agent 的 scope 指向其 subagent span。 */
+  tracing?: TracingScope;
+}
+
 export async function runExplore(
   config: ResolvedConfig,
   description: string,
   prompt: string,
-  modelOverride?: string,
-  signal?: AbortSignal,
-  approvalControl?: ApprovalControl,
-  skills?: SkillCatalogue,
-  hookScope?: SubagentHookScope,
+  options: ExploreOptions = {},
 ): Promise<string> {
+  const { modelOverride, signal, approvalControl, humanApprovalControl, approvalMode, skills, hookScope, tracing } = options;
   signal?.throwIfAborted();
   const provider = createOpenAI({
     apiKey: config.apiKey,
@@ -82,8 +96,14 @@ export async function runExplore(
       if (message !== undefined) process.stderr.write(`${message}\n`);
     }
   };
+  const observations = new AgentObservations(tracing);
   const registry = new ToolRegistry({
-    approve: (call) => approveToolCall(config, call, approvalSignal, approvalControl, undefined, approvalHistory),
+    approve: (call) => {
+      approvalSignal.throwIfAborted();
+      const approval = resolveApproval(config, approvalMode, approvalControl, humanApprovalControl);
+      return observations.traceApproval(call, (childTracing) =>
+        approveToolCall(approval.config, call, approvalSignal, approval.control, undefined, approvalHistory, childTracing));
+    },
     preToolUse: async (call, toolSignal) => {
       if (activeHookScope === undefined) return undefined;
       const hookInput: PreToolUseHookInput = {
@@ -142,9 +162,10 @@ export async function runExplore(
     bashOperations: new Set(),
     ...(skills === undefined ? {} : { skills }),
   };
-  registerGrepTool(registry, context);
-  registerGlobTool(registry, context);
-  registerFileReadTool(registry, context);
+  // Explore 保持原有只读工具名，避免子 Agent 工具集合随主 Agent 别名扩展。
+  registerGrepTool(registry, context, ['grep']);
+  registerGlobTool(registry, context, ['glob']);
+  registerFileReadTool(registry, context, ['read_file']);
   // 只有存在 Skill 清单时才公布 Skill 工具，保持无 Skill 场景的只读工具集合不变。
   if (skills !== undefined) registerSkillTool(registry, skills);
 
@@ -170,6 +191,12 @@ export async function runExplore(
     toolCallConcurrency: MAX_TOOL_CALL_CONCURRENCY,
     stopWhen: isStepCount(config.maxSteps),
     maxRetries: 0,
+    onStepError: ({ callId, error }) => observations.failModelCall(callId, error),
+    onAbort: () => observations.abortPending(),
+    onLanguageModelCallStart: (event) => observations.startModelCall(event),
+    onLanguageModelCallEnd: (event) => observations.endModelCall(event),
+    onToolExecutionStart: (event) => observations.startTool(event),
+    onToolExecutionEnd: (event) => observations.endTool(event),
     prepareStep: async ({ messages, responseMessages }) => {
       // 只扫描本轮响应消息；Hook 反馈与 Skill 正文都排在工具结果之后并延续到后续步骤。
       const toolFeedback = takeToolFeedbackMessages(messages, pendingToolFeedback, hookInjectionTracker);

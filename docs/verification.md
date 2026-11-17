@@ -7,7 +7,7 @@
 | 检查 | 结果 |
 | --- | --- |
 | `pnpm check` | 通过（修复后连续两次）：TypeScript 严格类型检查、ESM 构建；Vitest 57 个测试文件通过、2 个跳过，678 项测试通过、20 项跳过（测试运行 145.24 秒、145.14 秒） |
-| 相对 Markdown 链接检查 | 通过：README、QA 指南、ADR 0006 与验收记录的相对链接 0 缺失 |
+| 相对 Markdown 链接检查 | 通过：README、QA 指南、ADR 0007 与验收记录的相对链接 0 缺失 |
 | QA Hook 脚本语法检查 | 通过：`node --check` 对文档内示例脚本成功 |
 | `git diff --check` | 通过：文档与测试补丁无空白错误 |
 | Hook 人工 QA（HOOK-01–HOOK-13） | 待执行；本轮未运行真实 TTY 信任确认、真实 Hook 命令、PostToolUseFailure 路径或进程 PID 检查，不宣称人工验收已通过 |
@@ -16,12 +16,12 @@
 
 ## Issue #174 Hook ADR 与术语
 
-日期：2026-11-16。分支 `agent/parent-151`，父需求 #151 的子任务。本轮新增 [ADR 0006](adr/0006-hooks.md) 并同步 `GLOSSARY.md` 的 Hook 词条；没有修改运行时代码或测试。父需求原计划使用 ADR 0005，但该编号已由父需求 #136 的 [Bash 沙箱](adr/0005-bash-sandbox.md) 使用，ADR 0006 开头已记录该编号调整。
+日期：2026-11-16。分支 `agent/parent-151`，父需求 #151 的子任务。本轮新增 [ADR 0007](adr/0007-hooks.md) 并同步 `GLOSSARY.md` 的 Hook 词条；没有修改运行时代码或测试。父需求原计划使用 ADR 0005，但该编号已由父需求 #136 的 [Bash 沙箱](adr/0005-bash-sandbox.md) 使用；合并 main 后 0006 又由父需求 #152 的 [Claude 风格工具与网络访问](adr/0006-claude-style-tools-and-network-access.md) 使用，因此本决策落为 0007，ADR 开头已记录该编号调整。
 
 | 检查 | 结果 |
 | --- | --- |
 | `pnpm check` | 通过：TypeScript 严格类型检查、ESM 构建；Vitest 57 个测试文件通过、2 个跳过，678 项测试通过、20 项跳过（最终测试运行 144.55 秒） |
-| 相对 Markdown 链接检查 | 通过：ADR 0006 与术语表的相对链接 0 缺失 |
+| 相对 Markdown 链接检查 | 通过：ADR 0007 与术语表的相对链接 0 缺失 |
 | `git diff --check` | 通过：文档补丁无空白错误 |
 | Hook 人工 QA | 待执行；本轮只同步文档，未运行真实 TTY 信任确认、真实 Hook 命令或人工验收清单 |
 

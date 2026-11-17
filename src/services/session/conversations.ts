@@ -573,7 +573,7 @@ function deriveTitleFromText(text: string): string {
 function isModelConfig(value: unknown): value is ModelConfig {
   if (typeof value !== 'object' || value === null) return false;
   const config = value as Partial<ModelConfig>;
-  const fields = ['provider', 'model', 'apiKeyEnv', 'baseURL', 'workspace', 'timeoutMs', 'maxSteps', 'explore', 'context', 'mcp', 'bash', 'approval', 'permissions'];
+  const fields = ['provider', 'model', 'apiKeyEnv', 'baseURL', 'workspace', 'timeoutMs', 'maxSteps', 'explore', 'context', 'mcp', 'bash', 'approval', 'permissions', 'observability'];
   return Object.keys(value).every((field) => fields.includes(field))
     && config.provider === 'openai'
     && typeof config.model === 'string'
@@ -585,7 +585,23 @@ function isModelConfig(value: unknown): value is ModelConfig {
       && Object.keys(config.explore).every((field) => ['model', 'loadRootAgents'].includes(field))
       && (config.explore.model === undefined || (typeof config.explore.model === 'string' && config.explore.model.trim() !== ''))
       && (config.explore.loadRootAgents === undefined || typeof config.explore.loadRootAgents === 'boolean')))
+    && (config.observability === undefined || isObservabilityConfig(config.observability))
     && typeof config.approval === 'object' && config.approval !== null;
+}
+
+/** 会话配置只保存环境变量名与非敏感地址；凭据值不会出现在记录中。 */
+function isObservabilityConfig(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const observability = value as { langfuse?: unknown };
+  if (!Object.keys(value).every((field) => field === 'langfuse')) return false;
+  const langfuse = observability.langfuse;
+  if (typeof langfuse !== 'object' || langfuse === null) return false;
+  const record = langfuse as Record<string, unknown>;
+  return Object.keys(record).every((field) => ['enabled', 'baseURL', 'publicKeyEnv', 'secretKeyEnv'].includes(field))
+    && typeof record.enabled === 'boolean'
+    && typeof record.baseURL === 'string'
+    && typeof record.publicKeyEnv === 'string'
+    && typeof record.secretKeyEnv === 'string';
 }
 
 function isRoundRecord(value: unknown): value is SessionRecord['rounds'][number] {

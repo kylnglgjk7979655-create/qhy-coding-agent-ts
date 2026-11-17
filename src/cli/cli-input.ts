@@ -16,8 +16,15 @@ export class CliInput {
   private selector: (() => void) | undefined;
   private confirmation: { answer: (line: string) => void; close: () => void } | undefined;
   private compactRequested = false;
+  private busy = false;
 
-  constructor(private readonly signal: AbortSignal, cancel: () => void, private readonly humanTimeoutMs: number) {
+  constructor(
+    private readonly signal: AbortSignal,
+    cancel: () => void,
+    private readonly humanTimeoutMs: number,
+    /** 即时处理的本地命令；返回 true 表示该行已被消费，不作为对话或审批答复。 */
+    private readonly localLineHandler?: (line: string) => boolean,
+  ) {
     this.input = createInterface({
       input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY, signal,
     });
@@ -28,6 +35,9 @@ export class CliInput {
         this.confirmation.answer(line);
       } else if (this.selector) {
         // Enter is consumed by the active keyboard chooser, never as a chat or approval answer.
+      } else if (this.localLineHandler?.(line.trim())) {
+        // 审批等待或轮次执行中也可切换模式；只有空闲时才重新显示输入提示。
+        if (!this.busy && this.approvals.size === 0 && !this.closed && process.stdin.isTTY) this.prompt();
       } else if (this.approvals.size > 0) {
         const match = /^(approve|deny)\s+(\d+)$/i.exec(line.trim());
         const approval = match ? this.approvals.get(Number(match[2])) : undefined;
@@ -198,6 +208,8 @@ export class CliInput {
   };
 
   prompt(): void { if (!this.closed) this.input.prompt(); }
+  /** 主循环执行轮次或压缩期间不重新显示提示，避免打断流式输出或审批提示。 */
+  setBusy(value: boolean): void { this.busy = value; }
   close(): void { this.input.close(); }
 }
 
