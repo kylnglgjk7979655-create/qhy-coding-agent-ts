@@ -7,6 +7,7 @@ import type { ModelMessage } from 'ai';
 import { z } from 'zod';
 import type { ResolvedConfig } from '../services/settings/config.js';
 import { AgentError, publicError } from '../utils/errors.js';
+import { estimateInput, toolDefinitionsForEstimate } from '../utils/input-estimate.js';
 import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
 import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
@@ -50,6 +51,64 @@ function modelStreamError(error: unknown): AgentError {
   if (error instanceof AgentError) return error;
   if (APICallError.isInstance(error) || ToolChoiceViolationError.isInstance(error)) return publicError(error);
   return new AgentError('PROVIDER_ERROR', '模型响应流无效，已终止当前对话轮次。');
+}
+
+/** 主 Agent 的内置系统提示；/context 使用同一构造，保证估算口径与真实请求一致。 */
+function buildInstructions(config: ResolvedConfig, options: {
+  generalPurposeSubagent?: boolean;
+  skills?: SkillCatalogue;
+}): string {
+  return [
+    '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
+    '搜索文件路径时优先使用 glob，搜索文件内容时优先使用 grep；两者默认搜索整个工作区，也可限定子目录，遵循 .gitignore 并包含隐藏目录。',
+    '可使用 read_file 读取文件：工作区内默认允许，工作区外需要审批；使用 write_file 完整替换或创建文件，工作区外写入默认需要审批。Read 与 Write 权限规则按请求路径和实际目标执行。',
+    'write_file 和 Bash 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
+    `Bash 可运行命令和项目测试，每次使用独立 shell。${bashSandboxGuidance(config.permissions?.sandbox ?? DEFAULT_SANDBOX)}`,
+    '工具结果中的 is_error: true 表示该调用失败；必须在答复中明确说明失败，不得声称操作成功或把失败调用的输出当成已验证结果。',
+    'runtimeInfo 可获取工作区路径和本次探针。',
+    '如公布了 mcp_ 前缀工具，可调用对应远程 MCP 服务；这些工具默认需要独立审批，调用可能产生远端副作用。',
+    '参数已知且彼此无依赖的工具调用尽量放在同一批；需要前序调用结果的工具调用应分批。',
+    ...(options.generalPurposeSubagent ? [
+      '你是 general-purpose 子 Agent，负责独立完成委派的研究或多步骤修改任务。',
+      '你不能再委派子 Agent。',
+    ] : []),
+    ...(options.skills === undefined || options.skills.skills.length === 0 ? [] : [
+      '可用 skill 工具按规范名称、显示名称或别名加载 Skill；工具结果只表示调用成功，正文由后续消息提供。',
+      options.skills.instructions,
+    ]),
+  ].join('\n');
+}
+
+/** 发送前估算结果；与主模型请求共用同一估算口径，不代表服务端精确 token 计数。 */
+export interface ContextUsageEstimate {
+  readonly estimatedInputTokens: number;
+  readonly capacityTokens: number;
+  readonly usageRatio: number;
+}
+
+/**
+ * 估算当前有效历史对应的输入占用，包含系统提示与可用内置工具定义。
+ * 仅在本进程内构造定义，不连接远程 MCP 服务，因此配置的 MCP 工具定义不计入。
+ */
+export async function estimateContextUsage(
+  config: ResolvedConfig,
+  history: readonly ModelMessage[],
+  skills?: SkillCatalogue,
+): Promise<ContextUsageEstimate> {
+  const registry = new ToolRegistry({});
+  registerBuiltInTools(registry, {
+    config,
+    probe: '',
+    allowAgent: true,
+    fileWriteCallbacks: {},
+    bashOperations: new Set(),
+    ...(skills === undefined ? {} : { skills }),
+  });
+  const tools = registry.tools();
+  const definitions = await toolDefinitionsForEstimate(tools);
+  const capacityTokens = (config.context ?? DEFAULT_CONTEXT).capacityTokens;
+  const estimatedInputTokens = estimateInput(buildInstructions(config, skills === undefined ? {} : { skills }), history, definitions);
+  return { estimatedInputTokens, capacityTokens, usageRatio: estimatedInputTokens / capacityTokens };
 }
 
 export async function runAgent(
@@ -201,25 +260,7 @@ export async function runAgent(
         },
       },
     });
-    const instructions = [
-        '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
-        '搜索文件路径时优先使用 glob，搜索文件内容时优先使用 grep；两者默认搜索整个工作区，也可限定子目录，遵循 .gitignore 并包含隐藏目录。',
-        '可使用 read_file 读取文件：工作区内默认允许，工作区外需要审批；使用 write_file 完整替换或创建文件，工作区外写入默认需要审批。Read 与 Write 权限规则按请求路径和实际目标执行。',
-        'write_file 和 Bash 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
-        `Bash 可运行命令和项目测试，每次使用独立 shell。${bashSandboxGuidance(config.permissions?.sandbox ?? DEFAULT_SANDBOX)}`,
-        '工具结果中的 is_error: true 表示该调用失败；必须在答复中明确说明失败，不得声称操作成功或把失败调用的输出当成已验证结果。',
-        'runtimeInfo 可获取工作区路径和本次探针。',
-        '如公布了 mcp_ 前缀工具，可调用对应远程 MCP 服务；这些工具默认需要独立审批，调用可能产生远端副作用。',
-        '参数已知且彼此无依赖的工具调用尽量放在同一批；需要前序调用结果的工具调用应分批。',
-        ...(options.generalPurposeSubagent ? [
-          '你是 general-purpose 子 Agent，负责独立完成委派的研究或多步骤修改任务。',
-          '你不能再委派子 Agent。',
-        ] : []),
-        ...(options.skills === undefined || options.skills.skills.length === 0 ? [] : [
-          '可用 skill 工具按规范名称、显示名称或别名加载 Skill；工具结果只表示调用成功，正文由后续消息提供。',
-          options.skills.instructions,
-        ]),
-    ].join('\n');
+    const instructions = buildInstructions(config, options);
     const tools = registry.tools();
     let preparedResponseCount = 0;
     const summaries: RunResult['summaries'] = [];
