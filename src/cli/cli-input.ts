@@ -1,8 +1,30 @@
 import { createInterface, emitKeypressEvents } from 'node:readline';
 import type { ApprovalControl } from '../tools/tool-approval.js';
+import type { ToolApprovalRequest } from '../tools/tool-registry.js';
 import type { BackgroundAgentTaskNotification } from '../tools/AgentTool/background-agent-tasks.js';
+import { approvalOptionsFor, SessionApprovals } from './approval-policy.js';
+import type { ApprovalOption } from './approval-policy.js';
+import { fitText } from './terminal-text.js';
 
 export type CliWorkItem = { type: 'user'; text: string } | { type: 'notification'; conversationId: string; notification: BackgroundAgentTaskNotification } | { type: 'compact' };
+
+interface PendingApproval {
+  number: number;
+  call: ToolApprovalRequest;
+  answerText?: (line: string) => void;
+  finish: (decision: 'approve' | 'deny', note?: string) => void;
+}
+
+interface ApprovalMenu {
+  number: number;
+  options: ApprovalOption[];
+  selected: number;
+  hasSelection: boolean;
+  renderedLines: number;
+  hint: string;
+  wasRaw: boolean;
+  onKeypress: (character: string, key: { name?: string; ctrl?: boolean }) => void;
+}
 
 // 单一输入消费者将对话消息与正在等待的审批答复分开，已排队的消息不会变成批准。
 export class CliInput {
@@ -10,13 +32,16 @@ export class CliInput {
   private readonly queued: string[] = [];
   private wakeNext: (() => void) | undefined;
   private readonly notifications: Array<Extract<CliWorkItem, { type: 'notification' }>> = [];
-  private readonly approvals = new Map<number, { answer: (line: string) => void; close: () => void }>();
+  private readonly approvals = new Map<number, PendingApproval>();
+  private readonly sessionApprovals = new SessionApprovals();
   private closed = false;
   private sequence = 0;
   private selector: (() => void) | undefined;
+  private approvalMenu: ApprovalMenu | undefined;
   private confirmation: { answer: (line: string) => void; close: () => void } | undefined;
   private compactRequested = false;
   private busy = false;
+  private readonly cancelRequest: () => void;
 
   constructor(
     private readonly signal: AbortSignal,
@@ -25,6 +50,7 @@ export class CliInput {
     /** 即时处理的本地命令；返回 true 表示该行已被消费，不作为对话或审批答复。 */
     private readonly localLineHandler?: (line: string) => boolean,
   ) {
+    this.cancelRequest = cancel;
     this.input = createInterface({
       input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY, signal,
     });
@@ -34,15 +60,17 @@ export class CliInput {
         // 信任确认答复优先于对话消息和审批答复，避免启动输入被当成一次用户请求。
         this.confirmation.answer(line);
       } else if (this.selector) {
-        // Enter is consumed by the active keyboard chooser, never as a chat or approval answer.
+        // Enter 由活动中的键盘选择器消费，不能变成聊天或审批答复。
       } else if (this.localLineHandler?.(line.trim())) {
         // 审批等待或轮次执行中也可切换模式；只有空闲时才重新显示输入提示。
         if (!this.busy && this.approvals.size === 0 && !this.closed && process.stdin.isTTY) this.prompt();
+      } else if (this.approvalMenu) {
+        // Enter 由活动中的审批菜单消费，不能变成聊天或审批答复。
       } else if (this.approvals.size > 0) {
         const match = /^(approve|deny)\s+(\d+)$/i.exec(line.trim());
         const approval = match ? this.approvals.get(Number(match[2])) : undefined;
-        if (approval) approval.answer(line.trim());
-        else if (this.approvals.size === 1) this.approvals.values().next().value?.answer(line.trim());
+        if (approval) approval.answerText?.(line.trim());
+        else if (this.approvals.size === 1) this.approvals.values().next().value?.answerText?.(line.trim());
         else process.stdout.write(`\n有待审批调用，请按对应编号答复：${[...this.approvals.keys()].join('、')}。\n`);
       } else if (/^(approve|deny)(\s|$)/i.test(line.trim())) {
         process.stdout.write('\n当前没有对应的待审批调用，答复已忽略。\n');
@@ -63,7 +91,7 @@ export class CliInput {
       this.confirmation?.close();
       this.confirmation = undefined;
       this.selector?.();
-      for (const approval of this.approvals.values()) approval.close();
+      for (const approval of [...this.approvals.values()]) approval.finish('deny', '拒绝本次（输入关闭）');
       this.wakeNext?.();
       this.wakeNext = undefined;
     });
@@ -182,28 +210,42 @@ export class CliInput {
 
   readonly approve: ApprovalControl = async (call, signal) => {
     signal.throwIfAborted();
-    if (this.closed || !process.stdin.isTTY || !process.stdout.isTTY) {
+    if (this.sessionApprovals.canSkipPrompt(call)) {
+      process.stdout.write(`\n[人工审批] ${call.toolName} 已在本会话获准，跳过默认审批。\n`);
+      return 'approve';
+    }
+    if (this.closed) {
       process.stdout.write('\n人工审批不可交互或输入已关闭，拒绝本次调用。\n');
       return 'deny';
     }
+    const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
     const number = ++this.sequence;
     return new Promise((resolve) => {
-      const finish = (decision: 'approve' | 'deny'): void => {
+      let settled = false;
+      const finish = (decision: 'approve' | 'deny', note?: string): void => {
+        if (settled) return;
+        settled = true;
         signal.removeEventListener('abort', abort);
         this.approvals.delete(number);
+        if (this.approvalMenu?.number === number) this.closeApprovalMenu(note);
         resolve(decision);
+        if (interactive) setImmediate(() => this.startApprovalMenu());
       };
-      const abort = (): void => finish('deny');
-      this.approvals.set(number, {
-        answer: (line) => {
+      const abort = (): void => finish('deny', '拒绝本次（已取消）');
+      const pending: PendingApproval = { number, call, finish };
+      this.approvals.set(number, pending);
+      signal.addEventListener('abort', abort, { once: true });
+      if (interactive) {
+        this.startApprovalMenu();
+      } else {
+        // 非交互场景保留文本审批协议，答复规则与旧版一致。
+        pending.answerText = (line) => {
           if (line === `approve ${number}`) finish('approve');
           else if (line === `deny ${number}`) finish('deny');
           else process.stdout.write(`\n答复无效，请输入 approve ${number} 或 deny ${number}。\n`);
-        },
-        close: () => finish('deny'),
-      });
-      signal.addEventListener('abort', abort, { once: true });
-      process.stdout.write(`\n[人工审批 ${number}] ${call.toolName}（调用 ${call.callId}；最多等待 ${this.humanTimeoutMs}ms）\n${JSON.stringify(call.input, null, 2)}\n${call.details?.target ? `实际文件目标：${call.details.target}\n` : ''}${call.details?.cwd ? `实际工作目录：${call.details.cwd}\n` : ''}${call.details?.searchAsk ? `需审批的搜索范围：${call.details.searchAsk}\n` : ''}${call.details?.sandboxExecution ? `沙箱执行模式：${call.details.sandboxExecution}\n` : ''}${call.details?.sandboxBypass ? `豁免申请：${call.details.sandboxBypass}\n` : ''}${call.details?.sandboxNotice ? `沙箱状态：${call.details.sandboxNotice}\n` : ''}${call.hookPermission?.reason ? `Hook 审批说明：${call.hookPermission.reason}\n` : ''}批准请输入 approve ${number}，拒绝请输入 deny ${number}：\n`);
+        };
+        process.stdout.write(this.approvalPromptText(number, pending.call, `批准请输入 approve ${number}，拒绝请输入 deny ${number}：\n`));
+      }
     });
   };
 
@@ -211,34 +253,116 @@ export class CliInput {
   /** 主循环执行轮次或压缩期间不重新显示提示，避免打断流式输出或审批提示。 */
   setBusy(value: boolean): void { this.busy = value; }
   close(): void { this.input.close(); }
-}
 
-function visibleText(text: string): string {
-  return text.replaceAll('\u001b', '␛').replace(/[\r\n]+/gu, ' ').replace(/[\u0000-\u001a\u001c-\u001f\u007f]/gu, '�');
-}
-
-function fitText(text: string, columns: number, preserveEnd = false): string {
-  const readable = visibleText(text);
-  const characters = Array.from(readable);
-  const widths = characters.map(characterWidth);
-  const totalWidth = widths.reduce((sum, width) => sum + width, 0);
-  if (totalWidth <= columns) return readable;
-  if (!preserveEnd) {
-    let width = 0;
-    let end = 0;
-    while (end < characters.length && width + widths[end]! <= columns - 1) width += widths[end++]!;
-    return `${characters.slice(0, end).join('')}…`;
+  private startApprovalMenu(): void {
+    if (this.approvalMenu || this.closed || !process.stdin.isTTY || !process.stdout.isTTY) return;
+    const pending = this.approvals.values().next().value;
+    if (!pending) return;
+    const options = approvalOptionsFor(pending.call);
+    const menu: ApprovalMenu = {
+      number: pending.number,
+      options,
+      selected: 0,
+      hasSelection: false,
+      renderedLines: 0,
+      hint: '',
+      wasRaw: process.stdin.isRaw,
+      onKeypress: () => undefined,
+    };
+    this.approvalMenu = menu;
+    // 先接好键盘再打印提示，外面看到审批标题时输入不会落回行缓冲。
+    emitKeypressEvents(process.stdin);
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    menu.onKeypress = (character, key) => {
+      if (this.approvalMenu !== menu) return;
+      const count = menu.options.length;
+      if (key.name === 'up' || character === 'k') {
+        menu.selected = (menu.selected + count - 1) % count;
+        menu.hasSelection = true;
+      } else if (key.name === 'down' || character === 'j') {
+        menu.selected = (menu.selected + 1) % count;
+        menu.hasSelection = true;
+      } else if (character !== undefined && /^[1-9]$/u.test(character)) {
+        const index = Number(character) - 1;
+        if (index < count) {
+          menu.selected = index;
+          menu.hasSelection = true;
+        }
+      } else if (key.name === 'return' || key.name === 'enter') {
+        if (!menu.hasSelection) {
+          // 默认不确认，避免审批期间输入的其他文字被误当作批准。
+          menu.hint = '请先按数字或 ↑/↓ 选择，再按回车确认。';
+          this.renderApprovalOptions();
+          return;
+        }
+        const option = menu.options[menu.selected]!;
+        if (option.choice === 'always-tool') this.sessionApprovals.remember(pending.call.toolName);
+        const decision = option.choice === 'deny-once' ? 'deny' : 'approve';
+        const note = option.choice === 'always-tool'
+          ? `已在本会话始终批准 ${pending.call.toolName}`
+          : option.choice === 'approve-once' ? '已批准本次' : '已拒绝本次';
+        pending.finish(decision, note);
+        return;
+      } else if (key.name === 'escape') {
+        pending.finish('deny', '已拒绝本次');
+        return;
+      } else if (key.ctrl && key.name === 'c') {
+        pending.finish('deny', '已拒绝本次');
+        this.cancelRequest();
+        return;
+      } else if (key.ctrl && key.name === 'd') {
+        // 原始模式下 Ctrl+D 不再产生 EOF，显式关闭输入以拒绝后续待审批调用。
+        this.input.close();
+        return;
+      } else {
+        // 未识别的按键不改变选择，也不重绘，避免审批期间输入的文字变成批准。
+        return;
+      }
+      this.renderApprovalOptions();
+    };
+    process.stdin.on('keypress', menu.onKeypress);
+    process.stdout.write(this.approvalPromptText(pending.number, pending.call, ''));
+    this.renderApprovalOptions();
   }
-  let tailWidth = 0;
-  let tailStart = characters.length;
-  while (tailStart > 0 && tailWidth + widths[tailStart - 1]! <= Math.floor((columns - 1) / 2)) tailWidth += widths[--tailStart]!;
-  let headWidth = 0;
-  let headEnd = 0;
-  const headLimit = columns - 1 - tailWidth;
-  while (headEnd < tailStart && headWidth + widths[headEnd]! <= headLimit) headWidth += widths[headEnd++]!;
-  return `${characters.slice(0, headEnd).join('')}…${characters.slice(tailStart).join('')}`;
-}
 
-function characterWidth(character: string): number {
-  return /\p{Mark}/u.test(character) ? 0 : /[\u1100-\u115f\u2e80-\uA4cf\uAC00-\uD7a3\uF900-\uFAFF\uFE10-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6\u{1f300}-\u{1faff}]/u.test(character) ? 2 : 1;
+  private renderApprovalOptions(): void {
+    const menu = this.approvalMenu;
+    if (!menu) return;
+    const columns = Math.max(20, process.stdout.columns || 80);
+    if (menu.renderedLines > 0) process.stdout.write('\x1b[1A\x1b[2K'.repeat(menu.renderedLines));
+    const lines = menu.options.map((option, index) => {
+      const pointer = index === menu.selected ? '❯' : ' ';
+      return fitText(`${pointer} ${index + 1}. ${option.label}`, columns - 1);
+    });
+    lines.push(fitText(menu.hint || '使用 ↑/↓ 或数字键选择，回车确认，Esc 拒绝本次。', columns - 1));
+    process.stdout.write(`${lines.join('\n')}\n`);
+    menu.renderedLines = lines.length;
+  }
+
+  private closeApprovalMenu(note: string | undefined): void {
+    const menu = this.approvalMenu;
+    if (!menu) return;
+    process.stdin.off('keypress', menu.onKeypress);
+    try { process.stdin.setRawMode(menu.wasRaw); } catch { /* 输入已关闭时无法恢复模式。 */ }
+    this.approvalMenu = undefined;
+    const columns = Math.max(20, process.stdout.columns || 80);
+    const rendered = menu.renderedLines;
+    if (rendered > 0) process.stdout.write('\x1b[1A\x1b[2K'.repeat(rendered));
+    process.stdout.write(`${fitText(`→ ${note ?? '已处理'}`, columns - 1)}\n\x1b[0J`);
+  }
+
+  private approvalPromptText(number: number, call: ToolApprovalRequest, suffix: string): string {
+    const pending = this.approvals.size > 1 ? `；还有 ${this.approvals.size - 1} 项待审批` : '';
+    const details = [
+      call.details?.target ? `实际文件目标：${call.details.target}` : '',
+      call.details?.cwd ? `实际工作目录：${call.details.cwd}` : '',
+      call.details?.searchAsk ? `需审批的搜索范围：${call.details.searchAsk}` : '',
+      call.details?.sandboxExecution ? `沙箱执行模式：${call.details.sandboxExecution}` : '',
+      call.details?.sandboxBypass ? `豁免申请：${call.details.sandboxBypass}` : '',
+      call.details?.sandboxNotice ? `沙箱状态：${call.details.sandboxNotice}` : '',
+      call.hookPermission?.reason ? `Hook 审批说明：${call.hookPermission.reason}` : '',
+    ].filter(Boolean).map((line) => `${line}\n`).join('');
+    return `\n[人工审批 ${number}] ${call.toolName}（调用 ${call.callId}；最多等待 ${this.humanTimeoutMs}ms${pending}）\n${JSON.stringify(call.input, null, 2)}\n${details}${suffix}`;
+  }
 }

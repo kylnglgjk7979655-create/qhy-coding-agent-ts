@@ -183,8 +183,9 @@ describe('interactive compiled CLI', () => {
     const result = await cliProcess.done;
 
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain('[工具] read_file：开始');
-    expect(result.stdout).toContain('[工具] read_file：成功');
+    expect(result.stdout).toContain('● read_file(');
+    expect(result.stdout).toContain('· 运行中');
+    expect(result.stdout).toContain('· 成功');
     expect(result.stdout).toContain('终端显示已精简。');
     expectDebugEventsHidden(result.stdout);
     expect(result.stderr).toBe('');
@@ -217,7 +218,7 @@ describe('interactive compiled CLI', () => {
     cliProcess.send('请写入文件\n');
     await approvalVisible;
     expect(cliProcess.child.stdin.writable).toBe(true);
-    cliProcess.send('approve 1\n');
+    cliProcess.send('1\r');
     await replyVisible;
     const result = await cliProcess.done;
 
@@ -225,9 +226,9 @@ describe('interactive compiled CLI', () => {
     expect(result.stdout).toContain('[人工审批 1] write_file');
     expect(result.stdout).toContain('"path": "approved.txt"');
     expect(result.stdout).toContain('"content": "approved-content"');
-    expect(result.stdout).toContain('批准请输入 approve 1，拒绝请输入 deny 1');
-    expect(result.stdout).toContain('[工具] write_file：开始');
-    expect(result.stdout).toContain('[工具] write_file：成功');
+    expect(result.stdout).toContain('本会话始终批准 write_file');
+    expect(result.stdout).toContain('● write_file(');
+    expect(result.stdout).toContain('· 成功');
     expect(result.stdout).toContain('人工审批后已完成。');
     expectDebugEventsHidden(result.stdout);
     expect(result.stderr).toBe('');

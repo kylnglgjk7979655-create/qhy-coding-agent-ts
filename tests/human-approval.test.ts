@@ -23,6 +23,9 @@ afterEach(async () => {
 function write(id: string, path = 'note.txt'): FixtureToolCall {
   return { id, type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path, content: `内容-${id}` }) } };
 }
+function bash(id: string, command: string): FixtureToolCall {
+  return { id, type: 'function', function: { name: 'Bash', arguments: JSON.stringify({ command }) } };
+}
 async function setup(respond: Parameters<typeof startLocalOpenAIModel>[0], extra = {}) {
   cwd = await tempDir('qhy-human-approval-');
   fixture = await startLocalOpenAIModel(respond, () => { throw new Error('人工模式不得请求模型审批'); });
@@ -87,19 +90,19 @@ it.skipIf(process.platform === 'win32')('人工审批 Bash 展示完整参数与
   const running = run();
   await running.waitFor('> ');
   running.child.stdin.write('执行命令\n');
-  await running.waitFor('approve 1');
+  await running.waitFor('[人工审批 1]');
   expect(running.output()).toContain(command);
   expect(running.output()).toContain('"cwd": "alias"');
   expect(running.output()).toContain(`实际工作目录：${await realpath(join(cwd, 'nested'))}`);
   // 人工等待 2500ms 超过 2000ms 整轮预算；等待期间预算暂停，因此整轮仍能完成。
   await new Promise((resolve) => setTimeout(resolve, 2500));
-  expect(running.output()).not.toContain('Bash：开始');
+  expect(running.output()).not.toMatch(/● Bash\(.*· 运行中/u);
   await expect(readFile(join(cwd, 'nested/approved.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
-  running.child.stdin.write('approve 1\n');
-  await running.waitFor('approve 2');
+  running.child.stdin.write('1\r');
+  await running.waitFor('[人工审批 2]');
   expect(await readFile(join(cwd, 'nested/approved.txt'), 'utf8')).toBe('approved');
   expect(running.output()).toContain(`实际工作目录：${await realpath(cwd)}`);
-  running.child.stdin.write('deny 2\n');
+  running.child.stdin.write('2\r');
   await running.waitFor('Bash 审批完成');
   running.child.stdin.end('/exit\n');
   const result = await running.done;
@@ -119,11 +122,11 @@ it.skipIf(process.platform === 'win32' || process.platform === 'darwin')('沙箱
   const running = run();
   await running.waitFor('> ');
   running.child.stdin.write('执行命令\n');
-  await running.waitFor('approve 1');
+  await running.waitFor('[人工审批 1]');
   expect(running.output()).toContain('沙箱状态：');
   expect(running.output()).toContain('未隔离');
   await expect(readFile(join(cwd, 'marker.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
-  running.child.stdin.write('approve 1\n');
+  running.child.stdin.write('1\r');
   await running.waitFor('沙箱不可用路径完成');
   running.child.stdin.end('/exit\n');
   const result = await running.done;
@@ -142,10 +145,10 @@ it.skipIf(process.platform === 'win32')('人工审批工作区外 Bash cwd 展�
   const running = run();
   await running.waitFor('> ');
   running.child.stdin.write('执行命令\n');
-  await running.waitFor('approve 1');
+  await running.waitFor('[人工审批 1]');
   expect(running.output()).toContain(`实际工作目录：${await realpath(outside)}`);
   await expect(readFile(join(outside, 'external.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
-  running.child.stdin.write('approve 1\n');
+  running.child.stdin.write('1\r');
   await running.waitFor('外部目录命令完成');
   running.child.stdin.end('/exit\n');
   const result = await running.done;
@@ -167,7 +170,7 @@ it.skipIf(process.platform === 'win32')('人工批准后写入工作区外目标
     expect(running.output()).toContain('"path": "outside-link/approved.txt"');
     expect(running.output()).toContain(`实际文件目标：${target}`);
     await expect(readFile(target, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-    running.child.stdin.write('approve 1\n');
+    running.child.stdin.write('1\r');
     await running.waitFor('外部写入完成。');
     running.child.stdin.end('/exit\n');
 
@@ -193,11 +196,13 @@ it.skipIf(process.platform === 'win32')('并发人工审批按各自编号独立
   const running = run();
   await running.waitFor('> ');
   running.child.stdin.write('读取两个文件\n');
-  await running.waitFor('approve 1');
-  await running.waitFor('approve 2');
-
-  running.child.stdin.write('approve 2\n');
-  running.child.stdin.write('approve 1\n');
+  await running.waitFor('[人工审批 1]');
+  await running.waitFor('1. 批准本次');
+  // 并发调用按排队顺序逐项显示菜单，批复一项后出现下一项。
+  running.child.stdin.write('1\r');
+  await running.waitFor('[人工审批 2]');
+  await running.waitFor('1. 批准本次');
+  running.child.stdin.write('1\r');
   await running.waitFor('两项读取均已批准');
   running.child.stdin.end('/exit\n');
 
@@ -222,28 +227,75 @@ it('非交互管道直接拒绝人工审批，后续需求不被当作答复且�
   await expect(readFile(join(cwd, 'note.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
-it.skipIf(process.platform === 'win32')('人工逐次展示完整参数，只有当前编号答复有效，拒绝后继续同批调用', async () => {
+it('非交互管道可用文本协议批准人工调用', async () => {
+  await setup((_request, index) => index === 1 ? { calls: [write('text-approve')] } : { content: '文本审批完成' });
+  const running = run(false);
+  running.child.stdin.write('请求写入\n');
+  await running.waitFor('approve 1');
+  expect(running.output()).toContain('批准请输入 approve 1，拒绝请输入 deny 1');
+  running.child.stdin.write('approve 1\n');
+  await running.waitFor('文本审批完成');
+  running.child.stdin.end('/exit\n');
+  const result = await running.done;
+  expect(result.code, result.stderr).toBe(0);
+  expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('内容-text-approve');
+});
+
+it.skipIf(process.platform === 'win32')('本会话始终批准仅跳过当前工具的默认审批并保持 ask/deny 规则', async () => {
+  await setup((_request, index) => {
+    if (index === 1) return { calls: [bash('bash-first', 'printf first > first.txt')] };
+    if (index === 2) return { calls: [bash('bash-second', 'printf second > second.txt')] };
+    if (index === 3) return { calls: [write('session-write')] };
+    return { content: '会话批准完成' };
+  }, { timeoutMs: 5000, approval: { mode: 'default', humanTimeoutMs: 5000 } });
+  const running = run();
+  await running.waitFor('> ');
+  running.child.stdin.write('执行两步命令\n');
+  await running.waitFor('[人工审批 1]');
+  await running.waitFor('本会话始终批准 Bash');
+  running.child.stdin.write('3\r');
+  // 第二次 Bash 属于同一工具的默认审批，直接跳过菜单。
+  await running.waitFor('已在本会话获准，跳过默认审批。');
+  await running.waitFor('[人工审批 2]');
+  await running.waitFor('2. 拒绝本次');
+  expect(running.output()).toContain('[人工审批 2] write_file');
+  expect(running.output()).not.toContain('[人工审批 2] Bash');
+  running.child.stdin.write('2\r');
+  await running.waitFor('会话批准完成');
+  running.child.stdin.end('/exit\n');
+  const result = await running.done;
+  expect(result.code, result.stdout + result.stderr).toBe(0);
+  expect(await readFile(join(cwd, 'first.txt'), 'utf8')).toBe('first');
+  expect(await readFile(join(cwd, 'second.txt'), 'utf8')).toBe('second');
+  // 会话批准没有扩展到 write_file。
+  await expect(readFile(join(cwd, 'note.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it.skipIf(process.platform === 'win32')('人工逐次展示完整参数，菜单只确认显式选择，拒绝后继续同批调用', async () => {
   await setup((_request, index) => index === 1 ? { calls: [write('first'), write('second', 'other.txt'),
     { id: 'read', type: 'function', function: { name: 'read_file', arguments: '{"path":"note.txt"}' } },
   ] } : { content: '本轮完成' });
   const running = run();
   await running.waitFor('> ');
   running.child.stdin.write('开始写入\n');
-  await running.waitFor('approve 1');
+  await running.waitFor('[人工审批 1]');
   expect(running.output()).toContain('write_file');
   expect(running.output()).toContain('内容-first');
   expect(running.output()).toContain('note.txt');
-  expect(running.output()).not.toContain('write_file：开始');
+  await running.waitFor('本会话始终批准 write_file');
+  expect(running.output()).not.toMatch(/● write_file\(.*· 运行中/u);
   await expect(readFile(join(cwd, 'note.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-  running.child.stdin.write('下一条用户需求\n');
-  await running.waitFor('答复无效');
-  expect(running.output()).not.toContain('write_file：开始');
-  running.child.stdin.write('approve 1\n');
-  await running.waitFor('approve 2');
+  running.child.stdin.write('下一条用户需求\r');
+  await running.waitFor('请先按数字或 ↑/↓ 选择');
+  expect(running.output()).not.toMatch(/● write_file\(.*· 运行中/u);
+  running.child.stdin.write('1\r');
+  await running.waitFor('[人工审批 2]');
+  await running.waitFor('2. 拒绝本次');
   expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('内容-first');
-  running.child.stdin.write('approve 1\n'); // 迟到答复不能批准另一次调用。
-  await running.waitFor('答复无效，请输入 approve 2 或 deny 2');
-  running.child.stdin.write('deny 2\n');
+  // 没有显式选择时回车不会批准当前调用。
+  running.child.stdin.write('\r');
+  await running.waitFor('请先按数字或 ↑/↓ 选择，再按回车确认');
+  running.child.stdin.write('2\r');
   await running.waitFor('本轮完成');
   running.child.stdin.end('/exit\n');
   const result = await running.done;
@@ -268,12 +320,11 @@ it.skipIf(process.platform === 'win32')('人工等待超时只拒绝当前调用
   const running = run();
   await running.waitFor('> ');
   running.child.stdin.write('超时审批\n');
-  await running.waitFor('approve 2');
-  expect(running.output()).toContain('write_file：拒绝');
-  expect(running.output()).not.toContain('write_file：开始');
-  running.child.stdin.write('approve 1\n');
-  await running.waitFor('答复无效，请输入 approve 2');
-  running.child.stdin.write('approve 2\n');
+  await running.waitFor('[人工审批 2]');
+  await running.waitFor('1. 批准本次');
+  expect(running.output()).toMatch(/● write_file\(.*· 拒绝/u);
+  expect(running.output()).not.toMatch(/● write_file\(expired.*· 运行中/u);
+  running.child.stdin.write('1\r');
   await running.waitFor('超时后完成');
   running.child.stdin.end('/exit\n');
   const result = await running.done;
@@ -291,14 +342,14 @@ it.skipIf(process.platform === 'win32')('审批中关闭终端输入会直接拒
   const running = run();
   await running.waitFor('> ');
   running.child.stdin.write('输入关闭\n');
-  await running.waitFor('approve 1');
-  // 真实终端空行上的 Ctrl+D 触发 readline 的输入关闭。
+  await running.waitFor('[人工审批 1]');
+  // 原始键盘模式下显式处理 Ctrl+D，关闭输入并拒绝当前和后续待审批调用。
   running.child.stdin.write('\x04');
   await running.waitFor('关闭后完成');
   running.child.stdin.end();
   expect((await running.done).code, running.output()).toBe(0);
   expect(results().map(({ content }) => JSON.parse(content).is_error)).toEqual([true, true]);
-  expect(running.output()).not.toContain('write_file：开始');
+  expect(running.output()).not.toMatch(/● write_file\(.*· 运行中/u);
 });
 
 it.skipIf(process.platform === 'win32').each(['Ctrl+C', 'SIGTERM'] as const)('人工等待可被 %s 立即取消，不启动当前或后续操作且不保存', async (stop) => {
@@ -306,7 +357,7 @@ it.skipIf(process.platform === 'win32').each(['Ctrl+C', 'SIGTERM'] as const)('�
   const running = run();
   await running.waitFor('> ');
   running.child.stdin.write('取消审批\n');
-  await running.waitFor('approve 1');
+  await running.waitFor('[人工审批 1]');
   if (stop === 'Ctrl+C') {
     running.child.stdin.write('\x03');
     // macOS 的 BSD script 不会把 PTY 的 EOF 转给子进程，取消后需要显式关闭输入。
@@ -319,7 +370,7 @@ it.skipIf(process.platform === 'win32').each(['Ctrl+C', 'SIGTERM'] as const)('�
   const result = await running.done;
   expect(result.code, running.output()).toBe(stop === 'Ctrl+C' ? 0 : 130);
   expect(running.output()).toContain(stop === 'Ctrl+C' ? 'Interrupt by user' : 'CANCELLED');
-  expect(running.output()).not.toContain('：开始');
+  expect(running.output()).not.toMatch(/· 运行中/u);
   expect(fixture.requests).toHaveLength(1);
   await expect(readFile(join(cwd, 'note.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   await expect(readFile(join(cwd, '.agent/conversations/human.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
@@ -335,9 +386,9 @@ it.skipIf(process.platform === 'win32')('多次人工等待不会重置此前模
   await running.waitFor('> ');
   running.child.stdin.write('累计预算\n');
   for (const number of [1, 2]) {
-    await running.waitFor(`approve ${number}`);
+    await running.waitFor(`[人工审批 ${number}]`);
     await new Promise((resolve) => setTimeout(resolve, 400));
-    running.child.stdin.write(`approve ${number}\n`);
+    running.child.stdin.write('1\r');
   }
   await running.waitFor('TIMEOUT');
   expect(running.output()).not.toContain('不应完成');
@@ -362,13 +413,13 @@ it.skipIf(process.platform === 'win32')('人工思考跨过整轮截止时间仍
   const running = run();
   await running.waitFor('> ');
   running.child.stdin.write('两次批准\n');
-  await running.waitFor('approve 1');
+  await running.waitFor('[人工审批 1]');
   await new Promise((resolve) => setTimeout(resolve, 650));
   expect(running.output()).not.toContain('TIMEOUT');
-  running.child.stdin.write('approve 1\n');
-  await running.waitFor('approve 2');
+  running.child.stdin.write('1\r');
+  await running.waitFor('[人工审批 2]');
   await new Promise((resolve) => setTimeout(resolve, 650));
-  running.child.stdin.write('approve 2\n');
+  running.child.stdin.write('1\r');
   await running.waitFor('等待后完成');
   running.child.stdin.end('/exit\n');
   expect((await running.done).code).toBe(0);
@@ -387,15 +438,16 @@ it.skipIf(process.platform === 'win32')('默认人工等待上限为五分钟，
   const running = run();
   await running.waitFor('> ');
   running.child.stdin.write('检查策略\n');
-  await running.waitFor('approve 1');
+  await running.waitFor('[人工审批 1]');
   expect(running.output()).toContain('最多等待 300000ms');
   expect(running.output()).toContain('[人工审批 1] read_file');
   // 审批提示与工具事件异步输出，等待拒绝事件后再检查，仍未答复人工审批。
-  await running.waitFor('runtimeInfo：拒绝');
-  expect(running.output()).toContain('runtimeInfo：拒绝');
-  expect(running.output()).not.toContain('runtimeInfo：开始');
+  await running.waitFor('runtimeInfo · 拒绝');
+  expect(running.output()).toContain('runtimeInfo · 拒绝');
+  expect(running.output()).not.toMatch(/● runtimeInfo · 运行中/u);
   expect(await readFile(join(cwd, 'note.txt'), 'utf8')).toBe('内容-allowed');
-  running.child.stdin.write('deny 1\n');
+  await running.waitFor('2. 拒绝本次');
+  running.child.stdin.write('2\r');
   await running.waitFor('策略完成');
   running.child.stdin.end('/exit\n');
   expect((await running.done).code).toBe(0);
@@ -431,13 +483,13 @@ it.skipIf(process.platform === 'win32').each(['整轮超时', 'SIGTERM'] as cons
     try {
       await running.waitFor('> ');
       running.child.stdin.write('人工等待后运行命令\n');
-      await running.waitFor('approve 1');
+      await running.waitFor('[人工审批 1]');
       await new Promise((resolve) => setTimeout(resolve, 1200));
       expect(running.output()).not.toContain('TIMEOUT');
-      expect(running.output()).not.toContain('Bash：开始');
+      expect(running.output()).not.toMatch(/● Bash\(.*· 运行中/u);
       expect(await readFile(join(cwd, 'kept.txt'), 'utf8')).toBe('内容-kept');
       await expect(readFile(join(cwd, 'shell.pid'))).rejects.toMatchObject({ code: 'ENOENT' });
-      running.child.stdin.write('approve 1\n');
+      running.child.stdin.write('1\r');
       await expect.poll(async () => Number(await readFile(join(cwd, 'child.pid'), 'utf8').catch(() => '0')), { timeout: 2000 }).toBeGreaterThan(0);
       shellPid = Number(await readFile(join(cwd, 'shell.pid'), 'utf8'));
       workerPid = Number(await readFile(join(cwd, 'child.pid'), 'utf8'));
@@ -478,11 +530,11 @@ it.skipIf(process.platform === 'win32')('人工审批展示沙箱执行模式，
   const running = run();
   await running.waitFor('> ');
   running.child.stdin.write('执行命令\n');
-  await running.waitFor('approve 1');
+  await running.waitFor('[人工审批 1]');
   expect(running.output()).toContain('沙箱执行模式：沙箱外执行');
   expect(running.output()).toContain('豁免申请：已忽略（沙箱未启用）');
   await expect(readFile(join(cwd, 'marker.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
-  running.child.stdin.write('approve 1\n');
+  running.child.stdin.write('1\r');
   await running.waitFor('沙箱关闭路径完成');
   running.child.stdin.end('/exit\n');
   const result = await running.done;
@@ -499,12 +551,12 @@ it.skipIf(process.platform !== 'darwin')('人工审批展示豁免申请未获�
   const running = run();
   await running.waitFor('> ');
   running.child.stdin.write('执行命令\n');
-  await running.waitFor('approve 1');
+  await running.waitFor('[人工审批 1]');
   expect(running.output()).toContain('沙箱执行模式：沙箱内执行');
   expect(running.output()).toContain('豁免申请：未获准');
   expect(running.output()).toContain('沙箱状态：');
   expect(running.output()).toContain('豁免未获准');
-  running.child.stdin.write('deny 1\n');
+  running.child.stdin.write('2\r');
   await running.waitFor('豁免未获准路径完成');
   running.child.stdin.end('/exit\n');
   const result = await running.done;

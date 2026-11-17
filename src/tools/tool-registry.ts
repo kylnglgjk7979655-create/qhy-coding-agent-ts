@@ -44,6 +44,8 @@ export interface ToolApprovalRequest {
   toolName: string;
   input: unknown;
   details?: Record<string, string>;
+  /** default 为工具默认审批，explicit 为显式 ask 或范围规则；会话批准只跳过 default。 */
+  approvalKind?: 'default' | 'explicit';
   /** Hook 的 allow/ask 结论与理由；deny 不会进入审批。 */
   hookPermission?: { decision: 'allow' | 'ask'; reason?: string };
 }

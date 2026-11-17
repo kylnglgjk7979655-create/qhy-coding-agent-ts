@@ -324,8 +324,8 @@ it.skipIf(process.platform === 'win32')('ask 强制人工审批并展示 Hook �
   await waitForOutput(() => output, '> ');
   child.send('执行写入\n');
   await waitForOutput(() => output, 'Hook 审批说明：需要人工确认');
-  await waitForOutput(() => output, 'approve 1');
-  child.send('approve 1\n');
+  await waitForOutput(() => output, '1. 批准本次');
+  child.send('1\r');
   await waitForOutput(() => output, '人工审批完成');
   child.end('/exit\n');
 

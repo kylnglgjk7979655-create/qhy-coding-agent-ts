@@ -124,24 +124,25 @@ describe('审批模式命令', () => {
     const running = runInteractive();
     await running.waitFor('> ');
     running.send('第一次写入\n');
-    await running.waitFor('approve 1');
-    expect(running.output()).not.toContain('write_file：开始');
+    await running.waitFor('[人工审批 1]');
+    await running.waitFor('1. 批准本次');
+    expect(running.output()).not.toMatch(/● write_file\(.*· 运行中/u);
 
     running.send('/permission-mode auto\n');
     await running.waitFor('当前审批模式：auto（模型审批）');
     // 等待中的审批仍按人工模式完成；切换不会替它批准。
-    expect(running.output()).toContain('approve 1');
+    expect(running.output()).toContain('[人工审批 1]');
     expect(fixture!.approvalRequests).toHaveLength(0);
     expect(await readFile(join(cwd, 'first.txt'), 'utf8').catch(() => '')).toBe('');
 
-    running.send('approve 1\n');
+    running.send('1\r');
     await running.waitFor('完成两处写入');
     running.end('/exit\n');
     const result = await running.done;
 
     expect(result.code, result.stdout + result.stderr).toBe(0);
     // 同一轮中切换之后进入审批的第二次写入改由模型审批，不再出现人工审批 2。
-    expect(running.output()).not.toContain('approve 2');
+    expect(running.output()).not.toContain('[人工审批 2]');
     expect(fixture!.approvalRequests).toHaveLength(1);
     expect(JSON.parse(fixture!.approvalRequests[0]!.messages.at(-1)!.content)).toMatchObject({
       toolName: 'write_file', input: { path: 'second.txt' },
@@ -181,13 +182,14 @@ describe('审批模式命令', () => {
     releaseReview();
 
     // 之后进入审批的第二次写入改用人工审批，编号从 1 开始。
-    await running.waitFor('approve 1');
+    await running.waitFor('[人工审批 1]');
+    await running.waitFor('1. 批准本次');
     expect(running.output()).not.toContain('[人工审批 2]');
     expect(fixture!.approvalRequests).toHaveLength(1);
     await expect(readFile(join(cwd, 'pending.txt'), 'utf8')).resolves.toBe('内容-pending');
     expect(await readFile(join(cwd, 'after.txt'), 'utf8').catch(() => '')).toBe('');
 
-    running.send('approve 1\n');
+    running.send('1\r');
     await running.waitFor('完成两处写入');
     running.end('/exit\n');
     const result = await running.done;
@@ -215,14 +217,15 @@ describe('审批模式命令', () => {
     const second = runInteractive(['--conversation-id', 'restarted']);
     await second.waitFor('> ');
     second.send('再次写入\n');
-    await second.waitFor('approve 1');
-    second.send('approve 1\n');
+    await second.waitFor('[人工审批 1]');
+    await second.waitFor('1. 批准本次');
+    second.send('1\r');
     await second.waitFor('写入完成');
     second.end('/exit\n');
     const result = await second.done;
     expect(result.code, result.stdout + result.stderr).toBe(0);
     // 新进程恢复同一会话后重新从 settings 取得 default，必须人工审批。
-    expect(second.output()).toContain('approve 1');
+    expect(second.output()).toContain('[人工审批 1]');
     expect(await readFile(join(cwd, 'note-resumed.txt'), 'utf8')).toBe('内容-resumed');
     expect(await settingsMode()).toBe('default');
   });
