@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ResolvedConfig } from '../../services/settings/config.js';
+import type { ApprovalMode, ResolvedConfig } from '../../services/settings/config.js';
 import { runAgent } from '../../query/agent.js';
 import { runExplore } from '../../query/explore.js';
 import { ToolExecutionError } from '../tool-registry.js';
@@ -34,18 +34,24 @@ function subagentTracing(
   return { span, scope: childScope(tracing, span) };
 }
 
-export function registerAgentTool(
-  registry: ToolRegistry,
-  config: ResolvedConfig,
-  approvalControl?: ApprovalControl,
-  backgroundTasks?: BackgroundAgentTasks,
+export interface AgentToolContext {
+  config: ResolvedConfig;
+  approvalControl?: ApprovalControl;
+  /** CLI 人工审批控制；子 Agent 仅在当前模式为 default 时使用。 */
+  humanApprovalControl?: ApprovalControl;
+  approvalMode?: () => ApprovalMode;
+  backgroundTasks?: BackgroundAgentTasks;
   fileWriteCallbacks: {
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;
-  } = {},
-  skills?: SkillCatalogue,
-  tracing?: TracingScope,
-): void {
+  };
+  skills?: SkillCatalogue;
+  /** 当前运行的跟踪 scope；子 Agent 工具据此创建独立 span。 */
+  tracing?: TracingScope;
+}
+
+export function registerAgentTool(registry: ToolRegistry, context: AgentToolContext): void {
+  const { config, approvalControl, humanApprovalControl, approvalMode, backgroundTasks, fileWriteCallbacks, skills, tracing } = context;
   registry.register({
     name: 'agent',
     concurrency: 'parallel',
@@ -84,6 +90,8 @@ export function registerAgentTool(
             ...(fileWriteCallbacks.onBeforeWrite === undefined ? {} : { onBeforeWrite: fileWriteCallbacks.onBeforeWrite }),
             ...(fileWriteCallbacks.onCheckpointError === undefined ? {} : { onCheckpointError: fileWriteCallbacks.onCheckpointError }),
             ...(approvalControl === undefined ? {} : { approvalControl }),
+            ...(humanApprovalControl === undefined ? {} : { humanApprovalControl }),
+            ...(approvalMode === undefined ? {} : { approvalMode }),
             ...(model === undefined ? {} : { modelOverride: model }),
             ...(skills === undefined ? {} : { skills }),
             ...(scope === undefined ? {} : { tracing: scope }),
@@ -138,7 +146,15 @@ export function registerAgentTool(
         throw new ToolExecutionError(`未知子智能体类型“${subagent_type}”；可用类型：general-purpose、Explore。`, undefined);
       }
       try {
-        const report = await runExplore(config, description, prompt, model, execution.abortSignal, approvalControl, skills, scope);
+        const report = await runExplore(config, description, prompt, {
+          ...(model === undefined ? {} : { modelOverride: model }),
+          ...(execution.abortSignal === undefined ? {} : { signal: execution.abortSignal }),
+          ...(approvalControl === undefined ? {} : { approvalControl }),
+          ...(humanApprovalControl === undefined ? {} : { humanApprovalControl }),
+          ...(approvalMode === undefined ? {} : { approvalMode }),
+          ...(skills === undefined ? {} : { skills }),
+          ...(scope === undefined ? {} : { tracing: scope }),
+        });
         span?.end({ output: report, status: 'succeeded' });
         return { report };
       } catch (error) {

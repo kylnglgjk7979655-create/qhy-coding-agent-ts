@@ -127,7 +127,7 @@ describe('Explore 只读工具并发调度', () => {
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
     };
     const cancellation = new AbortController();
-    const run = runExplore(config, '批量搜索', '并行执行搜索', undefined, cancellation.signal);
+    const run = runExplore(config, '批量搜索', '并行执行搜索', { signal: cancellation.signal });
     const capacityReached = await Promise.race([
       firstTenStarted.then(() => true),
       new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1500)),
