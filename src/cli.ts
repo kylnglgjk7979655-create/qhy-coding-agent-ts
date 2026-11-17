@@ -43,7 +43,7 @@ import { AgentObservations } from './services/observability/agent-observations.j
 const help = `用法：node dist/cli.js [选项]
 
 启动后直接进入交互式对话，输入 /exit 结束。
-  /new                 在当前工作区新建会话
+  /new                 在当前工作区新建会话；交互终端下清屏
   /clear               新建会话（等同于 /new）
   /resume [ID]         继续会话；省略 ID 时用方向键选择，/resume all 查看全部
   /rewind              预览并确认恢复到消息级文件检查点
@@ -473,6 +473,9 @@ async function main(): Promise<void> {
         bindBackgroundNotifications(id);
         // /clear 等同新建对话，先完成 SessionStart(startup) 再接受下一条用户提交。
         history = await runSessionStart('startup', id);
+        // 新会话就绪后才清屏：中途失败时不抹掉用户窗口。同时清除滚动缓冲区，避免旧对话仍可回看；
+        // stdin/stdout 都是 TTY 才写控制序列，管道或重定向输出保持可解析。
+        if (process.stdin.isTTY && process.stdout.isTTY) process.stdout.write('\u001b[2J\u001b[3J\u001b[H');
         process.stdout.write(`已新建会话：${id}\n`);
       },
     });
