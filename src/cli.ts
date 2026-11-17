@@ -5,7 +5,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
-import { runAgent } from './query/agent.js';
+import { estimateContextUsage, runAgent } from './query/agent.js';
+import type { ContextUsageEstimate } from './query/agent.js';
 import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession, type BackgroundTaskStatusEntry } from './tools/AgentTool/background-agent-tasks.js';
 import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
 import type { ApprovalMode } from './services/settings/config.js';
@@ -32,6 +33,7 @@ const help = `用法：node dist/cli.js [选项]
   /resume [ID]         继续会话；省略 ID 时用方向键选择，/resume all 查看全部
   /rewind              预览并确认恢复到消息级文件检查点
   /compact             压缩当前有效历史并保存；空闲时立即生效，执行中在当前工具完成后生效
+  /context             显示当前有效历史的估算输入用量、配置容量与使用比例
   /permission-mode [模式]  查看或切换当前进程的审批模式（default / auto）
 
 选项：
@@ -58,6 +60,17 @@ function formatUserError(error: unknown): string {
   const failure = publicError(error);
   const code = isInteractiveTerminal() ? `（${failure.code}）` : '';
   return `错误${code}：${failure.message}`;
+}
+
+// 用量按发送前估算展示，不声称与服务端精确 token 计数一致；MCP 定义需连接远端才能发现，不计入。
+function formatContextUsage(usage: ContextUsageEstimate, config: Awaited<ReturnType<typeof loadConfig>>): string {
+  const tokens = (value: number): string => String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const lines = [
+    `上下文用量（估算）：约 ${tokens(usage.estimatedInputTokens)} / ${tokens(usage.capacityTokens)} tokens（${(usage.usageRatio * 100).toFixed(1)}%）`,
+    '估算包含系统提示、可用工具定义与当前有效历史，不等同于服务端精确 token 计数；命令不发起模型请求或修改历史。',
+  ];
+  if ((config.mcp?.servers.length ?? 0) > 0) lines.push('未连接远程 MCP 服务，配置的 MCP 工具定义未计入估算。');
+  return `${lines.join('\n')}\n`;
 }
 
 function reportCheckpointWarning(event: string, message: string, details: Record<string, unknown>): void {
@@ -187,7 +200,17 @@ async function main(): Promise<void> {
     }
 
     // 启动时注册一次 Skill；会话切换工作区后重新加载，本轮内来源文件变化不影响已注册内容。
-    let skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
+    const loadSkills = async (): Promise<SkillCatalogue> => {
+      const catalogue = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
+      // 诊断不中断启动，有效 Skill 仍按原规则注册；交互模式显示可读提示，
+      // 非交互模式沿用 stderr 的 JSON 事件流，避免破坏可逐行解析的运行日志。
+      for (const { path, reason } of catalogue.diagnostics) {
+        if (isInteractiveTerminal()) process.stderr.write(`Skill 提示：跳过 ${path}（${reason}）\n`);
+        else log({ event: 'skill.skipped', path, reason });
+      }
+      return catalogue;
+    };
+    let skills = await loadSkills();
 
     input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, executeApprovalModeCommand);
     const fileBaselinesBySession = new Map<string, Map<string, WorkspaceFileSnapshot>>();
@@ -224,7 +247,7 @@ async function main(): Promise<void> {
       config = resumed.config;
       conversationId = id;
       recentFiles.replace(resumed.recentFiles);
-      skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
+      skills = await loadSkills();
       bindBackgroundNotifications(id);
       process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
       return resumed;
@@ -269,6 +292,17 @@ async function main(): Promise<void> {
       aliases: [],
       type: 'local',
       execute: () => ({ exit: true }),
+    });
+    // 用量只读当前进程内的有效历史，不建立 MCP 连接、不发起模型请求，也不修改会话记录。
+    await commands.register({
+      name: '/context',
+      displayName: '上下文用量',
+      aliases: [],
+      type: 'local',
+      execute: async () => {
+        const usage = await estimateContextUsage(config, history, skills);
+        process.stdout.write(formatContextUsage(usage, config));
+      },
     });
     if (process.stdin.isTTY) input.prompt();
     // 执行中登记的请求由 Agent 在下次主模型请求前消费；空闲时从工作项进入手动压缩。
