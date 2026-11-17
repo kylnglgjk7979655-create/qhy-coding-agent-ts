@@ -334,7 +334,11 @@ it.each(['deadline', 'SIGINT'] as const)('发现期间遵守公共 %s 停止入�
   });
   const running = run();
   if (stop === 'SIGINT') {
-    await expect.poll(() => remote.requests.some(({ method }) => method === 'tools/list')).toBe(true);
+    // 全量并行时 CLI 子进程启动和 MCP 握手可能超过 Vitest 默认的 1s 轮询超时；放宽等待但仍限定上限。
+    await expect.poll(
+      () => remote.requests.some(({ method }) => method === 'tools/list'),
+      { timeout: 5000, interval: 20, message: '并行负载下等待 MCP tools/list 请求超时' },
+    ).toBe(true);
     running.child.kill('SIGINT');
   }
   const result = await running.done;
