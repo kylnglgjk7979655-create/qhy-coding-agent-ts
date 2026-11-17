@@ -57,7 +57,7 @@ const exploreConfigSchema = z.strictObject({
   loadRootAgents: z.boolean().default(false),
 });
 /** 网络搜索配置；凭据只引用环境变量，缺失时工具调用返回明确错误而不影响其他工具。 */
-const webSearchConfigSchema = z.strictObject({
+export const webSearchConfigSchema = z.strictObject({
   provider: z.literal('tavily').default('tavily'),
   apiKeyEnv: apiKeyEnvSchema.default('TAVILY_API_KEY'),
   baseURL: baseURLSchema.optional(),
@@ -374,17 +374,27 @@ export function isMissing(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT';
 }
 
-/**
- * Hook 配置不进入会话持久化与可记录配置：
- * 会话记录、运行日志和旧快照恢复共用这条裁剪路径，避免命令或命令里的凭据落入磁盘与日志。
- */
+/** Hook 配置不进入可记录配置：运行日志写入前剔除 Hook 字段，避免命令或命令里的凭据落入日志。 */
 export function withoutHookConfig<T extends object>(config: T): Omit<T, 'hooks' | 'disableAllHooks'> {
   const { hooks: _hooks, disableAllHooks: _disableAllHooks, ...rest } = config as T
     & { hooks?: unknown; disableAllHooks?: unknown };
   return rest;
 }
 
-/** 会话轮次保存的模型配置：剔除凭据、解析结果、迁移提示与 Hook 配置。 */
+/**
+ * 会话记录不保存 Hook 配置或运行时凭据：
+ * 写入新事件、读取旧记录与快照恢复共用这条裁剪路径，避免命令或凭据落入磁盘；
+ * 旧版本曾把 webSearchApiKey 写入记录，读取时需要一并剔除才能恢复这些会话。
+ */
+export function withoutSessionRuntimeConfig<T extends object>(
+  config: T,
+): Omit<T, 'hooks' | 'disableAllHooks' | 'webSearchApiKey'> {
+  const { hooks: _hooks, disableAllHooks: _disableAllHooks, webSearchApiKey: _webSearchApiKey, ...rest } = config as T
+    & { hooks?: unknown; disableAllHooks?: unknown; webSearchApiKey?: unknown };
+  return rest;
+}
+
+/** 会话轮次保存的模型配置：剔除凭据、解析结果、迁移提示、Hook 配置与网络搜索凭据。 */
 export function persistableSessionConfig(config: ResolvedConfig): ModelConfig {
   const {
     apiKey: _apiKey,
@@ -393,7 +403,7 @@ export function persistableSessionConfig(config: ResolvedConfig): ModelConfig {
     migrationWarnings: _migrationWarnings,
     ...rest
   } = config;
-  return withoutHookConfig(rest);
+  return withoutSessionRuntimeConfig(rest);
 }
 
 export function loggableConfig(config: ResolvedConfig): Omit<ModelConfig, 'approval'> {
