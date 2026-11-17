@@ -5,9 +5,12 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ModelMessage } from 'ai';
-import { runAgent } from './query/agent.js';
+import { estimateContextUsage, runAgent } from './query/agent.js';
+import type { ContextUsageEstimate } from './query/agent.js';
 import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession, type BackgroundTaskStatusEntry } from './tools/AgentTool/background-agent-tasks.js';
 import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, restoreSessionConfig } from './services/settings/config.js';
+import type { ApprovalMode } from './services/settings/config.js';
+import { approvalModeLabel, createApprovalModeState, parseApprovalModeCommand } from './tools/approval-mode.js';
 import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, saveManualCompaction, sessionRecordPath, sessionTaskOutputDirectory, startSessionRound } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
 import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './services/session/file-checkpoints.js';
@@ -21,6 +24,9 @@ import type { ApprovalControl } from './tools/tool-approval.js';
 import { acquireSessionLock } from './services/session/session-lock.js';
 import { generateSummary } from './services/compact/context-summary.js';
 import { RecentFileTracker } from './services/compact/recent-files.js';
+import { createLangfuseTracer } from './services/observability/langfuse.js';
+import type { LangfuseTracer, TraceHandle } from './services/observability/langfuse.js';
+import { AgentObservations } from './services/observability/agent-observations.js';
 
 const help = `用法：node dist/cli.js [选项]
 
@@ -30,10 +36,13 @@ const help = `用法：node dist/cli.js [选项]
   /resume [ID]         继续会话；省略 ID 时用方向键选择，/resume all 查看全部
   /rewind              预览并确认恢复到消息级文件检查点
   /compact             压缩当前有效历史并保存；空闲时立即生效，执行中在当前工具完成后生效
+  /context             显示当前有效历史的估算输入用量、配置容量与使用比例
+  /permission-mode [模式]  查看或切换当前进程的审批模式（default / auto）
 
 选项：
   --workspace <目录>  覆盖配置的工作区（相对当前目录）
   --conversation-id <ID>  继续指定会话（省略时新建会话）
+  --permission-mode <模式>  本次进程使用 default（人工审批）或 auto（模型审批）
   --smoke-tool        强制读取探针文件并验证模型使用结果
   --help              显示帮助
 
@@ -54,6 +63,17 @@ function formatUserError(error: unknown): string {
   const failure = publicError(error);
   const code = isInteractiveTerminal() ? `（${failure.code}）` : '';
   return `错误${code}：${failure.message}`;
+}
+
+// 用量按发送前估算展示，不声称与服务端精确 token 计数一致；MCP 定义需连接远端才能发现，不计入。
+function formatContextUsage(usage: ContextUsageEstimate, config: Awaited<ReturnType<typeof loadConfig>>): string {
+  const tokens = (value: number): string => String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const lines = [
+    `上下文用量（估算）：约 ${tokens(usage.estimatedInputTokens)} / ${tokens(usage.capacityTokens)} tokens（${(usage.usageRatio * 100).toFixed(1)}%）`,
+    '估算包含系统提示、可用工具定义与当前有效历史，不等同于服务端精确 token 计数；命令不发起模型请求或修改历史。',
+  ];
+  if ((config.mcp?.servers.length ?? 0) > 0) lines.push('未连接远程 MCP 服务，配置的 MCP 工具定义未计入估算。');
+  return `${lines.join('\n')}\n`;
 }
 
 function reportCheckpointWarning(event: string, message: string, details: Record<string, unknown>): void {
@@ -90,6 +110,10 @@ async function main(): Promise<void> {
     }
     if (args.positionals.length > 0) {
       throw new AgentError('CONFIG_ERROR', '交互模式不接受位置参数，请启动后在终端输入需求。');
+    }
+    const permissionMode = args.values['permission-mode'];
+    if (permissionMode !== undefined && permissionMode !== 'default' && permissionMode !== 'auto') {
+      throw new AgentError('CONFIG_ERROR', '--permission-mode 只接受 default 或 auto。运行 --help 查看用法。');
     }
     if (args.values['smoke-tool'] && args.values['conversation-id'] !== undefined) {
       throw new AgentError('CONFIG_ERROR', '--smoke-tool 不能与 --conversation-id 同时使用。');
@@ -139,6 +163,19 @@ async function main(): Promise<void> {
       }
     }
     if (session) releaseSession = await acquireSessionLock(userHome, conversationId);
+    // 审批模式是进程级运行状态：切会话不变，重启后重新取 settings；切换不写回配置或会话记录。
+    const approvalMode = createApprovalModeState(permissionMode ?? config.approval.mode);
+    const currentApprovalMode = (): ApprovalMode => approvalMode.current();
+    const executeApprovalModeCommand = (line: string): boolean => {
+      const command = parseApprovalModeCommand(line);
+      if (command === undefined) return false;
+      if (command.mode !== undefined) approvalMode.switchTo(command.mode);
+      if (command.invalid !== undefined) {
+        process.stdout.write(`\n未知审批模式“${command.invalid}”；可用模式：default、auto。\n`);
+      }
+      process.stdout.write(`当前审批模式：${approvalModeLabel(currentApprovalMode())}。\n`);
+      return true;
+    };
     // 最近读取文件记录跨进程续聊保留；进程内以该记录为准，轮次结束或压缩时持久化。
     const recentFiles = new RecentFileTracker(session?.recentFiles ?? []);
     const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
@@ -152,14 +189,33 @@ async function main(): Promise<void> {
     } else history = [];
     if (smokeTool) {
       activeRound = new AbortController();
-      await runTurn('smoke', config, undefined, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), true);
+      await runTurn({
+        prompt: 'smoke',
+        config,
+        history,
+        userHome,
+        conversationId,
+        signal: AbortSignal.any([cancellation.signal, activeRound.signal]),
+        smokeTool: true,
+        approvalMode: currentApprovalMode,
+      });
       return;
     }
 
     // 启动时注册一次 Skill；会话切换工作区后重新加载，本轮内来源文件变化不影响已注册内容。
-    let skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
+    const loadSkills = async (): Promise<SkillCatalogue> => {
+      const catalogue = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
+      // 诊断不中断启动，有效 Skill 仍按原规则注册；交互模式显示可读提示，
+      // 非交互模式沿用 stderr 的 JSON 事件流，避免破坏可逐行解析的运行日志。
+      for (const { path, reason } of catalogue.diagnostics) {
+        if (isInteractiveTerminal()) process.stderr.write(`Skill 提示：跳过 ${path}（${reason}）\n`);
+        else log({ event: 'skill.skipped', path, reason });
+      }
+      return catalogue;
+    };
+    let skills = await loadSkills();
 
-    input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS);
+    input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, executeApprovalModeCommand);
     const fileBaselinesBySession = new Map<string, Map<string, WorkspaceFileSnapshot>>();
     const fileBaselinesForSession = (id: string): Map<string, WorkspaceFileSnapshot> => {
       let baselines = fileBaselinesBySession.get(id);
@@ -194,7 +250,7 @@ async function main(): Promise<void> {
       config = resumed.config;
       conversationId = id;
       recentFiles.replace(resumed.recentFiles);
-      skills = await loadSkillCatalogue({ home: userHome, workspace: config.workspace });
+      skills = await loadSkills();
       bindBackgroundNotifications(id);
       process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
       return resumed;
@@ -240,6 +296,17 @@ async function main(): Promise<void> {
       type: 'local',
       execute: () => ({ exit: true }),
     });
+    // 用量只读当前进程内的有效历史，不建立 MCP 连接、不发起模型请求，也不修改会话记录。
+    await commands.register({
+      name: '/context',
+      displayName: '上下文用量',
+      aliases: [],
+      type: 'local',
+      execute: async () => {
+        const usage = await estimateContextUsage(config, history, skills);
+        process.stdout.write(formatContextUsage(usage, config));
+      },
+    });
     if (process.stdin.isTTY) input.prompt();
     // 执行中登记的请求由 Agent 在下次主模型请求前消费；空闲时从工作项进入手动压缩。
     const consumeCompactionRequest = (): boolean => input?.consumeCompactRequest() ?? false;
@@ -249,12 +316,14 @@ async function main(): Promise<void> {
       if (workItem.type === 'compact') {
         try {
           activeRound = new AbortController();
+          input.setBusy(true);
           history = await compactIdleHistory(config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), legacyDirectory, recentFiles, pendingTaskStatuses, skills);
         } catch (error) {
           if (cancellation.signal.aborted) throw error;
           if (publicError(error).code === 'CANCELLED') process.stdout.write('\n用户中断：Interrupt by user\n');
           else process.stdout.write(`\n${formatUserError(error)}\n`);
         } finally {
+          input.setBusy(false);
           activeRound = undefined;
         }
         if (process.stdin.isTTY) input.prompt();
@@ -270,7 +339,25 @@ async function main(): Promise<void> {
         ].join('\n');
         try {
           activeRound = new AbortController();
-          history = await runTurn(notificationPrompt, config, skills, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
+          input.setBusy(true);
+          history = await runTurn({
+            prompt: notificationPrompt,
+            config,
+            skills,
+            history,
+            userHome,
+            conversationId,
+            signal: AbortSignal.any([cancellation.signal, activeRound.signal]),
+            smokeTool: false,
+            humanApprovalControl: input.approve,
+            legacyDirectory,
+            recoveredRoundIds,
+            fileBaselines,
+            consumeCompactionRequest,
+            recentFiles,
+            getTaskStatuses: pendingTaskStatuses,
+            approvalMode: currentApprovalMode,
+          });
           const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
           history = recovered.history;
           recoveredRoundIds = recovered.recoveredRoundIds;
@@ -279,6 +366,7 @@ async function main(): Promise<void> {
           process.stdout.write(`\n${formatUserError(error)}\n`);
           await syncHistoryFromSession();
         } finally {
+          input.setBusy(false);
           activeRound = undefined;
         }
         if (process.stdin.isTTY) input.prompt();
@@ -419,8 +507,26 @@ async function main(): Promise<void> {
       }
       try {
         activeRound = new AbortController();
+        input.setBusy(true);
         const turnSignal = AbortSignal.any([cancellation.signal, activeRound.signal]);
-        history = await runTurn(prompt, config, skills, history, userHome, conversationId, turnSignal, false, input.approve, legacyDirectory, recoveredRoundIds, fileBaselines, consumeCompactionRequest, recentFiles, pendingTaskStatuses);
+        history = await runTurn({
+          prompt,
+          config,
+          skills,
+          history,
+          userHome,
+          conversationId,
+          signal: turnSignal,
+          smokeTool: false,
+          humanApprovalControl: input.approve,
+          legacyDirectory,
+          recoveredRoundIds,
+          fileBaselines,
+          consumeCompactionRequest,
+          recentFiles,
+          getTaskStatuses: pendingTaskStatuses,
+          approvalMode: currentApprovalMode,
+        });
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
@@ -430,6 +536,7 @@ async function main(): Promise<void> {
         process.stdout.write(`\n${formatUserError(failure)}\n`);
         await syncHistoryFromSession();
       } finally {
+        input.setBusy(false);
         activeRound = undefined;
       }
       if (process.stdin.isTTY) input.prompt();
@@ -479,7 +586,19 @@ async function compactIdleHistory(
   }
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new AgentError('TIMEOUT', `请求超过 ${config.timeoutMs}ms，已终止。`)), config.timeoutMs);
+  let langfuseTracer: LangfuseTracer | undefined;
+  let langfuseTrace: TraceHandle | undefined;
   try {
+    // 跟踪器构造失败也走正常错误路径，避免遗留未清理的执行时限定时器。
+    langfuseTracer = createLangfuseTracer({ config, env: process.env, sessionId: conversationId });
+    langfuseTrace = langfuseTracer?.startTrace({
+      name: 'conversation.compact',
+      metadata: { conversationId, model: config.model, messageCount: history.length },
+    });
+    const tracing = langfuseTracer === undefined || langfuseTrace === undefined
+      ? undefined
+      : { tracer: langfuseTracer, traceId: langfuseTrace.id };
+    const observations = new AgentObservations(tracing);
     // 空闲压缩与自动压缩共用 Skill 恢复路径，按会话记录中的最近加载顺序补回被摘要移除的正文。
     const current = await loadSession(userHome, conversationId);
     const restore = skills === undefined
@@ -489,41 +608,70 @@ async function compactIdleHistory(
         recentLoads: current.skillLoads ?? [],
         ...(current.skillBodies === undefined ? {} : { bodies: current.skillBodies }),
       };
-    const summary = await generateSummary(config, history, AbortSignal.any([signal, deadline.signal]), sessionRecordPath(userHome, conversationId), {
-      recentFiles: recentFiles.list(),
-      getTaskStatuses,
-      ...(restore === undefined ? {} : { restore }),
-    });
+    const summary = await observations.traceSummary(
+      history.length,
+      (childTracing) => generateSummary(config, history, AbortSignal.any([signal, deadline.signal]), sessionRecordPath(userHome, conversationId), {
+        recentFiles: recentFiles.list(),
+        getTaskStatuses,
+        ...(restore === undefined ? {} : { restore }),
+        ...(childTracing === undefined ? {} : { tracing: childTracing }),
+      }),
+      (result) => result.text,
+    );
     await saveManualCompaction(userHome, conversationId, {
       effectiveHistory: summary.compacted,
       summary: { text: summary.text, restoredMessages: summary.restoredMessages },
       recentFiles: recentFiles.list(),
     });
     if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, summary.compacted).catch(() => undefined);
+    langfuseTrace?.end({
+      output: summary.text,
+      status: 'succeeded',
+      metadata: { compactedMessages: summary.compacted.length, restoredMessages: summary.restoredMessages },
+    });
     process.stdout.write('已压缩当前会话历史。\n');
     return summary.compacted;
+  } catch (error) {
+    langfuseTrace?.end({
+      status: signal.aborted ? 'cancelled' : 'failed',
+      error: { message: error instanceof Error ? error.message : '手动压缩失败。' },
+    });
+    throw error;
   } finally {
     clearTimeout(timer);
+    // 上报在后台完成：Langfuse 不可达或超时不能延迟返回输入提示符。
+    void langfuseTracer?.flush();
   }
 }
 
-async function runTurn(
-  prompt: string,
-  config: Awaited<ReturnType<typeof loadConfig>>,
-  skills: SkillCatalogue | undefined,
-  history: ModelMessage[],
-  userHome: string,
-  conversationId: string,
-  signal: AbortSignal,
-  smokeTool: boolean,
-  approvalControl?: ApprovalControl,
-  legacyDirectory?: string,
-  recoveredRoundIds: string[] = [],
-  fileBaselines: Map<string, WorkspaceFileSnapshot> = new Map(),
-  consumeCompactionRequest?: () => boolean,
-  recentFiles: RecentFileTracker = new RecentFileTracker(),
-  getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[],
-): Promise<ModelMessage[]> {
+interface TurnOptions {
+  prompt: string;
+  config: Awaited<ReturnType<typeof loadConfig>>;
+  skills?: SkillCatalogue;
+  history: ModelMessage[];
+  userHome: string;
+  conversationId: string;
+  signal: AbortSignal;
+  smokeTool: boolean;
+  /** CLI 人工审批控制；仅在当前模式为 default 时使用。 */
+  humanApprovalControl?: ApprovalControl;
+  /** 当前进程的审批模式；每个工具调用进入审批前读取。 */
+  approvalMode?: () => ApprovalMode;
+  legacyDirectory?: string;
+  recoveredRoundIds?: string[];
+  fileBaselines?: Map<string, WorkspaceFileSnapshot>;
+  consumeCompactionRequest?: () => boolean;
+  recentFiles?: RecentFileTracker;
+  getTaskStatuses?: () => readonly BackgroundTaskStatusEntry[];
+}
+
+async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
+  const {
+    prompt, config, skills, history, userHome, conversationId, signal, smokeTool,
+    humanApprovalControl, approvalMode, legacyDirectory,
+    recoveredRoundIds = [], fileBaselines = new Map<string, WorkspaceFileSnapshot>(),
+    consumeCompactionRequest, recentFiles = new RecentFileTracker(), getTaskStatuses,
+  } = options;
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
   let summaryRestoredBase = 0;
@@ -531,6 +679,8 @@ async function runTurn(
   let skillBodies: Record<string, string> = {};
   let bashFailed = false;
   let manualCompaction = false;
+  let langfuseTracer: LangfuseTracer | undefined;
+  let langfuseTrace: TraceHandle | undefined;
   lastRunId = randomUUID();
   lastRunStartedAt = performance.now();
   log({
@@ -550,8 +700,25 @@ async function runTurn(
       recentSkillLoads = current.skillLoads ?? [];
       skillBodies = current.skillBodies ?? {};
     }
+    // 默认关闭时 tracer 为 undefined；启用后每轮是独立 trace，会话 ID 关联同一对话。
+    langfuseTracer = createLangfuseTracer({ config, env: process.env, sessionId: conversationId });
+    langfuseTrace = langfuseTracer?.startTrace({
+      name: 'agent.round',
+      input: prompt,
+      metadata: {
+        conversationId,
+        ...(roundId === undefined ? {} : { roundId }),
+        workspace: config.workspace,
+        model: config.model,
+        smokeTool,
+      },
+    });
+    const tracing = langfuseTracer === undefined || langfuseTrace === undefined
+      ? undefined
+      : { tracer: langfuseTracer, traceId: langfuseTrace.id };
     const result = await runAgent(config, prompt, {
       smokeTool,
+      ...(tracing === undefined ? {} : { tracing }),
       history,
       summaryCoverageBase,
       summaryRestoredBase,
@@ -626,7 +793,9 @@ async function runTurn(
         if (requested) manualCompaction = true;
         return requested;
       } } : {}),
-      ...(config.approval.mode === 'default' && approvalControl ? { approvalControl } : {}),
+      // 人工控制只在当前模式为 default 时生效；运行时切换后，后续调用由模型审批或人工审批接管。
+      ...(humanApprovalControl === undefined ? {} : { humanApprovalControl }),
+      ...(approvalMode === undefined ? {} : { approvalMode }),
     });
     signal.throwIfAborted();
     const nextHistory = smokeTool ? history : result.effectiveHistory;
@@ -640,6 +809,18 @@ async function runTurn(
       if (legacyDirectory) await saveLegacyConversation(legacyDirectory, conversationId, nextHistory).catch(() => undefined);
     }
     if (bashFailed) process.stdout.write('\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n');
+    langfuseTrace?.end({
+      output: result.text,
+      status: 'succeeded',
+      metadata: {
+        steps: result.steps,
+        toolCalls: result.toolCalls,
+        finishReason: result.finishReason,
+        toolSmokePassed: result.toolSmokePassed,
+      },
+    });
+    // 上报在后台完成：不延迟下一轮输入提示符；待发送请求由事件循环保持到结束。
+    void langfuseTracer?.flush();
     process.stdout.write('\n');
     log({
       event: 'run.finished', runId: lastRunId, status: 'succeeded',
@@ -658,6 +839,8 @@ async function runTurn(
         status: 'cancelled', error: { code: 'CANCELLED', message: 'Interrupt by user' }, recentFiles: recentFiles.list(),
       }).catch(() => undefined);
       process.stdout.write('\n用户中断：Interrupt by user\n');
+      langfuseTrace?.end({ status: 'cancelled', error: { code: 'CANCELLED', message: 'Interrupt by user' } });
+      void langfuseTracer?.flush();
       log({ event: 'run.finished', runId: lastRunId, status: 'cancelled', durationMs: Math.round(performance.now() - lastRunStartedAt), conversationId });
       return history;
     }
@@ -674,6 +857,11 @@ async function runTurn(
         error: { code: failure.code, message: failure.message }, conversationId,
       });
     }
+    langfuseTrace?.end({
+      status: failure.code === 'CANCELLED' ? 'cancelled' : 'failed',
+      error: { code: failure.code, message: failure.message },
+    });
+    void langfuseTracer?.flush();
     throw error;
   }
 }
@@ -683,6 +871,7 @@ function parseCliArgs() {
     options: {
       workspace: { type: 'string' },
       'conversation-id': { type: 'string' },
+      'permission-mode': { type: 'string' },
       'smoke-tool': { type: 'boolean' },
       help: { type: 'boolean' },
     },

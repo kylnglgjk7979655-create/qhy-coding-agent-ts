@@ -63,6 +63,14 @@ const webSearchConfigSchema = z.strictObject({
   maxResults: z.number().int().min(1).max(20).default(5),
 });
 
+/** Langfuse Cloud 可观测性；默认关闭，凭据只通过环境变量引用。 */
+const langfuseConfigSchema = z.strictObject({
+  enabled: z.boolean().default(false),
+  baseURL: baseURLSchema.default('https://cloud.langfuse.com'),
+  publicKeyEnv: apiKeyEnvSchema.default('LANGFUSE_PUBLIC_KEY'),
+  secretKeyEnv: apiKeyEnvSchema.default('LANGFUSE_SECRET_KEY'),
+});
+
 /** 沙箱内的路径、域名、环境变量与命令条目；空字符串没有可执行含义。 */
 const sandboxEntrySchema = z.string().trim().min(1);
 const sandboxConfigSchema = z.strictObject({
@@ -81,6 +89,10 @@ const sandboxConfigSchema = z.strictObject({
 
 export type SandboxConfig = z.infer<typeof sandboxConfigSchema>;
 export const DEFAULT_SANDBOX = sandboxConfigSchema.parse({});
+
+/** 审批模式：default 为人工审批，auto 为独立模型审批。 */
+export const APPROVAL_MODES = ['default', 'auto'] as const;
+export type ApprovalMode = (typeof APPROVAL_MODES)[number];
 
 /** 沙箱数组字段在三层 settings 中始终取并集，项目层不能借覆盖移除上层保护。 */
 const sandboxArrayKeys = [
@@ -109,6 +121,9 @@ export const configSchema = z.strictObject({
   maxSteps: z.number().int().min(1).max(100).default(20),
   explore: exploreConfigSchema.optional(),
   webSearch: webSearchConfigSchema.optional(),
+  observability: z.strictObject({
+    langfuse: langfuseConfigSchema.prefault({}),
+  }).prefault({}),
   context: contextSchema.optional(),
   mcp: z.strictObject({
     servers: z.array(mcpServerSchema).refine((servers) => new Set(servers.map(({ name }) => name)).size === servers.length, 'MCP 服务名称重复'),
@@ -120,7 +135,7 @@ export const configSchema = z.strictObject({
     timeoutMs: z.number().int().min(1).max(3_600_000).default(30_000),
   }).optional(),
   approval: z.strictObject({
-    mode: z.enum(['default', 'auto']).default('default'),
+    mode: z.enum(APPROVAL_MODES).default('default'),
     // 保留旧字段的严格解析，避免旧 settings 因迁移字段形状而破损；运行时不应用其中授权。
     rules: z.array(z.strictObject({
       toolName: z.string().trim().min(1),
@@ -144,8 +159,9 @@ type ParsedModelConfig = z.infer<typeof configSchema>;
  * 会话中保存的模型配置可能来自旧版本，permissions 允许缺省；
  * 从 settings 解析出的配置始终带有 permissions.sandbox 默认值。
  */
-export type ModelConfig = Omit<ParsedModelConfig, 'permissions'> & {
+export type ModelConfig = Omit<ParsedModelConfig, 'permissions' | 'observability'> & {
   permissions?: ParsedModelConfig['permissions'];
+  observability?: ParsedModelConfig['observability'];
 };
 export type ResolvedConfig = ModelConfig & {
   apiKey: string;
@@ -155,8 +171,11 @@ export type ResolvedConfig = ModelConfig & {
   webSearchApiKey?: string;
   migrationWarnings?: string[];
 };
-/** 从 settings 解析出的配置始终带 permissions 与沙箱默认值。 */
-export type LoadedConfig = ResolvedConfig & { permissions: ParsedModelConfig['permissions'] };
+/** 从 settings 解析出的配置始终带 permissions、沙箱与可观测性默认值。 */
+export type LoadedConfig = ResolvedConfig & {
+  permissions: ParsedModelConfig['permissions'];
+  observability: ParsedModelConfig['observability'];
+};
 
 interface ConfigOptions {
   cwd: string;
@@ -215,6 +234,13 @@ export async function loadConfig(options: ConfigOptions): Promise<LoadedConfig> 
   const reviewKeyEnv = config.approval.model?.apiKeyEnv;
   const approvalApiKey = reviewKeyEnv === undefined ? undefined : options.env[reviewKeyEnv]?.trim();
   if (reviewKeyEnv !== undefined && !approvalApiKey) throw new AgentError('CONFIG_ERROR', `缺少审批凭据：请设置环境变量 ${reviewKeyEnv}。`);
+  // 默认关闭时不读取 Langfuse 凭据；显式启用后缺少任一凭据都视为配置错误，不发起无认证请求。
+  const langfuse = config.observability.langfuse;
+  if (langfuse.enabled) {
+    for (const name of [langfuse.publicKeyEnv, langfuse.secretKeyEnv]) {
+      if (!options.env[name]?.trim()) throw new AgentError('CONFIG_ERROR', `缺少 Langfuse 凭据：请设置环境变量 ${name}。`);
+    }
+  }
   const mcpHeaders = resolveMcpHeaders(config, options.env);
   const webSearchKeyEnv = config.webSearch?.apiKeyEnv ?? 'TAVILY_API_KEY';
   const webSearchApiKey = options.env[webSearchKeyEnv]?.trim();
@@ -343,5 +369,6 @@ export function loggableConfig(config: ResolvedConfig): Omit<ModelConfig, 'appro
     timeoutMs: config.timeoutMs,
     maxSteps: config.maxSteps,
     ...(config.explore === undefined ? {} : { explore: config.explore }),
+    ...(config.observability === undefined ? {} : { observability: config.observability }),
   };
 }

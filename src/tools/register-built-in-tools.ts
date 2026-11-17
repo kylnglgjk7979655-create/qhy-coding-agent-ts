@@ -1,4 +1,4 @@
-import type { ResolvedConfig } from '../services/settings/config.js';
+import type { ApprovalMode, ResolvedConfig } from '../services/settings/config.js';
 import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from './workspace-files.js';
 import type { ToolRegistry } from './tool-registry.js';
 import { registerRuntimeInfoTool } from './RuntimeInfoTool/RuntimeInfoTool.js';
@@ -16,6 +16,7 @@ import { registerAgentTool } from './AgentTool/AgentTool.js';
 import type { ApprovalControl } from './tool-approval.js';
 import type { BackgroundAgentTasks } from './AgentTool/background-agent-tasks.js';
 import type { SkillCatalogue } from '../services/skills/skill-registry.js';
+import type { TracingScope } from '../services/observability/langfuse.js';
 
 export interface BuiltInToolContext {
   config: ResolvedConfig;
@@ -23,12 +24,18 @@ export interface BuiltInToolContext {
   allowAgent?: boolean;
   allowWorkspaceExternalRead?: boolean;
   approvalControl?: ApprovalControl;
+  /** CLI 人工审批控制；子 Agent 仅在当前模式为 default 时使用。 */
+  humanApprovalControl?: ApprovalControl;
+  /** 当前进程的审批模式，供子 Agent 与主 Agent 使用同一运行时状态。 */
+  approvalMode?: () => ApprovalMode;
   backgroundTasks?: BackgroundAgentTasks;
   fileBaselines?: WorkspaceFileBaselines;
 /** 成功读取工作区文件后回调规范目标路径，供会话记录最近读取顺序；失败读取不触发。 */
   onFileRead?: (target: string) => void;
   /** 主 Agent 与子 Agent 共享的 Skill 清单。 */
   skills?: SkillCatalogue;
+  /** 当前运行的跟踪 scope；子 Agent 工具据此创建独立 span。 */
+  tracing?: TracingScope;
   fileWriteCallbacks: {
     onBeforeWrite?: (snapshot: WorkspaceFileSnapshot) => Promise<void>;
     onCheckpointError?: (path: string) => void;
@@ -49,6 +56,6 @@ export function registerBuiltInTools(registry: ToolRegistry, context: BuiltInToo
   registerWebSearchTool(registry, context);
   registerBashTool(registry, context);
   if (context.allowAgent !== false) {
-    registerAgentTool(registry, context.config, context.approvalControl, context.backgroundTasks, context.fileWriteCallbacks, context.skills);
+    registerAgentTool(registry, context);
   }
 }

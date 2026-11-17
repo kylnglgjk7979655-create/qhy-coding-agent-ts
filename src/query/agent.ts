@@ -5,12 +5,14 @@ import { createOpenAI } from '@ai-sdk/openai';
 import { APICallError, InvalidToolInputError, isStepCount, NoSuchToolError, ToolChoiceViolationError, ToolLoopAgent, wrapLanguageModel } from 'ai';
 import type { ModelMessage } from 'ai';
 import { z } from 'zod';
-import type { ResolvedConfig } from '../services/settings/config.js';
+import type { ApprovalMode, ResolvedConfig } from '../services/settings/config.js';
 import { AgentError, publicError } from '../utils/errors.js';
+import { estimateInput, toolDefinitionsForEstimate } from '../utils/input-estimate.js';
 import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
 import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
 import type { ApprovalControl } from '../tools/tool-approval.js';
+import { resolveApproval } from '../tools/approval-mode.js';
 import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.js';
 import { registerBuiltInTools } from '../tools/register-built-in-tools.js';
 import { bashSandboxGuidance } from '../tools/BashTool/sandbox-guidance.js';
@@ -22,6 +24,8 @@ import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import type { SkillInjection } from '../services/skills/skill-injection.js';
 import type { ToolExecutionEvent } from '../tools/tool-registry.js';
 import type { BackgroundAgentTasks, BackgroundTaskStatusEntry } from '../tools/AgentTool/background-agent-tasks.js';
+import { AgentObservations } from '../services/observability/agent-observations.js';
+import type { TracingScope } from '../services/observability/langfuse.js';
 
 export type { ApprovalControl } from '../tools/tool-approval.js';
 export type { ToolApprovalRequest } from '../tools/tool-registry.js';
@@ -52,6 +56,67 @@ function modelStreamError(error: unknown): AgentError {
   return new AgentError('PROVIDER_ERROR', '模型响应流无效，已终止当前对话轮次。');
 }
 
+/** 主 Agent 的内置系统提示；/context 使用同一构造，保证估算口径与真实请求一致。 */
+function buildInstructions(config: ResolvedConfig, options: {
+  generalPurposeSubagent?: boolean;
+  skills?: SkillCatalogue;
+}): string {
+  return [
+    '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
+    '搜索文件路径时优先使用 Glob，搜索文件内容时优先使用 Grep；两者默认搜索整个工作区，也可限定子目录，遵循 .gitignore 并包含隐藏目录。旧的 glob、grep 名称仍可使用。',
+    '使用 Read 读取文件（file_path，可选 offset、limit）：工作区内默认允许，工作区外需要审批；使用 Write 创建或完整重写文件（file_path、content）；使用 Edit 在单个文件中把 old_string 替换为 new_string，编辑前需先读取目标文件，默认要求唯一匹配，replace_all: true 时替换全部匹配。Write 与 Edit 默认需要审批。',
+    'read_file、write_file 保留为兼容旧名称，参数分别为 path 与 path/content。Read、Write 权限规则按请求路径和实际目标执行。',
+    '可用 TodoWrite 记录本次任务的待办列表；调用会以完整列表替换旧状态，最多一个任务处于 in_progress。',
+    'WebFetch 只访问公开 HTTP/HTTPS 地址并拒绝本机、内网与云 metadata 地址；WebSearch 使用 Tavily，凭据从环境变量读取。两者默认需要独立审批。',
+    'Write、write_file、Edit、Bash、WebFetch、WebSearch 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
+    `Bash 可运行命令和项目测试，每次使用独立 shell。${bashSandboxGuidance(config.permissions?.sandbox ?? DEFAULT_SANDBOX)}`,
+    '工具结果中的 is_error: true 表示该调用失败；必须在答复中明确说明失败，不得声称操作成功或把失败调用的输出当成已验证结果。',
+    'runtimeInfo 可获取工作区路径和本次探针。',
+    '如公布了 mcp_ 前缀工具，可调用对应远程 MCP 服务；这些工具默认需要独立审批，调用可能产生远端副作用。',
+    '参数已知且彼此无依赖的工具调用尽量放在同一批；需要前序调用结果的工具调用应分批。',
+    ...(options.generalPurposeSubagent ? [
+      '你是 general-purpose 子 Agent，负责独立完成委派的研究或多步骤修改任务。',
+      '你不能再委派子 Agent。',
+    ] : []),
+    ...(options.skills === undefined || options.skills.skills.length === 0 ? [] : [
+      '可用 skill 工具按规范名称、显示名称或别名加载 Skill；工具结果只表示调用成功，正文由后续消息提供。',
+      options.skills.instructions,
+    ]),
+  ].join('\n');
+}
+
+/** 发送前估算结果；与主模型请求共用同一估算口径，不代表服务端精确 token 计数。 */
+export interface ContextUsageEstimate {
+  readonly estimatedInputTokens: number;
+  readonly capacityTokens: number;
+  readonly usageRatio: number;
+}
+
+/**
+ * 估算当前有效历史对应的输入占用，包含系统提示与可用内置工具定义。
+ * 仅在本进程内构造定义，不连接远程 MCP 服务，因此配置的 MCP 工具定义不计入。
+ */
+export async function estimateContextUsage(
+  config: ResolvedConfig,
+  history: readonly ModelMessage[],
+  skills?: SkillCatalogue,
+): Promise<ContextUsageEstimate> {
+  const registry = new ToolRegistry({});
+  registerBuiltInTools(registry, {
+    config,
+    probe: '',
+    allowAgent: true,
+    fileWriteCallbacks: {},
+    bashOperations: new Set(),
+    ...(skills === undefined ? {} : { skills }),
+  });
+  const tools = registry.tools();
+  const definitions = await toolDefinitionsForEstimate(tools);
+  const capacityTokens = (config.context ?? DEFAULT_CONTEXT).capacityTokens;
+  const estimatedInputTokens = estimateInput(buildInstructions(config, skills === undefined ? {} : { skills }), history, definitions);
+  return { estimatedInputTokens, capacityTokens, usageRatio: estimatedInputTokens / capacityTokens };
+}
+
 export async function runAgent(
   config: ResolvedConfig,
   prompt: string,
@@ -68,6 +133,10 @@ export async function runAgent(
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
+    /** CLI 人工审批控制；仅在当前模式为 default 时使用。 */
+    humanApprovalControl?: ApprovalControl;
+    /** 当前进程的审批模式；省略时沿用配置模式。每次工具调用进入审批前读取。 */
+    approvalMode?: () => ApprovalMode;
     /** 摘要成功后立即持久化压缩检查点；保存失败按停止本轮处理，不报告压缩成功。 */
     onCompaction?: (checkpoint: {
       effectiveHistory: ModelMessage[];
@@ -96,6 +165,8 @@ export async function runAgent(
     recentSkillLoads?: readonly string[];
     /** 先前成功加载的正文快照，避免同规范名记录在恢复时被重新解析为另一来源。 */
     skillBodies?: Readonly<Record<string, string>>;
+    /** 本轮 Langfuse 跟踪；子 Agent 的 scope 指向其 subagent span。 */
+    tracing?: TracingScope;
   },
 ): Promise<RunResult> {
   if (options.smokeTool && config.maxSteps < 2) {
@@ -143,13 +214,17 @@ export async function runAgent(
     activeSince = performance.now();
     timer = setTimeout(() => deadline.abort(), remainingMs);
   }
+  const observations = new AgentObservations(options.tracing);
   const registry = new ToolRegistry({
     ...(options.onToolEvent ? { onToolEvent: options.onToolEvent } : {}),
     ...(options.onToolCallStart ? { beforeTool: options.onToolCallStart } : {}),
     approve: async (call) => {
       signal.throwIfAborted();
+      // 每个调用进入审批前读取当前模式；切换前已开始的等待继续使用其原有路径。
+      const approval = resolveApproval(config, options.approvalMode, options.approvalControl, options.humanApprovalControl);
       try {
-        return await approveToolCall(config, call, signal, options.approvalControl, { pause: pauseDeadline, resume: resumeDeadline }, preparedHistory);
+        return await observations.traceApproval(call, (tracing) =>
+          approveToolCall(approval.config, call, signal, approval.control, { pause: pauseDeadline, resume: resumeDeadline }, preparedHistory, tracing));
       } catch (error) {
         if (!signal.aborted) {
           frameworkError = error instanceof AgentError ? error : new AgentError('APPROVAL_ERROR', '工具审批故障，已停止本轮。');
@@ -165,6 +240,8 @@ export async function runAgent(
     probe,
     allowAgent: !options.generalPurposeSubagent,
     ...(options.approvalControl === undefined ? {} : { approvalControl: options.approvalControl }),
+    ...(options.humanApprovalControl === undefined ? {} : { humanApprovalControl: options.humanApprovalControl }),
+    ...(options.approvalMode === undefined ? {} : { approvalMode: options.approvalMode }),
     ...(options.backgroundTasks === undefined ? {} : { backgroundTasks: options.backgroundTasks }),
     fileWriteCallbacks: {
       ...(options.onBeforeWrite === undefined ? {} : { onBeforeWrite: options.onBeforeWrite }),
@@ -174,6 +251,7 @@ export async function runAgent(
     bashOperations,
     ...(options.onFileRead ? { onFileRead: options.onFileRead } : {}),
     ...(options.skills === undefined ? {} : { skills: options.skills }),
+    ...(options.tracing === undefined ? {} : { tracing: options.tracing }),
   });
   let closeMCP: (() => Promise<void>) | undefined;
   try {
@@ -201,28 +279,7 @@ export async function runAgent(
         },
       },
     });
-    const instructions = [
-        '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
-        '搜索文件路径时优先使用 Glob，搜索文件内容时优先使用 Grep；两者默认搜索整个工作区，也可限定子目录，遵循 .gitignore 并包含隐藏目录。旧的 glob、grep 名称仍可使用。',
-        '使用 Read 读取文件（file_path，可选 offset、limit）：工作区内默认允许，工作区外需要审批；使用 Write 创建或完整重写文件（file_path、content）；使用 Edit 在单个文件中把 old_string 替换为 new_string，编辑前需先读取目标文件，默认要求唯一匹配，replace_all: true 时替换全部匹配。Write 与 Edit 默认需要审批。',
-        'read_file、write_file 保留为兼容旧名称，参数分别为 path 与 path/content。Read、Write 权限规则按请求路径和实际目标执行。',
-        '可用 TodoWrite 记录本次任务的待办列表；调用会以完整列表替换旧状态，最多一个任务处于 in_progress。',
-        'WebFetch 只访问公开 HTTP/HTTPS 地址并拒绝本机、内网与云 metadata 地址；WebSearch 使用 Tavily，凭据从环境变量读取。两者默认需要独立审批。',
-        'Write、write_file、Edit、Bash、WebFetch、WebSearch 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
-        `Bash 可运行命令和项目测试，每次使用独立 shell。${bashSandboxGuidance(config.permissions?.sandbox ?? DEFAULT_SANDBOX)}`,
-        '工具结果中的 is_error: true 表示该调用失败；必须在答复中明确说明失败，不得声称操作成功或把失败调用的输出当成已验证结果。',
-        'runtimeInfo 可获取工作区路径和本次探针。',
-        '如公布了 mcp_ 前缀工具，可调用对应远程 MCP 服务；这些工具默认需要独立审批，调用可能产生远端副作用。',
-        '参数已知且彼此无依赖的工具调用尽量放在同一批；需要前序调用结果的工具调用应分批。',
-        ...(options.generalPurposeSubagent ? [
-          '你是 general-purpose 子 Agent，负责独立完成委派的研究或多步骤修改任务。',
-          '你不能再委派子 Agent。',
-        ] : []),
-        ...(options.skills === undefined || options.skills.skills.length === 0 ? [] : [
-          '可用 skill 工具按规范名称、显示名称或别名加载 Skill；工具结果只表示调用成功，正文由后续消息提供。',
-          options.skills.instructions,
-        ]),
-    ].join('\n');
+    const instructions = buildInstructions(config, options);
     const tools = registry.tools();
     let preparedResponseCount = 0;
     const summaries: RunResult['summaries'] = [];
@@ -246,6 +303,13 @@ export async function runAgent(
         frameworkError ??= modelStreamError(error);
         frameworkAbort.abort(frameworkError);
       },
+      // 步骤在产生结果前失败时不会被 onLanguageModelCallEnd 覆盖，需显式结束对应 generation。
+      onStepError: ({ callId, error }) => observations.failModelCall(callId, error),
+      onAbort: () => observations.abortPending(),
+      onLanguageModelCallStart: (event) => observations.startModelCall(event),
+      onLanguageModelCallEnd: (event) => observations.endModelCall(event),
+      onToolExecutionStart: (event) => observations.startTool(event),
+      onToolExecutionEnd: (event) => observations.endTool(event),
       // Avoid automatic retries hiding auth failures or extending the deadline.
       maxRetries: 0,
       prepareStep: async ({ stepNumber, messages, responseMessages }) => {
@@ -297,6 +361,7 @@ export async function runAgent(
           ...(options.getRecentFiles ? { recentFiles: options.getRecentFiles() } : {}),
           ...(options.getTaskStatuses ? { getTaskStatuses: options.getTaskStatuses } : {}),
           ...(restore === undefined ? {} : { restore }),
+          ...(options.tracing === undefined ? {} : { tracing: options.tracing }),
         });
         preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;

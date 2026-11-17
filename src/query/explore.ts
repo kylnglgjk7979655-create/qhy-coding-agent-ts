@@ -1,7 +1,7 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import { isStepCount, ToolLoopAgent } from 'ai';
 import type { ModelMessage } from 'ai';
-import type { ResolvedConfig } from '../services/settings/config.js';
+import type { ApprovalMode, ResolvedConfig } from '../services/settings/config.js';
 import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
 import { registerFileReadTool } from '../tools/FileReadTool/FileReadTool.js';
 import { registerGlobTool } from '../tools/GlobTool/GlobTool.js';
@@ -14,6 +14,9 @@ import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.
 import { readWorkspaceFile } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
 import type { ApprovalControl } from '../tools/tool-approval.js';
+import { AgentObservations } from '../services/observability/agent-observations.js';
+import type { TracingScope } from '../services/observability/langfuse.js';
+import { resolveApproval } from '../tools/approval-mode.js';
 
 const exploreInstructions = [
   '你是只读 Explore 调查 Agent。使用独立的新对话，只调查用户指定的工作区问题。',
@@ -25,15 +28,25 @@ const exploreInstructions = [
   '不得把部分搜索、失败读取或尚未解决的问题描述为完整核实。最终报告说明结论、相关文件位置和所有重要调查限制。',
 ].join('\n');
 
+export interface ExploreOptions {
+  modelOverride?: string;
+  signal?: AbortSignal;
+  approvalControl?: ApprovalControl;
+  /** CLI 人工审批控制；仅在当前模式为 default 时使用。 */
+  humanApprovalControl?: ApprovalControl;
+  approvalMode?: () => ApprovalMode;
+  skills?: SkillCatalogue;
+  /** 本轮 Langfuse 跟踪；子 Agent 的 scope 指向其 subagent span。 */
+  tracing?: TracingScope;
+}
+
 export async function runExplore(
   config: ResolvedConfig,
   description: string,
   prompt: string,
-  modelOverride?: string,
-  signal?: AbortSignal,
-  approvalControl?: ApprovalControl,
-  skills?: SkillCatalogue,
+  options: ExploreOptions = {},
 ): Promise<string> {
+  const { modelOverride, signal, approvalControl, humanApprovalControl, approvalMode, skills, tracing } = options;
   signal?.throwIfAborted();
   const provider = createOpenAI({
     apiKey: config.apiKey,
@@ -44,8 +57,14 @@ export async function runExplore(
   // Explore 没有会话记录；只在本运行内记录已注入的 Skill 调用。
   const injectedSkillCalls = new Set<string>();
   const approvalSignal = signal ?? new AbortController().signal;
+  const observations = new AgentObservations(tracing);
   const registry = new ToolRegistry({
-    approve: (call) => approveToolCall(config, call, approvalSignal, approvalControl, undefined, approvalHistory),
+    approve: (call) => {
+      approvalSignal.throwIfAborted();
+      const approval = resolveApproval(config, approvalMode, approvalControl, humanApprovalControl);
+      return observations.traceApproval(call, (childTracing) =>
+        approveToolCall(approval.config, call, approvalSignal, approval.control, undefined, approvalHistory, childTracing));
+    },
   });
   const context: BuiltInToolContext = {
     config,
@@ -83,6 +102,12 @@ export async function runExplore(
     toolCallConcurrency: MAX_TOOL_CALL_CONCURRENCY,
     stopWhen: isStepCount(config.maxSteps),
     maxRetries: 0,
+    onStepError: ({ callId, error }) => observations.failModelCall(callId, error),
+    onAbort: () => observations.abortPending(),
+    onLanguageModelCallStart: (event) => observations.startModelCall(event),
+    onLanguageModelCallEnd: (event) => observations.endModelCall(event),
+    onToolExecutionStart: (event) => observations.startTool(event),
+    onToolExecutionEnd: (event) => observations.endTool(event),
     prepareStep: async ({ messages, responseMessages }) => {
       if (skills === undefined) {
         approvalHistory = [...messages];
