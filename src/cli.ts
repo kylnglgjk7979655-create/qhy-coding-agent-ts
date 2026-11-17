@@ -460,6 +460,8 @@ async function main(): Promise<void> {
       aliases: ['/new'],
       type: 'local',
       execute: async () => {
+        // 交互终端立即清屏并清除滚动缓冲区，否则新建会话后旧对话仍留在窗口里；非 TTY 不写控制序列。
+        if (process.stdout.isTTY) process.stdout.write('\u001b[2J\u001b[3J\u001b[H');
         const id = newConversationId();
         await createSession(userHome, { id, workspace: config.workspace, config: persistableSessionConfig(config) });
         const nextRelease = await acquireSessionLock(userHome, id);

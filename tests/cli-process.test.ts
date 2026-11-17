@@ -684,6 +684,31 @@ describe('compiled CLI process driver', () => {
     }
   });
 
+  it.skipIf(process.platform !== 'linux')('clears the interactive terminal when /clear starts a new session', async () => {
+    const cwd = await directory('clear-screen-cwd');
+    const userDir = await directory('clear-screen-user');
+    const model = await startLocalOpenAIModel(() => ({ content: '回答' }));
+    try {
+      await configure(cwd, model.baseURL);
+      let output = '';
+      const child = startCLI({ cwd, userDir, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
+      child.send('保留的原对话\n');
+      await waitForOutput(() => output, '回答', 1);
+      child.send('/clear\n');
+      await waitForOutput(() => output, '已新建会话：', 1);
+      expect(output).toContain('\u001b[2J');
+      // 清屏后窗口只保留新会话提示，旧对话不再可见。
+      const screen = output.slice(output.lastIndexOf('\u001b[2J'));
+      expect(screen).toContain('已新建会话：');
+      expect(screen).not.toContain('保留的原对话');
+      expect(screen).not.toContain('回答');
+      child.end('/exit\n');
+      expect((await child.done).code).toBe(0);
+    } finally {
+      await model.close();
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('resumes a session from another directory with its workspace and saved model configuration', async () => {
     const originalCwd = await directory('resume-original-cwd');
     const launchCwd = await directory('resume-launch-cwd');
