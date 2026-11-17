@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, chmod, mkdir, open, readFile, readdir, rename, rm, truncate, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, open, readFile, readdir, rename, rm, stat, truncate, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { ModelMessage } from 'ai';
 import type { ModelConfig } from '../settings/config.js';
 import { withoutSessionRuntimeConfig, webSearchConfigSchema } from '../settings/config.js';
@@ -146,6 +146,9 @@ export async function createSession(home: string, options: {
 }
 
 export async function loadSession(home: string, conversationId: string, options: SessionLoadOptions = {}): Promise<SessionRecord> {
+  // 只读场景（列目录、存在性检查）不重写历史；恢复会话时清洗旧版本留在磁盘上的凭据。
+  // 每次追加事件都全量扫描会放大写入成本，因此不在 commitSession 路径重复执行。
+  if (options.convertLegacy !== false) await scrubLegacySessionSecrets(home, conversationId);
   const state = await readSessionState(home, conversationId, options);
   // 旧快照/事件里的 hooks 与网络搜索凭据直接忽略；恢复对话时按当前 settings 重新加载。
   const record = pruneSessionConfig(state.record);
@@ -871,6 +874,128 @@ async function readSnapshot(home: string, conversationId: string, options: Sessi
   } catch {
     options.onWarning?.({ code: 'snapshot-ignored', message: '会话快照格式无效，已回退到完整 JSONL 记录。' });
     return undefined;
+  }
+}
+
+/** 旧版本曾把网络搜索凭据写入事件与快照；按字段名检测，只在命中时重写。 */
+const webSearchCredentialMarker = '"webSearchApiKey"';
+
+/**
+ * 清除旧版本留在磁盘上的会话凭据：读取路径已在内存中剔除字段，这里同步清洗事件日志与快照。
+ * 清洗是尽力而为的维护动作；无法完整解析或正在被追加的日志保持原样，下次加载时再试。
+ */
+async function scrubLegacySessionSecrets(home: string, conversationId: string): Promise<void> {
+  await scrubLegacyEventLog(home, conversationId);
+  await scrubLegacySnapshot(home, conversationId);
+}
+
+async function scrubLegacyEventLog(home: string, conversationId: string): Promise<void> {
+  const path = sessionEventsPath(home, conversationId);
+  let raw: string;
+  let before: Awaited<ReturnType<typeof stat>>;
+  try {
+    before = await stat(path);
+    raw = await readFile(path, 'utf8');
+  } catch {
+    // 只有旧 record.json 的会话没有事件日志；读取失败交给正常读取路径判定。
+    return;
+  }
+  if (!raw.includes(webSearchCredentialMarker)) return;
+  const trailingNewline = raw.endsWith('\n');
+  const lines = raw.split('\n');
+  if (trailingNewline) lines.pop();
+  // 崩溃留下的未完成尾行无法安全解析，保留原文；完整行仍可清洗，避免整份日志因尾部损坏继续残留凭据。
+  const incompleteTail = trailingNewline ? undefined : lines.pop();
+  const scrubbedLines: string[] = [];
+  let changed = false;
+  for (const line of lines) {
+    if (!line.trim()) {
+      scrubbedLines.push(line);
+      continue;
+    }
+    let stored: unknown;
+    try {
+      stored = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (!isStoredSessionEvent(stored)) return;
+    const scrubbed = scrubStoredEventSecrets(stored);
+    if (scrubbed === undefined) return;
+    const serialized = JSON.stringify(scrubbed);
+    if (serialized !== line) changed = true;
+    scrubbedLines.push(serialized);
+  }
+  if (!changed) return;
+  if (incompleteTail !== undefined) scrubbedLines.push(incompleteTail);
+  const next = `${scrubbedLines.join('\n')}${trailingNewline ? '\n' : ''}`;
+  const directory = dirname(path);
+  const temporaryPath = join(directory, `.events.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporaryPath, next, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    // 读取期间若有其他写入，放弃本次重写，避免覆盖新追加的事件。
+    const after = await stat(path);
+    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) return;
+    // 重写会移动后续事件的字节偏移；快照必须同时失效，恢复时从完整日志重建。
+    await rm(sessionSnapshotPath(home, conversationId), { force: true });
+    await rename(temporaryPath, path);
+  } catch {
+    // 清洗失败不影响会话恢复；明文会在下次加载时再次尝试清除。
+  } finally {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+}
+
+/** 按事件类型只清洗记录级与轮次级的会话配置，不改动消息正文。 */
+function scrubStoredEventSecrets(stored: StoredSessionEvent): StoredSessionEvent | undefined {
+  const data = stored.data;
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined;
+  const mutation = data as Record<string, unknown>;
+  switch (stored.type) {
+    case 'create':
+    case 'record': {
+      const record = mutation.record;
+      if (typeof record !== 'object' || record === null || Array.isArray(record)) return undefined;
+      return { ...stored, data: { ...mutation, record: pruneSessionConfig(record as SessionRecord) } };
+    }
+    case 'round-start':
+    case 'round-finish': {
+      const round = mutation.round;
+      if (typeof round !== 'object' || round === null || Array.isArray(round)) return undefined;
+      return { ...stored, data: { ...mutation, round: pruneRoundConfig(round as SessionRecord['rounds'][number]) } };
+    }
+    default:
+      return stored;
+  }
+}
+
+async function scrubLegacySnapshot(home: string, conversationId: string): Promise<void> {
+  const path = sessionSnapshotPath(home, conversationId);
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch {
+    return;
+  }
+  if (!raw.includes(webSearchCredentialMarker)) return;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  // 失效快照由正常读取路径回退到事件日志；这里只处理仍然合法的快照。
+  if (!isSessionSnapshot(value)) return;
+  const next = JSON.stringify({ ...value, record: pruneSessionConfig(value.record) });
+  if (next === raw) return;
+  const temporaryPath = join(dirname(path), `.snapshot.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporaryPath, next, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    await rename(temporaryPath, path);
+  } catch {
+    // 快照只是恢复缓存；清洗失败不影响会话恢复。
+  } finally {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
   }
 }
 

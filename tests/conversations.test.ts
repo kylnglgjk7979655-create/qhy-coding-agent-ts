@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createSession, loadSession, saveSession, sessionEventsPath, sessionSnapshotPath, startSessionRound, type SessionRecord } from '../src/services/session/conversations.js';
+import { createSession, finishSessionRound, loadSession, saveSession, sessionEventsPath, sessionSnapshotPath, startSessionRound, type SessionRecord } from '../src/services/session/conversations.js';
 import { readStoredSession, writeLegacySession } from './helpers/session-store.js';
 
 const webSearch = { provider: 'tavily' as const, apiKeyEnv: 'TAVILY_API_KEY', timeoutMs: 30_000, maxResults: 5 };
@@ -153,6 +153,85 @@ describe('user-level session storage', () => {
     expect(restarted.config.webSearch).toEqual(webSearch);
     expect(restarted.config).not.toHaveProperty('webSearchApiKey');
     expect(JSON.stringify(restarted)).not.toContain('legacy-secret');
+
+    // 读取路径同时清洗旧事件日志，明文凭据不能继续留在磁盘上。
+    const persisted = await readFile(path, 'utf8');
+    expect(persisted).not.toContain('legacy-secret');
+    expect(persisted).not.toContain('webSearchApiKey');
+    const [scrubbedLine] = persisted.split('\n');
+    expect(JSON.parse(scrubbedLine!)).toMatchObject({ seq: 1, type: 'create' });
+    expect((JSON.parse(scrubbedLine!) as { data: { record: { config: Record<string, unknown> } } })
+      .data.record.config.webSearch).toEqual(webSearch);
+  });
+
+  it('continues a scrubbed legacy session without persisting the former credential again', async () => {
+    const home = await makeUserDirectory();
+    const id = 'resumed-legacy-websearch-session';
+    await createSession(home, {
+      id, workspace: '/work/project',
+      config: {
+        provider: 'openai', model: 'fixture-model', apiKeyEnv: 'TEST_API_KEY', workspace: '/work/project',
+        timeoutMs: 60_000, maxSteps: 20, webSearch, approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
+      },
+    });
+    const path = sessionEventsPath(home, id);
+    const [line] = (await readFile(path, 'utf8')).split('\n');
+    const event = JSON.parse(line!) as { data: { record: { config: Record<string, unknown> } } };
+    event.data.record.config.webSearchApiKey = 'legacy-secret';
+    await writeFile(path, `${JSON.stringify(event)}\n`);
+
+    const restarted = await loadSession(home, id);
+    const roundId = await startSessionRound(home, id, '清洗后继续', restarted.config);
+    await finishSessionRound(home, id, roundId, {
+      status: 'succeeded',
+      response: [{ role: 'assistant', content: '继续成功' }],
+      effectiveHistory: [{ role: 'user', content: '清洗后继续' }, { role: 'assistant', content: '继续成功' }],
+    });
+
+    const persisted = await readFile(path, 'utf8');
+    expect(persisted).not.toContain('legacy-secret');
+    expect(persisted).not.toContain('webSearchApiKey');
+    const resumed = await loadSession(home, id);
+    expect(resumed.transcript).toContainEqual({ role: 'user', content: '清洗后继续' });
+    expect(resumed.config.webSearch).toEqual(webSearch);
+  });
+
+  it('scrubs the former WebSearch credential from legacy round events', async () => {
+    const home = await makeUserDirectory();
+    const id = 'legacy-round-websearch-session';
+    await createSession(home, {
+      id, workspace: '/work/project',
+      config: {
+        provider: 'openai', model: 'fixture-model', apiKeyEnv: 'TEST_API_KEY', workspace: '/work/project',
+        timeoutMs: 60_000, maxSteps: 20, webSearch, approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
+      },
+    });
+    const roundId = await startSessionRound(home, id, '旧轮次', {
+      provider: 'openai', model: 'fixture-model', apiKeyEnv: 'TEST_API_KEY', workspace: '/work/project',
+      timeoutMs: 60_000, maxSteps: 20, webSearch, approval: { mode: 'auto', rules: [], timeoutMs: 30_000 },
+    });
+    await finishSessionRound(home, id, roundId, {
+      status: 'succeeded',
+      response: [{ role: 'assistant', content: '旧答复' }],
+      effectiveHistory: [{ role: 'user', content: '旧轮次' }, { role: 'assistant', content: '旧答复' }],
+    });
+    // 旧版本的轮次配置同样可能带着凭据值；逐行注入，覆盖 round-start 与 round-finish。
+    const path = sessionEventsPath(home, id);
+    const lines = (await readFile(path, 'utf8')).split('\n');
+    const injected = lines.map((line) => {
+      if (!line) return line;
+      const event = JSON.parse(line) as { data?: { round?: { config?: Record<string, unknown> } } };
+      if (event.data?.round?.config) event.data.round.config.webSearchApiKey = 'legacy-secret';
+      return JSON.stringify(event);
+    });
+    await writeFile(path, `${injected.join('\n')}`);
+
+    const restarted = await loadSession(home, id);
+    const persisted = await readFile(path, 'utf8');
+    expect(persisted).not.toContain('legacy-secret');
+    expect(persisted).not.toContain('webSearchApiKey');
+    expect(restarted.rounds[0]?.config?.webSearch).toEqual(webSearch);
+    expect(restarted.transcript).toEqual([{ role: 'user', content: '旧轮次' }, { role: 'assistant', content: '旧答复' }]);
   });
 
   it('ignores the former WebSearch credential field stored in a session snapshot', async () => {
@@ -175,6 +254,10 @@ describe('user-level session storage', () => {
     expect(restarted.config.webSearch).toEqual(webSearch);
     expect(restarted.config).not.toHaveProperty('webSearchApiKey');
     expect(JSON.stringify(restarted)).not.toContain('legacy-secret');
+    // 快照重建/读取时同样清洗旧凭据字段，磁盘上的快照不再保留明文。
+    const snapshotRaw = await readFile(sessionSnapshotPath(home, id), 'utf8');
+    expect(snapshotRaw).not.toContain('legacy-secret');
+    expect(snapshotRaw).not.toContain('webSearchApiKey');
   });
 
   it('ignores the former WebSearch credential field in a legacy record file', async () => {
