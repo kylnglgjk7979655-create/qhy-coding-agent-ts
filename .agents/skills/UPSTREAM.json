@@ -43,7 +43,10 @@
     "qa/SKILL.md": "cd5541f320e3e074196dc3beca570e9c0dd2c92f75901ff99b10affd5270211f",
     "qa/agents/openai.yaml": "3bca121ec20ef2a07c53c47ca1324ebc8739305853809610609a0a9ba3790f7a",
     "qa/loop-state.md": "7c8b7ab4390e28c732cb7a53a80aab9709ffcba2572bc5b8ad91283dc40973d7",
-    "qa-only/permissions.md": "2f616a17f1f87290752d3fce97fb51a073e197d2436268f249f0056c666eeda5"
+    "qa-only/permissions.md": "2f616a17f1f87290752d3fce97fb51a073e197d2436268f249f0056c666eeda5",
+    "bug-review/SKILL.md": "84adbb8a2eda5813f4713a1f80ef0fa29c2d16958ced81e4c6f8936e0bfbe716",
+    "bug-review/CREDITS.md": "7632f88670040b114479c943b0f4388d8cca166445023977f3a283c747a3c775",
+    "bug-review/agents/openai.yaml": "3a8662773c90b19d2be9c711e2e4abc527a4a048df3181acc23e18ad50b57959"
   },
   "localSnapshots": {
     "implement-spec": {
@@ -66,6 +69,13 @@
     }
   },
   "projectSkills": {
+    "bug-review": {
+      "description": "项目自定义的 Bug 审查；两路独立发现候选，再由独立 Agent 逐项核验，只报告确认的问题。",
+      "references": [
+        "https://github.com/anthropics/claude-plugins-official/blob/e6143c9807a001832badb63e89d58ffe25d542ec/plugins/code-review/commands/code-review.md",
+        "https://github.com/mattpocock/skills/tree/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d"
+      ]
+    },
     "qa-only": {
       "description": "项目自定义的只读功能验收；逐条映射需求、校验 QA 预期，通过真实入口运行并记录版本与证据。",
       "references": [

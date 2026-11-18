@@ -5,6 +5,7 @@
 | Skill | 作用 | 来源 |
 | --- | --- | --- |
 | code-review | 规范、需求两个独立视角审查 | Matt 固定版本 |
+| bug-review | 固定 diff 的 Bug 审查：两路独立发现候选，逐项独立核验 | 项目自定义，改编自 Anthropic `code-review` 的 Bug 维度 |
 | qa-only | 根据 spec 生成 QA plan，实际运行并输出验收证据，只读报告 | 项目自定义，参考 Matt 与 gstack |
 | qa | QA 与修复循环：验收失败后批量修复并复验，全绿后一次 CR | 项目自定义 |
 | tdd | 通过公共接口测试行为，逐条 red→green | Matt 固定版本 |
