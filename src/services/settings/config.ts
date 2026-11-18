@@ -382,6 +382,16 @@ export function withoutHookConfig<T extends object>(config: T): Omit<T, 'hooks' 
 }
 
 /**
+ * 历史清洗只移除旧版本写入的网络搜索凭据。
+ * hooks 与 disableAllHooks 属于既有运行时配置，恢复时按当前 settings 重新加载，
+ * 不在历史清洗路径删除，避免超出声明范围的不可恢复数据删除。
+ */
+export function withoutWebSearchCredential<T extends object>(config: T): Omit<T, 'webSearchApiKey'> {
+  const { webSearchApiKey: _webSearchApiKey, ...rest } = config as T & { webSearchApiKey?: unknown };
+  return rest;
+}
+
+/**
  * 会话记录不保存 Hook 配置或运行时凭据：
  * 写入新事件、读取旧记录与快照恢复共用这条裁剪路径，避免命令或凭据落入磁盘；
  * 旧版本曾把 webSearchApiKey 写入记录，读取时需要一并剔除才能恢复这些会话。
