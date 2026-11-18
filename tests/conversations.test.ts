@@ -12,6 +12,31 @@ function withWebSearchCredential(record: SessionRecord): SessionRecord {
   return { ...record, config: { ...record.config, webSearchApiKey: 'legacy-secret' } as SessionRecord['config'] };
 }
 
+/** 旧版本事件 config 可能同时带凭据与运行时 Hook 字段；历史清洗只能移除其中的凭据。 */
+const legacyRuntimeConfigFields = {
+  webSearchApiKey: 'legacy-secret',
+  hooks: { Stop: [{ hooks: [{ type: 'command' as const, command: 'echo legacy-hook' }] }] },
+  disableAllHooks: true,
+  explore: { model: 'explore-model', loadRootAgents: true },
+  bash: { timeoutMs: 30_000 },
+};
+
+/** 按事件类型收集该事件携带的记录级与轮次级配置。 */
+function storedEventConfigs(event: { type: string; data: Record<string, unknown> }): Array<Record<string, unknown>> {
+  const { data } = event;
+  if (event.type === 'create' || event.type === 'record') {
+    const record = data.record as { config: Record<string, unknown>; rounds?: Array<{ config?: Record<string, unknown> }> };
+    return [record.config, ...(record.rounds ?? []).flatMap((round) => round.config ? [round.config] : [])];
+  }
+  if (event.type === 'round-start' || event.type === 'round-finish') {
+    return [(data.round as { config: Record<string, unknown> }).config];
+  }
+  if (event.type === 'compaction') {
+    return (data.rounds as Array<{ config: Record<string, unknown> }>).map((round) => round.config);
+  }
+  return [];
+}
+
 describe('user-level session storage', () => {
   let userDirectory: string | undefined;
 
@@ -278,6 +303,138 @@ describe('user-level session storage', () => {
     expect(persisted).not.toContain('legacy-secret');
     expect(persisted).not.toContain('webSearchApiKey');
     expect(restarted.rounds[0]?.config?.webSearch).toEqual(webSearch);
+  });
+
+  it('cleans only the legacy WebSearch credential from historical events and keeps other config fields', async () => {
+    const home = await makeUserDirectory();
+    const id = 'legacy-scrub-scope-session';
+    const config = {
+      provider: 'openai' as const,
+      model: 'fixture-model',
+      apiKeyEnv: 'TEST_API_KEY',
+      workspace: '/work/project',
+      timeoutMs: 60_000,
+      maxSteps: 20,
+      webSearch,
+      explore: { model: 'explore-model', loadRootAgents: true },
+      bash: { timeoutMs: 30_000 },
+      approval: { mode: 'auto' as const, rules: [], timeoutMs: 30_000 },
+    };
+    await createSession(home, { id, workspace: '/work/project', config });
+    const roundId = await startSessionRound(home, id, '旧轮次', config);
+    await finishSessionRound(home, id, roundId, {
+      status: 'succeeded',
+      response: [{ role: 'assistant', content: '旧答复' }],
+      effectiveHistory: [{ role: 'user', content: '旧轮次' }, { role: 'assistant', content: '旧答复' }],
+    });
+    await saveSession(home, await loadSession(home, id));
+    await saveManualCompaction(home, id, {
+      effectiveHistory: [{ role: 'user', content: '[对话摘要]' }],
+      summary: { text: '旧摘要' },
+    });
+    // 快照可能缓存旧配置；删除后由完整事件日志恢复，聚焦逐事件清洗。
+    await rm(sessionSnapshotPath(home, id), { force: true });
+
+    // 旧版本在 create/record 的记录级与轮次级配置、轮次事件与压缩事件中写入凭据和 Hook 字段。
+    const path = sessionEventsPath(home, id);
+    const lines = (await readFile(path, 'utf8')).split('\n').filter(Boolean);
+    const injected = lines.map((line) => {
+      const event = JSON.parse(line) as { type: string; data: Record<string, unknown> };
+      const inject = (config?: Record<string, unknown>) => {
+        if (config) Object.assign(config, legacyRuntimeConfigFields);
+      };
+      if (event.type === 'create' || event.type === 'record') {
+        const record = event.data.record as { config: Record<string, unknown>; rounds?: Array<{ config?: Record<string, unknown> }> };
+        inject(record.config);
+        record.rounds?.forEach((round) => inject(round.config));
+      } else if (event.type === 'round-start' || event.type === 'round-finish') {
+        inject((event.data.round as { config?: Record<string, unknown> }).config);
+      } else if (event.type === 'compaction') {
+        (event.data.rounds as Array<{ config?: Record<string, unknown> }>).forEach((round) => inject(round.config));
+      }
+      return JSON.stringify(event);
+    });
+    await writeFile(path, `${injected.join('\n')}\n`);
+
+    await loadSession(home, id);
+
+    const persistedRaw = await readFile(path, 'utf8');
+    expect(persistedRaw).not.toContain('legacy-secret');
+    expect(persistedRaw).not.toContain('webSearchApiKey');
+    const persisted = persistedRaw.split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as { type: string; data: Record<string, unknown> });
+    expect(persisted.map(({ type }) => type))
+      .toEqual(['create', 'round-start', 'round-finish', 'record', 'compaction']);
+    for (const event of persisted) {
+      for (const stored of storedEventConfigs(event)) {
+        // 历史清洗只移除凭据；hooks 等非凭据字段原样保留，不超出声明范围删除。
+        expect(stored).not.toHaveProperty('webSearchApiKey');
+        expect(stored.hooks).toEqual(legacyRuntimeConfigFields.hooks);
+        expect(stored.disableAllHooks).toBe(true);
+        expect(stored.explore).toEqual({ model: 'explore-model', loadRootAgents: true });
+        expect(stored.bash).toEqual({ timeoutMs: 30_000 });
+        expect(stored.webSearch).toEqual(webSearch);
+      }
+    }
+
+    // 读取路径仍按既有策略在内存中剔除 Hook 配置；其余字段随记录恢复。
+    const restarted = await loadSession(home, id);
+    expect(restarted.config).not.toHaveProperty('webSearchApiKey');
+    expect(restarted.config).not.toHaveProperty('hooks');
+    expect(restarted.config).not.toHaveProperty('disableAllHooks');
+    expect(restarted.config.explore).toEqual({ model: 'explore-model', loadRootAgents: true });
+    expect(restarted.config.bash).toEqual({ timeoutMs: 30_000 });
+    expect(restarted.transcript).toEqual([{ role: 'user', content: '旧轮次' }, { role: 'assistant', content: '旧答复' }]);
+  });
+
+  it('cleans only the legacy WebSearch credential from a session snapshot and keeps other config fields', async () => {
+    const home = await makeUserDirectory();
+    const id = 'snapshot-scrub-scope-session';
+    const config = {
+      provider: 'openai' as const,
+      model: 'fixture-model',
+      apiKeyEnv: 'TEST_API_KEY',
+      workspace: '/work/project',
+      timeoutMs: 60_000,
+      maxSteps: 20,
+      webSearch,
+      explore: { model: 'explore-model', loadRootAgents: true },
+      bash: { timeoutMs: 30_000 },
+      approval: { mode: 'auto' as const, rules: [], timeoutMs: 30_000 },
+    };
+    await createSession(home, { id, workspace: '/work/project', config });
+    const roundId = await startSessionRound(home, id, '旧轮次', config);
+    const record = await loadSession(home, id);
+    record.config = { ...record.config, ...legacyRuntimeConfigFields } as SessionRecord['config'];
+    record.rounds = record.rounds.map((round) => round.id === roundId && round.config
+      ? { ...round, config: { ...round.config, ...legacyRuntimeConfigFields } as SessionRecord['config'] }
+      : round);
+    const events = await readFile(sessionEventsPath(home, id));
+    await writeFile(sessionSnapshotPath(home, id), JSON.stringify({
+      v: 1, id, eventSeq: 2, byteOffset: events.byteLength, record,
+    }));
+
+    const restarted = await loadSession(home, id);
+
+    const snapshotRaw = await readFile(sessionSnapshotPath(home, id), 'utf8');
+    expect(snapshotRaw).not.toContain('legacy-secret');
+    expect(snapshotRaw).not.toContain('webSearchApiKey');
+    const snapshot = JSON.parse(snapshotRaw) as {
+      record: { config: Record<string, unknown>; rounds: Array<{ config: Record<string, unknown> }> };
+    };
+    expect(snapshot.record.config.hooks).toEqual(legacyRuntimeConfigFields.hooks);
+    expect(snapshot.record.config.disableAllHooks).toBe(true);
+    expect(snapshot.record.config.explore).toEqual({ model: 'explore-model', loadRootAgents: true });
+    expect(snapshot.record.config.bash).toEqual({ timeoutMs: 30_000 });
+    expect(snapshot.record.rounds[0]?.config.hooks).toEqual(legacyRuntimeConfigFields.hooks);
+    expect(snapshot.record.rounds[0]?.config.disableAllHooks).toBe(true);
+
+    expect(restarted.config).not.toHaveProperty('webSearchApiKey');
+    expect(restarted.config).not.toHaveProperty('hooks');
+    expect(restarted.config).not.toHaveProperty('disableAllHooks');
+    expect(restarted.config.explore).toEqual({ model: 'explore-model', loadRootAgents: true });
+    expect(restarted.config.bash).toEqual({ timeoutMs: 30_000 });
+    expect(restarted.rounds[0]?.config).not.toHaveProperty('hooks');
   });
 
   it('preserves untouched lines and crashed tails when scrubbing a legacy event log', async () => {

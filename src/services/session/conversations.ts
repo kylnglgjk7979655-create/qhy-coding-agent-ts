@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { ModelMessage } from 'ai';
 import type { ModelConfig } from '../settings/config.js';
-import { withoutSessionRuntimeConfig, webSearchConfigSchema } from '../settings/config.js';
+import { withoutSessionRuntimeConfig, withoutWebSearchCredential, webSearchConfigSchema } from '../settings/config.js';
 import { AgentError } from '../../utils/errors.js';
 import { appendRecentSkillLoads } from '../skills/skill-injection.js';
 import { snapshotWorkspaceFile } from '../../tools/workspace-files.js';
@@ -955,7 +955,24 @@ async function scrubLegacyEventLog(home: string, conversationId: string): Promis
   }
 }
 
-/** 按事件类型只清洗记录级与轮次级的会话配置，不改动消息正文。 */
+/** 历史清洗只移除旧版本写入的网络搜索凭据；hooks 等既有配置字段按原样保留。 */
+function scrubSessionConfig(record: SessionRecord): SessionRecord {
+  const config = typeof record.config === 'object' && record.config !== null
+    ? withoutWebSearchCredential(record.config)
+    : record.config;
+  const rounds = Array.isArray(record.rounds)
+    ? record.rounds.map(scrubRoundConfig)
+    : record.rounds;
+  return { ...record, config, rounds };
+}
+
+function scrubRoundConfig(round: SessionRecord['rounds'][number]): SessionRecord['rounds'][number] {
+  return typeof round?.config === 'object' && round.config !== null
+    ? { ...round, config: withoutWebSearchCredential(round.config) }
+    : round;
+}
+
+/** 按事件类型只清洗记录级与轮次级配置中的凭据，不改动消息正文。 */
 function scrubStoredEventSecrets(stored: StoredSessionEvent): StoredSessionEvent | undefined {
   const data = stored.data;
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined;
@@ -965,19 +982,19 @@ function scrubStoredEventSecrets(stored: StoredSessionEvent): StoredSessionEvent
     case 'record': {
       const record = mutation.record;
       if (typeof record !== 'object' || record === null || Array.isArray(record)) return undefined;
-      return { ...stored, data: { ...mutation, record: pruneSessionConfig(record as SessionRecord) } };
+      return { ...stored, data: { ...mutation, record: scrubSessionConfig(record as SessionRecord) } };
     }
     case 'round-start':
     case 'round-finish': {
       const round = mutation.round;
       if (typeof round !== 'object' || round === null || Array.isArray(round)) return undefined;
-      return { ...stored, data: { ...mutation, round: pruneRoundConfig(round as SessionRecord['rounds'][number]) } };
+      return { ...stored, data: { ...mutation, round: scrubRoundConfig(round as SessionRecord['rounds'][number]) } };
     }
     case 'compaction': {
       // 压缩事件携带完整轮次数组，旧版本可能在其中残留凭据。
       const rounds = mutation.rounds;
       if (!Array.isArray(rounds)) return undefined;
-      return { ...stored, data: { ...mutation, rounds: rounds.map((round) => pruneRoundConfig(round as SessionRecord['rounds'][number])) } };
+      return { ...stored, data: { ...mutation, rounds: rounds.map((round) => scrubRoundConfig(round as SessionRecord['rounds'][number])) } };
     }
     default:
       return stored;
@@ -1014,7 +1031,7 @@ async function scrubLegacySnapshot(home: string, conversationId: string): Promis
   }
   // 失效快照由正常读取路径回退到事件日志；这里只处理仍然合法的快照。
   if (!isSessionSnapshot(value)) return;
-  const next = JSON.stringify({ ...value, record: pruneSessionConfig(value.record) });
+  const next = JSON.stringify({ ...value, record: scrubSessionConfig(value.record) });
   if (next === raw) return;
   const temporaryPath = join(dirname(path), `.snapshot.${randomUUID()}.tmp`);
   try {
