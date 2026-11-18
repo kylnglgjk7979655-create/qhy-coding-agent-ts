@@ -1,0 +1,3 @@
+interface:
+  display_name: "Bug Review"
+  short_description: "并行发现明确 Bug，逐项独立核验后报告"
