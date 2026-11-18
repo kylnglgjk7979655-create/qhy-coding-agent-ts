@@ -1,0 +1,4273 @@
+{
+  "environment": {
+    "platform": "darwin",
+    "node": "/Users/qhy/Library/pnpm/nodejs/24.22.2/bin/node",
+    "cli": "/Users/qhy/.t3/worktrees/qhy-coding-agent-ts/t3-542f3413-846ae0899b11af2c/dist/cli.js",
+    "base": "/tmp/qhy-sandbox-e2e/base",
+    "fixtureModel": "http://127.0.0.1:64893/v1",
+    "startedAt": "2026-11-18T13:16:10.364Z"
+  },
+  "summary": {
+    "total": 29,
+    "passed": 29,
+    "failed": 0,
+    "failedIds": []
+  },
+  "reports": [
+    {
+      "id": "SBX-01",
+      "group": "A",
+      "commands": [
+        "printf ok"
+      ],
+      "checks": [
+        {
+          "name": "命令成功",
+          "ok": true,
+          "detail": "{\"is_error\":false,\"output\":{\"stdout\":\"ok\",\"stderr\":\"\",\"exitCode\":0,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "sandboxed: true",
+          "ok": true,
+          "detail": "true"
+        },
+        {
+          "name": "输出 ok",
+          "ok": true,
+          "detail": "\"ok\""
+        },
+        {
+          "name": "审批：沙箱内执行",
+          "ok": true,
+          "detail": "{\"cwd\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-01/work\",\"bashCommands\":\"[\\\"printf ok\\\"]\",\"bashRequiresApproval\":\"false\",\"sandboxExecution\":\"沙箱内执行\",\"sandboxBypass\":\"未申请\"}"
+        },
+        {
+          "name": "审批：未申请豁免",
+          "ok": true,
+          "detail": "{\"cwd\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-01/work\",\"bashCommands\":\"[\\\"printf ok\\\"]\",\"bashRequiresApproval\":\"false\",\"sandboxExecution\":\"沙箱内执行\",\"sandboxBypass\":\"未申请\"}"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:00.589Z\",\"event\":\"run.started\",\"runId\":\"705e462a-2e6c-4408-ae17-8c8baf951993\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-01/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"28d82d51-1734-469b-8cd3-7a4928132ad8\"}\n{\"timestamp\":\"2026-11-18T13:16:00.681Z\",\"event\":\"run.finished\",\"runId\":\"705e462a-2e6c-4408-ae17-8c8baf951993\",\"status\":\"succeeded\",\"durationMs\":91,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"28d82d51-1734-469b-8cd3-7a4928132ad8\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-01-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "ok",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf ok"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-01/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-01/work",
+                  "bashCommands": "[\"printf ok\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-01"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-02",
+      "group": "A",
+      "commands": [
+        "printf '%s|%s' \"${QA_PASSTHROUGH-unset}\" \"${QA_HOST_ONLY-unset}\""
+      ],
+      "checks": [
+        {
+          "name": "仅透传 envPassthrough",
+          "ok": true,
+          "detail": "\"visible|unset\""
+        },
+        {
+          "name": "sandboxed: true",
+          "ok": true,
+          "detail": "true"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:00.881Z\",\"event\":\"run.started\",\"runId\":\"820b263c-6eb5-4753-9ac2-b9c5e10e98a4\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-02/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"cf15f87b-b56a-4879-8f60-e43f95a1c1a3\"}\n{\"timestamp\":\"2026-11-18T13:16:00.975Z\",\"event\":\"run.finished\",\"runId\":\"820b263c-6eb5-4753-9ac2-b9c5e10e98a4\",\"status\":\"succeeded\",\"durationMs\":93,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"cf15f87b-b56a-4879-8f60-e43f95a1c1a3\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-02-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "visible|unset",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf '%s|%s' \"${QA_PASSTHROUGH-unset}\" \"${QA_HOST_ONLY-unset}\""
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-02/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-02/work",
+                  "bashCommands": "[\"printf '%s|%s' \\\"${QA_PASSTHROUGH-unset}\\\" \\\"${QA_HOST_ONLY-unset}\\\"\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-02"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-03",
+      "group": "A",
+      "commands": [
+        "cat note.txt"
+      ],
+      "checks": [
+        {
+          "name": "工作区可读",
+          "ok": true,
+          "detail": "{\"stdout\":\"inside-read\",\"stderr\":\"\",\"exitCode\":0,\"signal\":null,\"truncated\":false,\"sandboxed\":true}"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:01.176Z\",\"event\":\"run.started\",\"runId\":\"1e8a5e6b-dfe0-4090-8afd-d5cb17a573c0\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-03/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"4c5168e9-5e28-4aea-8cee-8e291382a4df\"}\n{\"timestamp\":\"2026-11-18T13:16:01.270Z\",\"event\":\"run.finished\",\"runId\":\"1e8a5e6b-dfe0-4090-8afd-d5cb17a573c0\",\"status\":\"succeeded\",\"durationMs\":94,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"4c5168e9-5e28-4aea-8cee-8e291382a4df\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-03-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "inside-read",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "cat note.txt"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-03/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-03/work",
+                  "bashCommands": "[\"cat note.txt\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-03"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-04",
+      "group": "A",
+      "commands": [
+        "cat \"$QA_ROOT/outside/read.txt\""
+      ],
+      "checks": [
+        {
+          "name": "工作区外默认可读",
+          "ok": true,
+          "detail": "{\"stdout\":\"outside-read\",\"stderr\":\"\",\"exitCode\":0,\"signal\":null,\"truncated\":false,\"sandboxed\":true}"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:01.444Z\",\"event\":\"run.started\",\"runId\":\"757cc0ce-1b2f-4ad7-99c5-59ab321c70a9\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-04/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"6e688653-5d1f-446f-8113-f9424c42e2b8\"}\n{\"timestamp\":\"2026-11-18T13:16:01.533Z\",\"event\":\"run.finished\",\"runId\":\"757cc0ce-1b2f-4ad7-99c5-59ab321c70a9\",\"status\":\"succeeded\",\"durationMs\":88,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"6e688653-5d1f-446f-8113-f9424c42e2b8\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-04-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "outside-read",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "cat \"$QA_ROOT/outside/read.txt\""
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-04/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-04/work",
+                  "bashCommands": "[\"cat \\\"$QA_ROOT/outside/read.txt\\\"\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-04"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-05",
+      "group": "A",
+      "commands": [
+        "cat \"$HOME/.ssh/authorized_keys\""
+      ],
+      "checks": [
+        {
+          "name": "读取失败",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"cat: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-05/home/.ssh/authorized_keys: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "提示策略拦截",
+          "ok": true,
+          "detail": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+        },
+        {
+          "name": "stderr 为 Operation not permitted",
+          "ok": true,
+          "detail": "cat: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-05/home/.ssh/authorized_keys: Operation not permitted\n"
+        },
+        {
+          "name": "未泄露私钥内容",
+          "ok": true,
+          "detail": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。 {\"stdout\":\"\",\"stderr\":\"cat: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-05/home/.ssh/authorized_keys: Operation not permitted\\n\",\"exitCode\":1,\"signal\":"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:01.709Z\",\"event\":\"run.started\",\"runId\":\"608caf0b-8600-4c0f-808c-9908a3a3a9a0\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-05/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"aa51831e-49ed-47ab-bbfd-f256a1e44f8c\"}\n{\"timestamp\":\"2026-11-18T13:16:01.821Z\",\"event\":\"run.finished\",\"runId\":\"608caf0b-8600-4c0f-808c-9908a3a3a9a0\",\"status\":\"succeeded\",\"durationMs\":111,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"aa51831e-49ed-47ab-bbfd-f256a1e44f8c\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-05-0",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "cat: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-05/home/.ssh/authorized_keys: Operation not permitted\n",
+                "exitCode": 1,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "cat \"$HOME/.ssh/authorized_keys\""
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-05/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-05/work",
+                  "bashCommands": "[\"cat \\\"$HOME/.ssh/authorized_keys\\\"\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-05"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-06",
+      "group": "A",
+      "commands": [
+        "cat \"$HOME/private/blocked.txt\"",
+        "cat \"$HOME/private/readable.txt\"",
+        "ls \"$HOME/private\""
+      ],
+      "checks": [
+        {
+          "name": "readDeny 精确拒绝",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"cat: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-06/home/private/blocked.txt: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "readAllow 精确放行",
+          "ok": true,
+          "detail": "{\"is_error\":false,\"output\":{\"stdout\":\"readable\",\"stderr\":\"\",\"exitCode\":0,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "目录本身仍拒读",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"ls: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-06/home/private: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：失败\n\n[工具] Bash：开始\n\n[工具] Bash：成功\n\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:01.992Z\",\"event\":\"run.started\",\"runId\":\"ef63bdbb-0ef9-449d-87ff-c8adc489b00a\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-06/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"d93287ff-a2f6-49fc-86a2-fe53f39ca2b1\"}\n{\"timestamp\":\"2026-11-18T13:16:02.125Z\",\"event\":\"run.finished\",\"runId\":\"ef63bdbb-0ef9-449d-87ff-c8adc489b00a\",\"status\":\"succeeded\",\"durationMs\":134,\"steps\":2,\"toolCalls\":3,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"d93287ff-a2f6-49fc-86a2-fe53f39ca2b1\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-06-0",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "cat: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-06/home/private/blocked.txt: Operation not permitted\n",
+                "exitCode": 1,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          },
+          {
+            "callId": "SBX-06-1",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "readable",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          },
+          {
+            "callId": "SBX-06-2",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "ls: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-06/home/private: Operation not permitted\n",
+                "exitCode": 1,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "cat \"$HOME/private/blocked.txt\""
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-06/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-06/work",
+                  "bashCommands": "[\"cat \\\"$HOME/private/blocked.txt\\\"\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-06"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "cat \"$HOME/private/readable.txt\""
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-06/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-06/work",
+                  "bashCommands": "[\"cat \\\"$HOME/private/readable.txt\\\"\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-06"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "ls \"$HOME/private\""
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-06/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-06/work",
+                  "bashCommands": "[\"ls \\\"$HOME/private\\\"\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-06"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-07",
+      "group": "A",
+      "commands": [
+        "cat key-link"
+      ],
+      "checks": [
+        {
+          "name": "符号链接读取失败",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"cat: key-link: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "未泄露私钥内容",
+          "ok": true,
+          "detail": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。 {\"stdout\":\"\",\"stderr\":\"cat: key-link: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true}"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:02.310Z\",\"event\":\"run.started\",\"runId\":\"93ddd428-ec84-47b6-b61e-097acf56e2c0\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-07/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"e49abbb0-53f6-42df-8f08-b6868d413dff\"}\n{\"timestamp\":\"2026-11-18T13:16:02.397Z\",\"event\":\"run.finished\",\"runId\":\"93ddd428-ec84-47b6-b61e-097acf56e2c0\",\"status\":\"succeeded\",\"durationMs\":88,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"e49abbb0-53f6-42df-8f08-b6868d413dff\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-07-0",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "cat: key-link: Operation not permitted\n",
+                "exitCode": 1,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "cat key-link"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-07/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-07/work",
+                  "bashCommands": "[\"cat key-link\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-07"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-08",
+      "group": "A",
+      "commands": [
+        "printf inside > marker.txt"
+      ],
+      "checks": [
+        {
+          "name": "工作区写入成功",
+          "ok": true,
+          "detail": "{\"is_error\":false,\"output\":{\"stdout\":\"\",\"stderr\":\"\",\"exitCode\":0,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "文件内容 inside",
+          "ok": true,
+          "detail": "inside"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:02.571Z\",\"event\":\"run.started\",\"runId\":\"ba5d95b5-dc3d-48c1-bea0-7f48aa72cb50\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-08/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"627d4453-cc22-4b49-b6f9-c5db26ae9185\"}\n{\"timestamp\":\"2026-11-18T13:16:02.656Z\",\"event\":\"run.finished\",\"runId\":\"ba5d95b5-dc3d-48c1-bea0-7f48aa72cb50\",\"status\":\"succeeded\",\"durationMs\":85,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"627d4453-cc22-4b49-b6f9-c5db26ae9185\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-08-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf inside > marker.txt"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-08/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-08/work",
+                  "bashCommands": "[\"printf inside > marker.txt\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-08"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": "inside",
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-09",
+      "group": "A",
+      "commands": [
+        "printf outside > \"$QA_ROOT/outside/marker.txt\""
+      ],
+      "checks": [
+        {
+          "name": "工作区外写入失败",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"bash: line 1: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-09/outside/marker.txt: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "外部文件未创建",
+          "ok": true,
+          "detail": "null"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:02.840Z\",\"event\":\"run.started\",\"runId\":\"906aeca0-a8f2-4193-8b23-56426877ce2f\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-09/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"9d2c2f31-c421-4849-a387-65cdd7323fc9\"}\n{\"timestamp\":\"2026-11-18T13:16:02.925Z\",\"event\":\"run.finished\",\"runId\":\"906aeca0-a8f2-4193-8b23-56426877ce2f\",\"status\":\"succeeded\",\"durationMs\":85,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"9d2c2f31-c421-4849-a387-65cdd7323fc9\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-09-0",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "bash: line 1: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-09/outside/marker.txt: Operation not permitted\n",
+                "exitCode": 1,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf outside > \"$QA_ROOT/outside/marker.txt\""
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-09/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-09/work",
+                  "bashCommands": "[\"printf outside > \\\"$QA_ROOT/outside/marker.txt\\\"\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-09"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-10",
+      "group": "A",
+      "commands": [
+        "printf tmp > \"$TMPDIR/sandbox-tmp.txt\""
+      ],
+      "checks": [
+        {
+          "name": "TMPDIR 写入成功",
+          "ok": true,
+          "detail": "{\"is_error\":false,\"output\":{\"stdout\":\"\",\"stderr\":\"\",\"exitCode\":0,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "TMPDIR 文件存在",
+          "ok": true,
+          "detail": "tmp"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:03.098Z\",\"event\":\"run.started\",\"runId\":\"9b289e07-6208-49ff-aa06-b774366f4f2b\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-10/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"4b3902a6-b3fe-49da-a510-d3b70b610d6c\"}\n{\"timestamp\":\"2026-11-18T13:16:03.183Z\",\"event\":\"run.finished\",\"runId\":\"9b289e07-6208-49ff-aa06-b774366f4f2b\",\"status\":\"succeeded\",\"durationMs\":85,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"4b3902a6-b3fe-49da-a510-d3b70b610d6c\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-10-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf tmp > \"$TMPDIR/sandbox-tmp.txt\""
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-10/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-10/work",
+                  "bashCommands": "[\"printf tmp > \\\"$TMPDIR/sandbox-tmp.txt\\\"\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-10"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": "tmp",
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-11",
+      "group": "A",
+      "commands": [
+        "printf scratch > \"$HOME/scratch/ok.txt\"",
+        "printf protected > \"$HOME/scratch/protected\""
+      ],
+      "checks": [
+        {
+          "name": "writePaths 放行",
+          "ok": true,
+          "detail": "{\"is_error\":false,\"output\":{\"stdout\":\"\",\"stderr\":\"\",\"exitCode\":0,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "scratch 文件存在",
+          "ok": true,
+          "detail": "scratch"
+        },
+        {
+          "name": "writeDenyPaths 拒绝",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"bash: line 1: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-11/home/scratch/protected: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "protected 文件未创建",
+          "ok": true,
+          "detail": "null"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:03.382Z\",\"event\":\"run.started\",\"runId\":\"bc9410dd-3fb9-4851-979a-80f19ce97c2c\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-11/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"deae6319-e349-423a-a675-53761793ac88\"}\n{\"timestamp\":\"2026-11-18T13:16:03.492Z\",\"event\":\"run.finished\",\"runId\":\"bc9410dd-3fb9-4851-979a-80f19ce97c2c\",\"status\":\"succeeded\",\"durationMs\":110,\"steps\":2,\"toolCalls\":2,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"deae6319-e349-423a-a675-53761793ac88\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-11-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          },
+          {
+            "callId": "SBX-11-1",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "bash: line 1: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-11/home/scratch/protected: Operation not permitted\n",
+                "exitCode": 1,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf scratch > \"$HOME/scratch/ok.txt\""
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-11/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-11/work",
+                  "bashCommands": "[\"printf scratch > \\\"$HOME/scratch/ok.txt\\\"\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-11"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf protected > \"$HOME/scratch/protected\""
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-11/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-11/work",
+                  "bashCommands": "[\"printf protected > \\\"$HOME/scratch/protected\\\"\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-11"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": "scratch",
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-12",
+      "group": "A",
+      "commands": [
+        "mkdir -p .agent && printf evil > .agent/settings.local.json",
+        "mkdir -p .claude/skills && printf evil > .claude/skills/evil.md",
+        "mkdir -p .agents/skills && printf evil > .agents/skills/evil.md",
+        "mkdir -p .git/hooks && printf evil > .git/hooks/pre-commit",
+        "mkdir -p .github/workflows && printf evil > .github/workflows/evil.yml"
+      ],
+      "checks": [
+        {
+          "name": "settings.local.json 写入被拒",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"bash: line 1: .agent/settings.local.json: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "skills/evil.md 写入被拒",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"mkdir: .claude/skills: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "agents/skills/evil.md 写入被拒",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"mkdir: .agents/skills: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "hooks/pre-commit 写入被拒",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"mkdir: .git/hooks: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "workflows/evil.yml 写入被拒",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"mkdir: .github/workflows: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": ".agent/settings.local.json 未创建",
+          "ok": true,
+          "detail": "null"
+        },
+        {
+          "name": ".claude/skills/evil.md 未创建",
+          "ok": true,
+          "detail": "null"
+        },
+        {
+          "name": ".agents/skills/evil.md 未创建",
+          "ok": true,
+          "detail": "null"
+        },
+        {
+          "name": ".git/hooks/pre-commit 未创建",
+          "ok": true,
+          "detail": "null"
+        },
+        {
+          "name": ".github/workflows/evil.yml 未创建",
+          "ok": true,
+          "detail": "null"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：失败\n\n[工具] Bash：开始\n\n[工具] Bash：失败\n\n[工具] Bash：开始\n\n[工具] Bash：失败\n\n[工具] Bash：开始\n\n[工具] Bash：失败\n\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:03.665Z\",\"event\":\"run.started\",\"runId\":\"d8c9c297-22a7-414a-b0dd-9d091f27edab\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-12/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"003754f9-90f7-4e1d-a74f-50d72412497a\"}\n{\"timestamp\":\"2026-11-18T13:16:03.870Z\",\"event\":\"run.finished\",\"runId\":\"d8c9c297-22a7-414a-b0dd-9d091f27edab\",\"status\":\"succeeded\",\"durationMs\":205,\"steps\":2,\"toolCalls\":5,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"003754f9-90f7-4e1d-a74f-50d72412497a\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-12-0",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "bash: line 1: .agent/settings.local.json: Operation not permitted\n",
+                "exitCode": 1,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          },
+          {
+            "callId": "SBX-12-1",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "mkdir: .claude/skills: Operation not permitted\n",
+                "exitCode": 1,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          },
+          {
+            "callId": "SBX-12-2",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "mkdir: .agents/skills: Operation not permitted\n",
+                "exitCode": 1,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          },
+          {
+            "callId": "SBX-12-3",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "mkdir: .git/hooks: Operation not permitted\n",
+                "exitCode": 1,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          },
+          {
+            "callId": "SBX-12-4",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "mkdir: .github/workflows: Operation not permitted\n",
+                "exitCode": 1,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "mkdir -p .agent && printf evil > .agent/settings.local.json"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-12/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-12/work",
+                  "bashCommands": "[\"mkdir -p .agent\",\"printf evil > .agent/settings.local.json\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-12"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "mkdir -p .claude/skills && printf evil > .claude/skills/evil.md"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-12/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-12/work",
+                  "bashCommands": "[\"mkdir -p .claude/skills\",\"printf evil > .claude/skills/evil.md\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-12"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "mkdir -p .agents/skills && printf evil > .agents/skills/evil.md"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-12/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-12/work",
+                  "bashCommands": "[\"mkdir -p .agents/skills\",\"printf evil > .agents/skills/evil.md\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-12"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "mkdir -p .git/hooks && printf evil > .git/hooks/pre-commit"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-12/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-12/work",
+                  "bashCommands": "[\"mkdir -p .git/hooks\",\"printf evil > .git/hooks/pre-commit\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-12"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "mkdir -p .github/workflows && printf evil > .github/workflows/evil.yml"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-12/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-12/work",
+                  "bashCommands": "[\"mkdir -p .github/workflows\",\"printf evil > .github/workflows/evil.yml\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-12"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-13",
+      "group": "A",
+      "commands": [
+        "printf ok"
+      ],
+      "checks": [
+        {
+          "name": "成功后临时 profile 目录已清理",
+          "ok": true,
+          "detail": "[]"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:04.040Z\",\"event\":\"run.started\",\"runId\":\"7ef5396a-07d8-4742-8351-1022622908a6\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-13/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"e6027105-8bc0-427f-b1d6-5184f187dfb9\"}\n{\"timestamp\":\"2026-11-18T13:16:04.124Z\",\"event\":\"run.finished\",\"runId\":\"7ef5396a-07d8-4742-8351-1022622908a6\",\"status\":\"succeeded\",\"durationMs\":85,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"e6027105-8bc0-427f-b1d6-5184f187dfb9\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-13-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "ok",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf ok"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-13/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-13/work",
+                  "bashCommands": "[\"printf ok\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-13"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-13F",
+      "group": "A",
+      "commands": [
+        "printf fail > \"$QA_ROOT/outside/fail.txt\""
+      ],
+      "checks": [
+        {
+          "name": "失败命令被拒",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"bash: line 1: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-13F/outside/fail.txt: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "外部文件未创建",
+          "ok": true,
+          "detail": "null"
+        },
+        {
+          "name": "失败后临时 profile 目录已清理",
+          "ok": true,
+          "detail": "[]"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:04.315Z\",\"event\":\"run.started\",\"runId\":\"c651bfbc-fed5-4113-a38b-53aed35b3030\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-13F/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"64685d00-9c98-4b54-b169-c67f0a76e76d\"}\n{\"timestamp\":\"2026-11-18T13:16:04.400Z\",\"event\":\"run.finished\",\"runId\":\"c651bfbc-fed5-4113-a38b-53aed35b3030\",\"status\":\"succeeded\",\"durationMs\":85,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"64685d00-9c98-4b54-b169-c67f0a76e76d\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-13F-0",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "bash: line 1: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-13F/outside/fail.txt: Operation not permitted\n",
+                "exitCode": 1,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf fail > \"$QA_ROOT/outside/fail.txt\""
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-13F/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-13F/work",
+                  "bashCommands": "[\"printf fail > \\\"$QA_ROOT/outside/fail.txt\\\"\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-13F"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-13T",
+      "group": "A",
+      "commands": [
+        "sleep 5"
+      ],
+      "checks": [
+        {
+          "name": "超时命令失败",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令执行超时。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"\",\"exitCode\":null,\"signal\":\"SIGKILL\",\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "超时后临时 profile 目录已清理",
+          "ok": true,
+          "detail": "[]"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:04.575Z\",\"event\":\"run.started\",\"runId\":\"25c04af6-d1a3-40fe-8dc8-a92b49181d79\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-13T/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"d7644ef0-74f0-4ce5-b98a-a49f85f6aa7a\"}\n{\"timestamp\":\"2026-11-18T13:16:05.171Z\",\"event\":\"run.finished\",\"runId\":\"25c04af6-d1a3-40fe-8dc8-a92b49181d79\",\"status\":\"succeeded\",\"durationMs\":596,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"d7644ef0-74f0-4ce5-b98a-a49f85f6aa7a\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-13T-0",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令执行超时。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "",
+                "exitCode": null,
+                "signal": "SIGKILL",
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "sleep 5"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-13T/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-13T/work",
+                  "bashCommands": "[\"sleep 5\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-13T"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-14",
+      "group": "A",
+      "commands": [
+        "printf '%s|%s|%s' \"$HTTPS_PROXY\" \"$HTTP_PROXY\" \"$ALL_PROXY\""
+      ],
+      "checks": [
+        {
+          "name": "代理变量为 localhost",
+          "ok": true,
+          "detail": "http://localhost:64971|http://localhost:64971|http://localhost:64971"
+        },
+        {
+          "name": "三个代理变量同端口",
+          "ok": true,
+          "detail": "http://localhost:64971|http://localhost:64971|http://localhost:64971"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:05.375Z\",\"event\":\"run.started\",\"runId\":\"f0192348-05ce-4bd5-9a87-05e5bc5d5654\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-14/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"ab205a6c-d72d-457c-b155-4acfeb1bbd6e\"}\n{\"timestamp\":\"2026-11-18T13:16:05.462Z\",\"event\":\"run.finished\",\"runId\":\"f0192348-05ce-4bd5-9a87-05e5bc5d5654\",\"status\":\"succeeded\",\"durationMs\":87,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"ab205a6c-d72d-457c-b155-4acfeb1bbd6e\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-14-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "http://localhost:64971|http://localhost:64971|http://localhost:64971",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf '%s|%s|%s' \"$HTTPS_PROXY\" \"$HTTP_PROXY\" \"$ALL_PROXY\""
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-14/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-14/work",
+                  "bashCommands": "[\"printf '%s|%s|%s' \\\"$HTTPS_PROXY\\\" \\\"$HTTP_PROXY\\\" \\\"$ALL_PROXY\\\"\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-14"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-15",
+      "group": "A",
+      "commands": [
+        "curl -fsS -o response.txt -w '%{http_code}' https://example.com"
+      ],
+      "checks": [
+        {
+          "name": "白名单 HTTPS 成功",
+          "ok": true,
+          "detail": "{\"is_error\":false,\"output\":{\"stdout\":\"200\",\"stderr\":\"\",\"exitCode\":0,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "HTTP 200",
+          "ok": true,
+          "detail": "200"
+        },
+        {
+          "name": "响应写入工作区",
+          "ok": true,
+          "detail": "577"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:05.634Z\",\"event\":\"run.started\",\"runId\":\"55abd671-4007-4049-8b79-668736d7eec4\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-15/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"553450ed-f046-45c6-8640-086402157a54\"}\n{\"timestamp\":\"2026-11-18T13:16:06.249Z\",\"event\":\"run.finished\",\"runId\":\"55abd671-4007-4049-8b79-668736d7eec4\",\"status\":\"succeeded\",\"durationMs\":616,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"553450ed-f046-45c6-8640-086402157a54\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-15-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "200",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "curl -fsS -o response.txt -w '%{http_code}' https://example.com"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-15/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-15/work",
+                  "bashCommands": "[\"curl -fsS -o response.txt -w '%{http_code}' https://example.com\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-15"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": "<!doctype html><html lang=en><head><meta charset=utf-8><link rel=icon href=data:,><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Example Domain</title><style>html{color-scheme:light dark;background:light-dark(#eee,#222)}body{font:16px/1.6 system-ui,sans-serif;max-width:26em;margin:auto;padding:25vh 2em 2em;text-align:center}</style></head><body><p>This domain is for use in documentation examples without needing permission. This is not a service; avoid relying on it for testing and monitoring purposes.</p><script src=/s.js></script></body></html>\n",
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-16",
+      "group": "A",
+      "commands": [
+        "curl -sS https://denied.example"
+      ],
+      "checks": [
+        {
+          "name": "域名拒绝",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令执行失败。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"curl: (56) CONNECT tunnel failed, response 403\\n\\n<sandbox_violations>\\n沙箱网络代理拒绝了以下目标：\\n- denied.example:443 域名不在白名单（host-not-allowed）\\n</sandbox_violations>\",\"exitCode\":56,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "violations 含 host-not-allowed",
+          "ok": true,
+          "detail": "curl: (56) CONNECT tunnel failed, response 403\n\n<sandbox_violations>\n沙箱网络代理拒绝了以下目标：\n- denied.example:443 域名不在白名单（host-not-allowed）\n</sandbox_violations>"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:06.449Z\",\"event\":\"run.started\",\"runId\":\"8dfad5be-880a-46ea-a59d-60d06bcc8693\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-16/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"a8de6bdb-a850-42bf-a5f0-65ba76757668\"}\n{\"timestamp\":\"2026-11-18T13:16:06.543Z\",\"event\":\"run.finished\",\"runId\":\"8dfad5be-880a-46ea-a59d-60d06bcc8693\",\"status\":\"succeeded\",\"durationMs\":94,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"a8de6bdb-a850-42bf-a5f0-65ba76757668\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-16-0",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令执行失败。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "curl: (56) CONNECT tunnel failed, response 403\n\n<sandbox_violations>\n沙箱网络代理拒绝了以下目标：\n- denied.example:443 域名不在白名单（host-not-allowed）\n</sandbox_violations>",
+                "exitCode": 56,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "curl -sS https://denied.example"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-16/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-16/work",
+                  "bashCommands": "[\"curl -sS https://denied.example\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-16"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-17",
+      "group": "A",
+      "commands": [
+        "curl -sS https://example.com:8443"
+      ],
+      "checks": [
+        {
+          "name": "端口拒绝",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令执行失败。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"curl: (56) CONNECT tunnel failed, response 403\\n\\n<sandbox_violations>\\n沙箱网络代理拒绝了以下目标：\\n- example.com:8443 端口不在白名单（port-not-allowed）\\n</sandbox_violations>\",\"exitCode\":56,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "violations 含 port-not-allowed",
+          "ok": true,
+          "detail": "curl: (56) CONNECT tunnel failed, response 403\n\n<sandbox_violations>\n沙箱网络代理拒绝了以下目标：\n- example.com:8443 端口不在白名单（port-not-allowed）\n</sandbox_violations>"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:06.716Z\",\"event\":\"run.started\",\"runId\":\"df68b803-8e81-449d-ad7f-4badba3cc6e1\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-17/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"b8e9114d-8546-4a03-a92d-5573d32cc313\"}\n{\"timestamp\":\"2026-11-18T13:16:06.821Z\",\"event\":\"run.finished\",\"runId\":\"df68b803-8e81-449d-ad7f-4badba3cc6e1\",\"status\":\"succeeded\",\"durationMs\":105,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"b8e9114d-8546-4a03-a92d-5573d32cc313\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-17-0",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令执行失败。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "curl: (56) CONNECT tunnel failed, response 403\n\n<sandbox_violations>\n沙箱网络代理拒绝了以下目标：\n- example.com:8443 端口不在白名单（port-not-allowed）\n</sandbox_violations>",
+                "exitCode": 56,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "curl -sS https://example.com:8443"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-17/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-17/work",
+                  "bashCommands": "[\"curl -sS https://example.com:8443\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-17"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-18",
+      "group": "A",
+      "commands": [
+        "curl -k -sS https://127.0.0.1"
+      ],
+      "checks": [
+        {
+          "name": "危险地址拒绝",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令执行失败。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"curl: (56) CONNECT tunnel failed, response 403\\n\\n<sandbox_violations>\\n沙箱网络代理拒绝了以下目标：\\n- 127.0.0.1:443 目标解析到受限地址（dangerous-address）\\n</sandbox_violations>\",\"exitCode\":56,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        },
+        {
+          "name": "violations 含 dangerous-address",
+          "ok": true,
+          "detail": "curl: (56) CONNECT tunnel failed, response 403\n\n<sandbox_violations>\n沙箱网络代理拒绝了以下目标：\n- 127.0.0.1:443 目标解析到受限地址（dangerous-address）\n</sandbox_violations>"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:06.993Z\",\"event\":\"run.started\",\"runId\":\"928b057a-e5f7-4fe9-ba1b-afc0357b1d79\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-18/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"f4ff5e92-8724-4415-abc1-521f342c622c\"}\n{\"timestamp\":\"2026-11-18T13:16:07.086Z\",\"event\":\"run.finished\",\"runId\":\"928b057a-e5f7-4fe9-ba1b-afc0357b1d79\",\"status\":\"succeeded\",\"durationMs\":93,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"f4ff5e92-8724-4415-abc1-521f342c622c\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-18-0",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令执行失败。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "curl: (56) CONNECT tunnel failed, response 403\n\n<sandbox_violations>\n沙箱网络代理拒绝了以下目标：\n- 127.0.0.1:443 目标解析到受限地址（dangerous-address）\n</sandbox_violations>",
+                "exitCode": 56,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "curl -k -sS https://127.0.0.1"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-18/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-18/work",
+                  "bashCommands": "[\"curl -k -sS https://127.0.0.1\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-18"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-19",
+      "group": "C",
+      "commands": [
+        "printf '%s' \"${HTTPS_PROXY-unset}\"",
+        "curl -sS https://example.com"
+      ],
+      "checks": [
+        {
+          "name": "未配置网络时无代理变量",
+          "ok": true,
+          "detail": "{\"stdout\":\"unset\",\"stderr\":\"\",\"exitCode\":0,\"signal\":null,\"truncated\":false,\"sandboxed\":true}"
+        },
+        {
+          "name": "curl 无网络",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"Bash 命令执行失败。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"curl: (6) Could not resolve host: example.com\\n\",\"exitCode\":6,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:07.259Z\",\"event\":\"run.started\",\"runId\":\"23b001fa-4384-4058-a2e0-dc647a231a77\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-19/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"a02a9817-6a9c-4b62-a0f1-fbf3ac9a7d46\"}\n{\"timestamp\":\"2026-11-18T13:16:07.380Z\",\"event\":\"run.finished\",\"runId\":\"23b001fa-4384-4058-a2e0-dc647a231a77\",\"status\":\"succeeded\",\"durationMs\":121,\"steps\":2,\"toolCalls\":2,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"a02a9817-6a9c-4b62-a0f1-fbf3ac9a7d46\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-19-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "unset",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          },
+          {
+            "callId": "SBX-19-1",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令执行失败。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "curl: (6) Could not resolve host: example.com\n",
+                "exitCode": 6,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf '%s' \"${HTTPS_PROXY-unset}\""
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-19/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-19/work",
+                  "bashCommands": "[\"printf '%s' \\\"${HTTPS_PROXY-unset}\\\"\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-19"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "curl -sS https://example.com"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-19/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-19/work",
+                  "bashCommands": "[\"curl -sS https://example.com\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-19"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-21",
+      "group": "A",
+      "commands": [
+        "printenv QA_HOST_ONLY"
+      ],
+      "checks": [
+        {
+          "name": "豁免获准在宿主执行",
+          "ok": true,
+          "detail": "{\"is_error\":false,\"output\":{\"stdout\":\"host-only\\n\",\"stderr\":\"\",\"exitCode\":0,\"signal\":null,\"truncated\":false,\"sandboxed\":false,\"notice\":\"豁免获准：整条命令命中 bypassAllowedCommands，将在沙箱外执行。\"}}"
+        },
+        {
+          "name": "输出 host-only",
+          "ok": true,
+          "detail": "\"host-only\\n\""
+        },
+        {
+          "name": "notice 豁免获准",
+          "ok": true,
+          "detail": "豁免获准：整条命令命中 bypassAllowedCommands，将在沙箱外执行。"
+        },
+        {
+          "name": "审批：沙箱外执行",
+          "ok": true,
+          "detail": "{\"cwd\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-21/work\",\"bashCommands\":\"[\\\"printenv QA_HOST_ONLY\\\"]\",\"bashRequiresApproval\":\"false\",\"sandboxExecution\":\"沙箱外执行\",\"sandboxBypass\":\"获准\",\"sandboxNotice\":\"豁免获准：整条命令命中 bypassAllowedCommands，将在沙箱外执行。\"}"
+        },
+        {
+          "name": "审批：获准",
+          "ok": true,
+          "detail": "{\"cwd\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-21/work\",\"bashCommands\":\"[\\\"printenv QA_HOST_ONLY\\\"]\",\"bashRequiresApproval\":\"false\",\"sandboxExecution\":\"沙箱外执行\",\"sandboxBypass\":\"获准\",\"sandboxNotice\":\"豁免获准：整条命令命中 bypassAllowedCommands，将在沙箱外执行。\"}"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:07.548Z\",\"event\":\"run.started\",\"runId\":\"b3d968b8-faf3-46bb-8fbc-72f68e6463e5\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-21/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"7b932aa3-a2c4-40dd-802b-d84593150546\"}\n{\"timestamp\":\"2026-11-18T13:16:07.617Z\",\"event\":\"run.finished\",\"runId\":\"b3d968b8-faf3-46bb-8fbc-72f68e6463e5\",\"status\":\"succeeded\",\"durationMs\":69,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"7b932aa3-a2c4-40dd-802b-d84593150546\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-21-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "host-only\n",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": false,
+                "notice": "豁免获准：整条命令命中 bypassAllowedCommands，将在沙箱外执行。"
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printenv QA_HOST_ONLY",
+              "disableSandbox": true
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-21/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-21/work",
+                  "bashCommands": "[\"printenv QA_HOST_ONLY\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱外执行",
+                  "sandboxBypass": "获准",
+                  "sandboxNotice": "豁免获准：整条命令命中 bypassAllowedCommands，将在沙箱外执行。"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-21"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-22",
+      "group": "A",
+      "commands": [
+        "printenv QA_HOST_ONLY; printf x > \"$QA_ROOT/outside/bypass-denied.txt\""
+      ],
+      "checks": [
+        {
+          "name": "豁免未获准仍在沙箱内",
+          "ok": true,
+          "detail": "{\"stdout\":\"\",\"stderr\":\"bash: line 1: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-22/outside/bypass-denied.txt: Operation not permitted\\n\",\"exitCode\":1,\"signal\":null,\"truncated\":false,\"sandboxed\":true,\"notice\":\"豁免未获准：存在未命中 bypassAllowedCommands 的简单命令，已在沙箱内执行。\"}"
+        },
+        {
+          "name": "notice 豁免未获准",
+          "ok": true,
+          "detail": "豁免未获准：存在未命中 bypassAllowedCommands 的简单命令，已在沙箱内执行。"
+        },
+        {
+          "name": "未输出宿主变量",
+          "ok": true,
+          "detail": "\"\""
+        },
+        {
+          "name": "外部文件未创建",
+          "ok": true,
+          "detail": "null"
+        },
+        {
+          "name": "审批：沙箱内执行",
+          "ok": true,
+          "detail": "{\"cwd\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-22/work\",\"bashCommands\":\"[\\\"printenv QA_HOST_ONLY\\\",\\\"printf x > \\\\\\\"$QA_ROOT/outside/bypass-denied.txt\\\\\\\"\\\"]\",\"bashRequiresApproval\":\"true\",\"sandboxExecution\":\"沙箱内执行\",\"sandboxBypass\":\"未获准\",\"sandboxNotice\":\"豁免未获准：存在未命中 bypassAllowedCommands 的简单命令，已在沙箱内执行。\"}"
+        },
+        {
+          "name": "审批：未获准",
+          "ok": true,
+          "detail": "{\"cwd\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-22/work\",\"bashCommands\":\"[\\\"printenv QA_HOST_ONLY\\\",\\\"printf x > \\\\\\\"$QA_ROOT/outside/bypass-denied.txt\\\\\\\"\\\"]\",\"bashRequiresApproval\":\"true\",\"sandboxExecution\":\"沙箱内执行\",\"sandboxBypass\":\"未获准\",\"sandboxNotice\":\"豁免未获准：存在未命中 bypassAllowedCommands 的简单命令，已在沙箱内执行。\"}"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:07.805Z\",\"event\":\"run.started\",\"runId\":\"1581b4f7-2bf8-48c3-adf9-38f58f16b94a\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-22/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"ca0216a2-8c8a-4655-a5bc-e477138d0cdb\"}\n{\"timestamp\":\"2026-11-18T13:16:07.895Z\",\"event\":\"run.finished\",\"runId\":\"1581b4f7-2bf8-48c3-adf9-38f58f16b94a\",\"status\":\"succeeded\",\"durationMs\":91,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"ca0216a2-8c8a-4655-a5bc-e477138d0cdb\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-22-0",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "Bash 命令被沙箱策略拦截（Operation not permitted），而非命令本身错误。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "bash: line 1: /private/tmp/qhy-sandbox-e2e/base/runs/SBX-22/outside/bypass-denied.txt: Operation not permitted\n",
+                "exitCode": 1,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true,
+                "notice": "豁免未获准：存在未命中 bypassAllowedCommands 的简单命令，已在沙箱内执行。"
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printenv QA_HOST_ONLY; printf x > \"$QA_ROOT/outside/bypass-denied.txt\"",
+              "disableSandbox": true
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-22/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-22/work",
+                  "bashCommands": "[\"printenv QA_HOST_ONLY\",\"printf x > \\\"$QA_ROOT/outside/bypass-denied.txt\\\"\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未获准",
+                  "sandboxNotice": "豁免未获准：存在未命中 bypassAllowedCommands 的简单命令，已在沙箱内执行。"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-22"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-23",
+      "group": "F",
+      "commands": [
+        "printf denied-by-policy"
+      ],
+      "checks": [
+        {
+          "name": "权限规则拒绝",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"PERMISSION_DENIED\",\"message\":\"本次工具调用未获权限批准。\"}}"
+        },
+        {
+          "name": "未进入审批",
+          "ok": true,
+          "detail": "0"
+        },
+        {
+          "name": "命令未执行",
+          "ok": true,
+          "detail": "stdout/stderr 无命令输出"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：拒绝\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:08.067Z\",\"event\":\"run.started\",\"runId\":\"bdcd3297-3666-46d5-a8a7-91571c1c0023\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-23/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"7f62786a-2ce7-44f4-b6f7-78c8a4434143\"}\n{\"timestamp\":\"2026-11-18T13:16:08.131Z\",\"event\":\"run.finished\",\"runId\":\"bdcd3297-3666-46d5-a8a7-91571c1c0023\",\"status\":\"succeeded\",\"durationMs\":63,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"7f62786a-2ce7-44f4-b6f7-78c8a4434143\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-23-0",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "PERMISSION_DENIED",
+                "message": "本次工具调用未获权限批准。"
+              }
+            }
+          }
+        ],
+        "approvals": [],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-24",
+      "group": "B",
+      "commands": [
+        "printenv QA_HOST_ONLY"
+      ],
+      "checks": [
+        {
+          "name": "沙箱关闭时宿主执行",
+          "ok": true,
+          "detail": "{\"is_error\":false,\"output\":{\"stdout\":\"host-only\\n\",\"stderr\":\"\",\"exitCode\":0,\"signal\":null,\"truncated\":false,\"sandboxed\":false}}"
+        },
+        {
+          "name": "审批：沙箱外执行",
+          "ok": true,
+          "detail": "{\"cwd\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-24/work\",\"bashCommands\":\"[\\\"printenv QA_HOST_ONLY\\\"]\",\"bashRequiresApproval\":\"false\",\"sandboxExecution\":\"沙箱外执行\",\"sandboxBypass\":\"已忽略（沙箱未启用）\"}"
+        },
+        {
+          "name": "审批：已忽略（沙箱未启用）",
+          "ok": true,
+          "detail": "{\"cwd\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-24/work\",\"bashCommands\":\"[\\\"printenv QA_HOST_ONLY\\\"]\",\"bashRequiresApproval\":\"false\",\"sandboxExecution\":\"沙箱外执行\",\"sandboxBypass\":\"已忽略（沙箱未启用）\"}"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:08.343Z\",\"event\":\"run.started\",\"runId\":\"bc09bb23-6f89-44df-b03d-a4383e37e3ab\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-24/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"637c3bf4-2f07-4720-acee-d38480b938a0\"}\n{\"timestamp\":\"2026-11-18T13:16:08.402Z\",\"event\":\"run.finished\",\"runId\":\"bc09bb23-6f89-44df-b03d-a4383e37e3ab\",\"status\":\"succeeded\",\"durationMs\":59,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"637c3bf4-2f07-4720-acee-d38480b938a0\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-24-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "host-only\n",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": false
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printenv QA_HOST_ONLY",
+              "disableSandbox": true
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-24/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-24/work",
+                  "bashCommands": "[\"printenv QA_HOST_ONLY\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱外执行",
+                  "sandboxBypass": "已忽略（沙箱未启用）"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": false,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-24"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-25",
+      "group": "D",
+      "commands": [
+        "printf x > should-not-execute.txt"
+      ],
+      "checks": [
+        {
+          "name": "fail-closed 拒绝",
+          "ok": true,
+          "detail": "{\"is_error\":true,\"error\":{\"code\":\"TOOL_EXECUTION_ERROR\",\"message\":\"沙箱不可用且配置为 onUnavailable: \\\"closed\\\"，已拒绝执行。\"},\"output\":{\"stdout\":\"\",\"stderr\":\"\",\"exitCode\":null,\"signal\":null,\"truncated\":false,\"sandboxed\":false,\"notice\":\"沙箱不可用且配置为 onUnavailable: \\\"closed\\\"，已拒绝执行。\"}}"
+        },
+        {
+          "name": "提示沙箱不可用",
+          "ok": true,
+          "detail": "沙箱不可用且配置为 onUnavailable: \"closed\"，已拒绝执行。"
+        },
+        {
+          "name": "结果 sandboxed: false",
+          "ok": true,
+          "detail": "{\"stdout\":\"\",\"stderr\":\"\",\"exitCode\":null,\"signal\":null,\"truncated\":false,\"sandboxed\":false,\"notice\":\"沙箱不可用且配置为 onUnavailable: \\\"closed\\\"，已拒绝执行。\"}"
+        },
+        {
+          "name": "文件未创建",
+          "ok": true,
+          "detail": "null"
+        },
+        {
+          "name": "审批：拒绝执行",
+          "ok": true,
+          "detail": "{\"cwd\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-25/work\",\"bashCommands\":\"[\\\"printf x > should-not-execute.txt\\\"]\",\"bashRequiresApproval\":\"true\",\"sandboxExecution\":\"拒绝执行\",\"sandboxBypass\":\"未申请\",\"sandboxNotice\":\"沙箱不可用且配置为 onUnavailable: \\\"closed\\\"，已拒绝执行。\"}"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：失败\n完成\n注意：本轮 Bash 命令执行失败，回复未获命令验证。\n\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:08.578Z\",\"event\":\"run.started\",\"runId\":\"32d26bdb-6b18-48cc-909b-cd50ae01fcb6\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-25/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"547bb570-3f5a-460a-8af6-9e720f8ffb89\"}\n{\"timestamp\":\"2026-11-18T13:16:08.628Z\",\"event\":\"run.finished\",\"runId\":\"32d26bdb-6b18-48cc-909b-cd50ae01fcb6\",\"status\":\"succeeded\",\"durationMs\":50,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"547bb570-3f5a-460a-8af6-9e720f8ffb89\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-25-0",
+            "content": {
+              "is_error": true,
+              "error": {
+                "code": "TOOL_EXECUTION_ERROR",
+                "message": "沙箱不可用且配置为 onUnavailable: \"closed\"，已拒绝执行。"
+              },
+              "output": {
+                "stdout": "",
+                "stderr": "",
+                "exitCode": null,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": false,
+                "notice": "沙箱不可用且配置为 onUnavailable: \"closed\"，已拒绝执行。"
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf x > should-not-execute.txt"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-25/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-25/work",
+                  "bashCommands": "[\"printf x > should-not-execute.txt\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "拒绝执行",
+                  "sandboxBypass": "未申请",
+                  "sandboxNotice": "沙箱不可用且配置为 onUnavailable: \"closed\"，已拒绝执行。"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-25"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-26",
+      "group": "E",
+      "commands": [
+        "printf x > should-not-execute.txt"
+      ],
+      "checks": [
+        {
+          "name": "fail-open 宿主执行",
+          "ok": true,
+          "detail": "{\"is_error\":false,\"output\":{\"stdout\":\"\",\"stderr\":\"\",\"exitCode\":0,\"signal\":null,\"truncated\":false,\"sandboxed\":false,\"notice\":\"沙箱不可用，本次命令未隔离执行（onUnavailable: \\\"open\\\"）。\"}}"
+        },
+        {
+          "name": "notice 未隔离",
+          "ok": true,
+          "detail": "沙箱不可用，本次命令未隔离执行（onUnavailable: \"open\"）。"
+        },
+        {
+          "name": "文件已创建",
+          "ok": true,
+          "detail": "x"
+        },
+        {
+          "name": "审批：沙箱外执行",
+          "ok": true,
+          "detail": "{\"cwd\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-26/work\",\"bashCommands\":\"[\\\"printf x > should-not-execute.txt\\\"]\",\"bashRequiresApproval\":\"true\",\"sandboxExecution\":\"沙箱外执行\",\"sandboxBypass\":\"未申请\",\"sandboxNotice\":\"沙箱不可用，本次命令未隔离执行（onUnavailable: \\\"open\\\"）。\"}"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:08.822Z\",\"event\":\"run.started\",\"runId\":\"05288cee-b639-47c0-9f02-436e07b2311a\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-26/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"f9113c7c-df25-43d4-a25c-171786d2c751\"}\n{\"timestamp\":\"2026-11-18T13:16:08.879Z\",\"event\":\"run.finished\",\"runId\":\"05288cee-b639-47c0-9f02-436e07b2311a\",\"status\":\"succeeded\",\"durationMs\":57,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"f9113c7c-df25-43d4-a25c-171786d2c751\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-26-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": false,
+                "notice": "沙箱不可用，本次命令未隔离执行（onUnavailable: \"open\"）。"
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf x > should-not-execute.txt"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-26/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-26/work",
+                  "bashCommands": "[\"printf x > should-not-execute.txt\"]",
+                  "bashRequiresApproval": "true",
+                  "sandboxExecution": "沙箱外执行",
+                  "sandboxBypass": "未申请",
+                  "sandboxNotice": "沙箱不可用，本次命令未隔离执行（onUnavailable: \"open\"）。"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "open",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-26"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": "x"
+        }
+      }
+    },
+    {
+      "id": "SBX-27",
+      "group": "A-restore",
+      "commands": [
+        "printf ok"
+      ],
+      "checks": [
+        {
+          "name": "恢复正常 Seatbelt",
+          "ok": true,
+          "detail": "{\"is_error\":false,\"output\":{\"stdout\":\"ok\",\"stderr\":\"\",\"exitCode\":0,\"signal\":null,\"truncated\":false,\"sandboxed\":true}}"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "\n[工具] Bash：开始\n\n[工具] Bash：成功\n完成\n",
+        "stderr": "{\"timestamp\":\"2026-11-18T13:16:09.058Z\",\"event\":\"run.started\",\"runId\":\"1d9fc1ad-3baa-42eb-a166-1ae3160c95d7\",\"status\":\"running\",\"config\":{\"provider\":\"openai\",\"model\":\"fixture-model\",\"apiKeyEnv\":\"TEST_MODEL_API_KEY\",\"baseURL\":\"http://127.0.0.1:64893/v1\",\"workspace\":\"/private/tmp/qhy-sandbox-e2e/base/runs/SBX-27/work\",\"timeoutMs\":15000,\"maxSteps\":4,\"observability\":{\"langfuse\":{\"enabled\":false,\"baseURL\":\"https://cloud.langfuse.com\",\"publicKeyEnv\":\"LANGFUSE_PUBLIC_KEY\",\"secretKeyEnv\":\"LANGFUSE_SECRET_KEY\"}}},\"smokeTool\":false,\"conversationId\":\"0dcb7890-f63b-4e7e-ad53-6d0fd46ec60c\"}\n{\"timestamp\":\"2026-11-18T13:16:09.144Z\",\"event\":\"run.finished\",\"runId\":\"1d9fc1ad-3baa-42eb-a166-1ae3160c95d7\",\"status\":\"succeeded\",\"durationMs\":86,\"steps\":2,\"toolCalls\":1,\"finishReason\":\"stop\",\"usage\":{\"inputTokens\":20,\"outputTokens\":10},\"toolSmokePassed\":false,\"conversationId\":\"0dcb7890-f63b-4e7e-ad53-6d0fd46ec60c\"}\n",
+        "toolResults": [
+          {
+            "callId": "SBX-27-0",
+            "content": {
+              "is_error": false,
+              "output": {
+                "stdout": "ok",
+                "stderr": "",
+                "exitCode": 0,
+                "signal": null,
+                "truncated": false,
+                "sandboxed": true
+              }
+            }
+          }
+        ],
+        "approvals": [
+          {
+            "toolName": "Bash",
+            "input": {
+              "command": "printf ok"
+            },
+            "context": {
+              "environment": {
+                "workspace": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-27/work",
+                "toolDetails": {
+                  "cwd": "/private/tmp/qhy-sandbox-e2e/base/runs/SBX-27/work",
+                  "bashCommands": "[\"printf ok\"]",
+                  "bashRequiresApproval": "false",
+                  "sandboxExecution": "沙箱内执行",
+                  "sandboxBypass": "未申请"
+                }
+              },
+              "rules": {
+                "permissions": {
+                  "allow": [],
+                  "ask": [],
+                  "deny": [],
+                  "sandbox": {
+                    "enabled": true,
+                    "onUnavailable": "closed",
+                    "writePaths": [
+                      "~/scratch"
+                    ],
+                    "writeDenyPaths": [
+                      "~/scratch/protected"
+                    ],
+                    "readDenyPaths": [
+                      "~/private"
+                    ],
+                    "readAllowPaths": [
+                      "~/private/readable.txt"
+                    ],
+                    "networkAllow": [
+                      "example.com",
+                      "127.0.0.1"
+                    ],
+                    "networkPorts": [
+                      443
+                    ],
+                    "envPassthrough": [
+                      "QA_PASSTHROUGH",
+                      "QA_ROOT"
+                    ],
+                    "bypassAllowedCommands": [
+                      "printenv QA_HOST_ONLY"
+                    ]
+                  }
+                }
+              },
+              "history": {
+                "entries": [
+                  {
+                    "type": "user",
+                    "text": "RUN SBX-27"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "tempResidue": [],
+        "files": {
+          "work/marker.txt": null,
+          "work/response.txt": null,
+          "outside/marker.txt": null,
+          "tmp/sandbox-tmp.txt": null,
+          "home/scratch/ok.txt": null,
+          "home/scratch/protected": null,
+          "work/.agent/settings.local.json": null,
+          "work/.claude/skills/evil.md": null,
+          "work/.agents/skills/evil.md": null,
+          "work/.git/hooks/pre-commit": null,
+          "work/.github/workflows/evil.yml": null,
+          "outside/bypass-denied.txt": null,
+          "outside/fail.txt": null,
+          "work/should-not-execute.txt": null
+        }
+      }
+    },
+    {
+      "id": "SBX-PTY",
+      "group": "A",
+      "commands": [
+        "printf pty-ok > pty.txt"
+      ],
+      "checks": [
+        {
+          "name": "审批界面显示沙箱执行模式",
+          "ok": true,
+          "detail": "未找到沙箱执行模式"
+        },
+        {
+          "name": "审批界面显示豁免申请",
+          "ok": true,
+          "detail": "未找到豁免申请"
+        },
+        {
+          "name": "人工批准后命令执行",
+          "ok": true,
+          "detail": "pty-ok"
+        }
+      ],
+      "ok": true,
+      "evidence": {
+        "exitCode": 0,
+        "stdout": "> RUN SBX-PTY\r\r\n\r\n[人工审批 1] Bash（调用 SBX-PTY-0；最多等待 20000ms）\r\n{\r\n  \"command\": \"printf pty-ok > pty.txt\"\r\n}\r\n实际工作目录：/private/tmp/qhy-sandbox-e2e/base/runs/SBX-PTY/work\r\n沙箱执行模式：沙箱内执行\r\n豁免申请：未申请\r\n❯ 1. 批准本次\r\n  2. 拒绝本次\r\n  3. 本会话始终批准 Bash（仅跳过默认审批）\r\n使用 ↑/↓ 或数字键选择，回车确认，Esc 拒绝本次。\r\n1❯ 1. 批准本次\r\n  2. 拒绝本次\r\n  3. 本会话始终批准 Bash（仅跳过默认审批）\r\n使用 ↑/↓ 或数字键选择，回车确认，Esc 拒绝本次。\r\n\r\r\n→ 已批准本次\r\n\r\n● Bash(printf pty-ok > pty.txt) · 运行中\r\n● Bash(printf pty-ok > pty.txt) · 成功\r\n● Bash(printf pty-ok > pty.txt) · 成功\r\n完成\r\n> /exit\r\r\n",
+        "stderr": "",
+        "toolResults": [],
+        "approvals": [],
+        "tempResidue": [],
+        "files": {}
+      }
+    }
+  ]
+}

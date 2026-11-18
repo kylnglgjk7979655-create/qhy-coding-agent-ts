@@ -1,0 +1,25 @@
+[1G[0J> [3GRUN SBX-PTY
+
+[人工审批 1] Bash（调用 SBX-PTY-0；最多等待 20000ms）
+{
+  "command": "printf pty-ok > pty.txt"
+}
+实际工作目录：/private/tmp/qhy-sandbox-e2e/base/runs/SBX-PTY/work
+沙箱执行模式：沙箱内执行
+豁免申请：未申请
+❯ 1. 批准本次
+  2. 拒绝本次
+  3. 本会话始终批准 Bash（仅跳过默认审批）
+使用 ↑/↓ 或数字键选择，回车确认，Esc 拒绝本次。
+1[1A[2K[1A[2K[1A[2K[1A[2K❯ 1. 批准本次
+  2. 拒绝本次
+  3. 本会话始终批准 Bash（仅跳过默认审批）
+使用 ↑/↓ 或数字键选择，回车确认，Esc 拒绝本次。
+
+[1A[2K[1A[2K[1A[2K[1A[2K→ 已批准本次
+[0J
+● Bash(printf pty-ok > pty.txt) · 运行中
+[1A[2K● Bash(printf pty-ok > pty.txt) · 成功
+[1A[2K● Bash(printf pty-ok > pty.txt) · 成功
+完成
+[1G[0J> [3G/exit
