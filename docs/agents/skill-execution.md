@@ -11,10 +11,6 @@
 - **PR 反馈修改**：PR 评论后加 `agent:implement`；需要改代码时调用 `/implement`，workflow 发布提交与回复。
 - **分支更新**：`agent:update-branch` 合并最新基准；有冲突才调用 Agent。
 
-## QA 的当前边界
-
-GitHub workflow 暂不接入 QA：`agent:qa`、`agent:qa-only` 的 workflow 和脚本已移除。`.agents/skills/qa-only` 与 `.agents/skills/qa` 仍保留，可在本地 Claude 会话中通过 `/qa-only` 执行只读验收，或用 `/qa` 在验收失败后批量修复并复验、全绿后做一次 CR。以后恢复入口时再补 workflow 和自动化测试。
-
 ## 规范与交付
 
 新增、修改和审查代码统一读取根目录 [CODING_STANDARDS.md](../../CODING_STANDARDS.md)，领域词汇来自 `GLOSSARY.md`，相关决策来自 `docs/adr/`。完成前执行 `pnpm check` 并修复失败；CI 另外运行 `pnpm demo:test`。代码检查不代表人工 QA 已执行。
