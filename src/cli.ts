@@ -270,9 +270,24 @@ async function main(): Promise<void> {
       process.stdout.write(`当前审批模式：${approvalModeLabel(currentApprovalMode())}。\n`);
       return true;
     };
+    // 输入状态行与压缩附件共用的只读任务视图；先于输入消费者定义，避免排队输入在初始化前读取。
+    const pendingTaskStatuses = (): readonly BackgroundTaskStatusEntry[] => {
+      const context = config.context ?? DEFAULT_CONTEXT;
+      return backgroundAgentTasksForSession(conversationId, sessionTaskOutputDirectory(userHome, conversationId), context.capacityTokens - context.answerReserveTokens).pendingStatuses();
+    };
     // 信任门禁的交互确认需要输入消费者，因此在 Hook 信任判断之前建立。
     if (!smokeTool) {
-      input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, executeApprovalModeCommand);
+      input = new CliInput(
+        cancellation.signal,
+        cancel,
+        config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS,
+        executeApprovalModeCommand,
+        // 提交输入时读取一次，展示本次提交时的审批模式与运行中的后台任务数。
+        () => ({
+          approvalMode: approvalModeLabel(currentApprovalMode()),
+          runningTasks: pendingTaskStatuses().filter(({ status }) => status === 'running').length,
+        }),
+      );
       config = await applyHookTrust(config);
     }
     if (session && !releaseSession) releaseSession = await acquireSessionLock(userHome, conversationId);
@@ -422,11 +437,7 @@ async function main(): Promise<void> {
       unsubscribeNotifications = tasks.subscribeNotifications((notification) => input?.enqueueNotification(id, notification));
     };
     bindBackgroundNotifications(conversationId);
-    // 压缩附件只读当前会话任务池，不领取结果或改变通知状态。
-    const pendingTaskStatuses = (): readonly BackgroundTaskStatusEntry[] => {
-      const context = config.context ?? DEFAULT_CONTEXT;
-      return backgroundAgentTasksForSession(conversationId, sessionTaskOutputDirectory(userHome, conversationId), context.capacityTokens - context.answerReserveTokens).pendingStatuses();
-    };
+    // 压缩附件也复用上面定义的只读任务视图，不领取结果或改变通知状态。
     const switchSession = async (id: string) => {
       const onWarning = (warning: SessionLoadWarning) => reportSessionWarning(id, warning);
       const opened = id === conversationId ? undefined : await openSession(userHome, id, { onWarning });

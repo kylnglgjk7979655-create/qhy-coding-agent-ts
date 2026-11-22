@@ -235,6 +235,22 @@ describe('interactive compiled CLI', () => {
     expect(await readFile(join(cwd, 'approved.txt'), 'utf8')).toBe('approved-content');
   });
 
+  it.skipIf(process.platform === 'win32')('在真实交互终端显示输入框分隔线与审批模式状态行', async () => {
+    reply = (_request, index) => ({ body: response(`第${index}轮回答。`) });
+    const cliProcess = startCLI({
+      cwd, pty: true,
+      input: '你好\n/permission-mode auto\n第二条\n/exit\n',
+      env: { TEST_MODEL_API_KEY: secret },
+    });
+    const result = await cliProcess.done;
+
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    // 输入区上下各有一条分隔线，状态行跟随输入提交显示，并随 /permission-mode 切换更新。
+    expect((result.stdout.match(/─{20,}/gu) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect(result.stdout).toMatch(/▸▸[^\r\n]*default（人工审批）[^\r\n]*\/permission-mode/u);
+    expect(result.stdout).toMatch(/▸▸[^\r\n]*auto（模型审批）/u);
+  });
+
   it.skipIf(process.platform === 'win32')('在真实交互终端以可读错误显示启动失败', async () => {
     const cliProcess = startCLI({
       cwd,

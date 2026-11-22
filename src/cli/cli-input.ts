@@ -8,6 +8,14 @@ import { fitText } from './terminal-text.js';
 
 export type CliWorkItem = { type: 'user'; text: string } | { type: 'notification'; conversationId: string; notification: BackgroundAgentTaskNotification } | { type: 'compact' };
 
+/** 输入框下方状态行所需的只读运行状态；由 CLI 提供，输入模块不直接读取会话存储。 */
+export interface CliInputPromptStatus {
+  /** 当前审批模式展示标签，例如 `default（人工审批）`。 */
+  approvalMode: string;
+  /** 运行中的后台子 Agent 任务数。 */
+  runningTasks: number;
+}
+
 interface PendingApproval {
   number: number;
   call: ToolApprovalRequest;
@@ -41,6 +49,8 @@ export class CliInput {
   private confirmation: { answer: (line: string) => void; close: () => void } | undefined;
   private compactRequested = false;
   private busy = false;
+  // 交互终端下记录输入框顶部分隔线是否已绘制，提交时据此补齐底部分隔线与状态行。
+  private promptFrameOpen = false;
   private readonly cancelRequest: () => void;
 
   constructor(
@@ -49,6 +59,8 @@ export class CliInput {
     private readonly humanTimeoutMs: number,
     /** 即时处理的本地命令；返回 true 表示该行已被消费，不作为对话或审批答复。 */
     private readonly localLineHandler?: (line: string) => boolean,
+    /** 每次提交输入时读取一次，用于绘制输入框下方状态行；非交互终端不调用。 */
+    private readonly promptStatus?: () => CliInputPromptStatus,
   ) {
     this.cancelRequest = cancel;
     this.input = createInterface({
@@ -56,6 +68,8 @@ export class CliInput {
     });
     this.input.on('SIGINT', cancel);
     this.input.on('line', (line) => {
+      // 一行提交即结束本次输入框，先补齐样式再做分发，使状态行紧贴用户输入。
+      this.closePromptFrame();
       if (this.confirmation) {
         // 信任确认答复优先于对话消息和审批答复，避免启动输入被当成一次用户请求。
         this.confirmation.answer(line);
@@ -88,6 +102,7 @@ export class CliInput {
     });
     this.input.on('close', () => {
       this.closed = true;
+      this.promptFrameOpen = false;
       this.confirmation?.close();
       this.confirmation = undefined;
       this.selector?.();
@@ -249,10 +264,34 @@ export class CliInput {
     });
   };
 
-  prompt(): void { if (!this.closed) this.input.prompt(); }
+  /**
+   * 交互终端在提示符上方绘制分隔线，形成类似 Claude Code 的输入区；
+   * 非交互管道保持原有的逐行输入，不写入任何装饰。
+   */
+  prompt(): void {
+    if (this.closed) return;
+    if (process.stdin.isTTY && process.stdout.isTTY) {
+      if (!this.promptFrameOpen) {
+        process.stdout.write(`\n${promptSeparator()}\n`);
+        this.promptFrameOpen = true;
+      }
+    }
+    this.input.prompt();
+  }
+
   /** 主循环执行轮次或压缩期间不重新显示提示，避免打断流式输出或审批提示。 */
   setBusy(value: boolean): void { this.busy = value; }
   close(): void { this.input.close(); }
+
+  /** 补齐输入框底部分隔线并绘制状态行；没有绘制过顶部时不输出，兼容非交互输入。 */
+  private closePromptFrame(): void {
+    if (!this.promptFrameOpen) return;
+    this.promptFrameOpen = false;
+    const columns = promptColumns();
+    process.stdout.write(`${'─'.repeat(columns)}\n`);
+    const status = this.promptStatus?.();
+    if (status) process.stdout.write(`${fitText(formatPromptStatus(status), columns)}\n`);
+  }
 
   private startApprovalMenu(): void {
     if (this.approvalMenu || this.closed || !process.stdin.isTTY || !process.stdout.isTTY) return;
@@ -365,4 +404,18 @@ export class CliInput {
     ].filter(Boolean).map((line) => `${line}\n`).join('');
     return `\n[人工审批 ${number}] ${call.toolName}（调用 ${call.callId}；最多等待 ${this.humanTimeoutMs}ms${pending}）\n${JSON.stringify(call.input, null, 2)}\n${details}${suffix}`;
   }
+}
+
+function promptColumns(): number {
+  return Math.max(20, process.stdout.columns || 80);
+}
+
+function promptSeparator(): string {
+  return '─'.repeat(promptColumns());
+}
+
+/** 状态行只展示可操作的入口：当前审批模式、切换命令，以及运行中的后台任务数。 */
+function formatPromptStatus(status: CliInputPromptStatus): string {
+  const tasks = status.runningTasks > 0 ? ` · 后台任务 ${status.runningTasks}` : '';
+  return `▸▸ 审批模式：${status.approvalMode} · /permission-mode 切换${tasks}`;
 }
