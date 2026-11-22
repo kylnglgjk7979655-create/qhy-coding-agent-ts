@@ -11,6 +11,10 @@
 - **PR 反馈修改**：PR 评论后加 `agent:implement`；需要改代码时调用 `/implement`，workflow 发布提交与回复。
 - **分支更新**：`agent:update-branch` 合并最新基准；有冲突才调用 Agent。
 
+## 本地 PR 审查
+
+在 PR 工作树中，Claude Code 输入 `/review-pr`，Codex 输入 `$pr-review`。两者默认将已提交的 HEAD 与 `origin/main` 比较，可在指令后指定比较基准和需求来源。报告汇总规范、需求、回归、简化判断和运行验证。审查只判断是否值得简化，具体简化由修改阶段的 `code-simplifier` Skill 执行。
+
 ## 规范与交付
 
 新增、修改和审查代码统一读取根目录 [CODING_STANDARDS.md](../../CODING_STANDARDS.md)，领域词汇来自 `GLOSSARY.md`，相关决策来自 `docs/adr/`。完成前执行 `pnpm check` 并修复失败；CI 另外运行 `pnpm demo:test`。代码检查不代表人工 QA 已执行。

@@ -4,6 +4,7 @@
 
 | Skill | 作用 | 来源 |
 | --- | --- | --- |
+| pr-review | 本地只读 PR 审查与运行验证 | Q 项目自定义 |
 | code-review | 规范、需求两个独立视角审查 | Matt 固定版本 |
 | bug-review | 沿调用方和契约追踪改动引入的缺陷 | Sentry Warden 英文原文 |
 | code-simplifier | 简化本次改动并保持行为 | Q 项目自定义 |

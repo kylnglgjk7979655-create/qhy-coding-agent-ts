@@ -60,8 +60,26 @@ phase('代码审查');
 const [standards, spec, bugs] = await parallel([
   () => agent(
     `${mattReview}
-你负责 Standards。使用 Skill 的规范来源与 smell baseline，分别报告明确的规范违例和有证据的维护性问题。`,
-    { label: 'Matt Pocock · Standards' },
+你负责 Standards。使用 Skill 的规范来源与 smell baseline，在 report 中分别报告明确的规范违例和有证据的维护性问题。
+读取 .agents/skills/pr-review/SKILL.md 的「简化判断」，将整个 diff 的判断填入 simplification。`,
+    {
+      label: 'Matt Pocock · Standards',
+      schema: {
+        type: 'object',
+        properties: {
+          report: { type: 'string' },
+          simplification: {
+            type: 'object',
+            properties: {
+              status: { type: 'string', enum: ['RECOMMENDED', 'SKIP'] },
+              reason: { type: 'string' },
+            },
+            required: ['status', 'reason'],
+          },
+        },
+        required: ['report', 'simplification'],
+      },
+    },
   ),
   () => agent(
     `${mattReview}
@@ -90,7 +108,11 @@ const verification = await agent(
 return {
   base: scope.base,
   head: scope.head,
-  Standards: standards ?? 'BLOCKED — 未取得规范审查结果。',
+  Standards: standards?.report ?? 'BLOCKED — 未取得规范审查结果。',
+  Simplification: standards?.simplification ?? {
+    status: 'BLOCKED',
+    reason: '未取得是否值得简化的判断。',
+  },
   Spec: spec ?? 'BLOCKED — 未取得需求审查结果。',
   Bugs: bugs ?? 'BLOCKED — 未取得回归审查结果。',
   Verification: verification ?? 'BLOCKED — 未取得运行验证结果。',

@@ -35,6 +35,8 @@
     "to-tickets/agents/openai.yaml": "21bc6215fffcd7614e9f772bb1760e87cc5fc7dcc707e7d282bc9414267a6090",
     "implement/SKILL.md": "91348548d8ec80def1bc4ac16dac48debb3079295c091a8dc6d9358e8dcf6f90",
     "implement/agents/openai.yaml": "8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc",
+    "pr-review/SKILL.md": "e74d810ae56fe77dabb1128749acc13c24a9170cbc953461570981ff86c2f2ad",
+    "pr-review/agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
     "bug-review/LICENSE.warden": "3f4ff135dc8351ce7302b0e24e251bcb7d25af5e187ca39bc17163001f3001c7",
     "bug-review/SKILL.md": "1379230613d710d010f03fcfadd5be7800976c067605d9187be34e6fbc8646ab",
     "bug-review/references/github-workflows.md": "68811fca3e2ad52d5dfbd833ba3cb10e6df82c6946c0269fb9d98cf4d6d6c3d8",
@@ -68,6 +70,9 @@
     }
   },
   "projectSkills": {
+    "pr-review": {
+      "description": "本地只读 PR 审查入口，Codex 通过 $pr-review 显式调用。其简化判断也由 Claude Code 的 /review-pr 使用。"
+    },
     "bug-review": {
       "description": "Sentry Warden 的英文缺陷审查原文及其参考文件。Claude Code 中通过目录名 /bug-review 调用。",
       "references": [
