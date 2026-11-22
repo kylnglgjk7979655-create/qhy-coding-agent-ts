@@ -93,12 +93,12 @@ matcher 不是 glob，按以下顺序解析：
 | `session_id` | string | 对话标识；子 Agent 工具事件使用父对话标识 |
 | `transcript_path` | string | 会话记录路径；子 Agent 指向父对话记录 |
 | `cwd` | string | 工作区绝对路径，同时是 Hook 进程的工作目录 |
-| `approval_mode` | `'model' \| 'human'` | 由 `approval.mode` 映射：`auto` → `model`，`default` → `human` |
+| `approval_mode` | `'model' \| 'human'` | 由 `approval.mode` 映射：`auto` → `model`，`default` → `human`；`plan` 期间不执行 Hook，不会出现 plan 映射 |
 | `hook_event_name` | 事件名 | 当前事件字面量 |
 | `agent_id` | string，可选 | 仅子 Agent 工具事件 |
 | `agent_type` | string，可选 | 仅子 Agent 工具事件 |
 
-`approval_mode` 不沿用 Claude Code 的 `permission_mode`。本仓库的审批模式只有 `default`（人工）与 `auto`（模型），三态或多态权限模式无法无歧义映射，因此使用两值字段。`hook_event_name` 是相对早期 QA 清单的补充；它使同一个命令可以安全地挂在多个事件下，不必靠事件专有字段推断。
+`approval_mode` 不沿用 Claude Code 的 `permission_mode`。审批模式为 `default`（人工）、`auto`（模型）与 `plan`（只读）；`plan` 期间所有命令型 Hook 暂停，不产生 Hook 进程，因此 stdin 契约仍保持 `model` / `human` 两值，避免 Hook 依赖不会出现的第三态。`hook_event_name` 是相对早期 QA 清单的补充；它使同一个命令可以安全地挂在多个事件下，不必靠事件专有字段推断。
 
 事件专有字段：
 

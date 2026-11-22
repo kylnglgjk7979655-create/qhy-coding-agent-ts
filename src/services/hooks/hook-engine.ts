@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ModelMessage } from 'ai';
+import type { ApprovalMode } from '../settings/config.js';
 import type { ToolPreToolUseDecision } from '../../tools/tool-registry.js';
 import { hookQueryField, matchesHookMatcher, type HookCommand, type HookEvent, type HooksConfig } from './hooks-config.js';
 import {
@@ -13,12 +14,13 @@ export const MAX_HOOK_UI_LINE_CHARS = 500;
 /**
  * 所有事件共用的 stdin 基础字段。
  * 集中 approval_mode 映射，避免各调用点分别拼装时出现不一致。
+ * plan 不执行任何 Hook；即使被非计划路径调用，也只映射为两值协议中的 human。
  */
 export function hookInputBase<Event extends HookEvent>(
   event: Event,
   sessionId: string,
   transcriptPath: string,
-  config: { workspace: string; approval: { mode: 'auto' | 'default' } },
+  config: { workspace: string; approval: { mode: ApprovalMode } },
 ): HookInputBase & { hook_event_name: Event } {
   return {
     session_id: sessionId,

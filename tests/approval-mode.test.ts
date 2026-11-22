@@ -2,7 +2,7 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { parseApprovalModeCommand, selectApprovalControl } from '../src/tools/approval-mode.js';
+import { approvalModeLabel, createApprovalModeState, parseApprovalModeCommand, selectApprovalControl } from '../src/tools/approval-mode.js';
 import type { ApprovalControl } from '../src/tools/tool-approval.js';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
@@ -251,10 +251,11 @@ describe('审批模式命令', () => {
 });
 
 describe('审批模式命令解析', () => {
-  it('只把查看、default 与 auto 识别为有效命令', () => {
+  it('只把查看、default、auto 与 plan 识别为有效命令', () => {
     expect(parseApprovalModeCommand('/permission-mode')).toEqual({});
     expect(parseApprovalModeCommand('  /permission-mode auto  ')).toEqual({ mode: 'auto' });
     expect(parseApprovalModeCommand('/permission-mode default')).toEqual({ mode: 'default' });
+    expect(parseApprovalModeCommand('/permission-mode plan')).toEqual({ mode: 'plan' });
     expect(parseApprovalModeCommand('/permission-mode acceptEdits')).toEqual({ invalid: 'acceptEdits' });
     expect(parseApprovalModeCommand('/permission-mode auto extra')).toEqual({ invalid: 'auto extra' });
     expect(parseApprovalModeCommand('/permission-modex')).toBeUndefined();
@@ -262,7 +263,16 @@ describe('审批模式命令解析', () => {
     expect(parseApprovalModeCommand('你好')).toBeUndefined();
   });
 
-  it('default 优先人工控制，auto 只使用通用控制', () => {
+  it('plan 按只读语义显示，并从 default 经 auto 循环回 default', () => {
+    expect(approvalModeLabel('plan')).toBe('plan（只读）');
+    const state = createApprovalModeState('default');
+    expect(state.cycle()).toBe('auto');
+    expect(state.cycle()).toBe('plan');
+    expect(state.cycle()).toBe('default');
+    expect(state.current()).toBe('default');
+  });
+
+  it('default 与 plan 优先人工控制，auto 只使用通用控制', () => {
     const human: ApprovalControl = async () => 'approve';
     const generic: ApprovalControl = async () => 'deny';
     expect(selectApprovalControl('default', generic, human)).toBe(human);
@@ -270,5 +280,7 @@ describe('审批模式命令解析', () => {
     expect(selectApprovalControl('default', undefined, undefined)).toBeUndefined();
     expect(selectApprovalControl('auto', generic, human)).toBe(generic);
     expect(selectApprovalControl('auto', undefined, human)).toBeUndefined();
+    expect(selectApprovalControl('plan', generic, human)).toBe(human);
+    expect(selectApprovalControl('plan', generic, undefined)).toBe(generic);
   });
 });

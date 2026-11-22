@@ -50,12 +50,13 @@ const help = `用法：node dist/cli.js [选项]
   /rewind              预览并确认恢复到消息级文件检查点
   /compact             压缩当前有效历史并保存；空闲时立即生效，执行中在当前工具完成后生效
   /context             显示当前有效历史的估算输入用量、配置容量与使用比例
-  /permission-mode [模式]  查看或切换当前进程的审批模式（default / auto）
+  /permission-mode [模式]  查看或切换当前进程的审批模式（default / auto / plan）
+  交互终端按 Shift+Tab 在 default → auto → plan → default 间循环切换模式
 
 选项：
   --workspace <目录>  覆盖配置的工作区（相对当前目录）
   --conversation-id <ID>  继续指定会话（省略时新建会话）
-  --permission-mode <模式>  本次进程使用 default（人工审批）或 auto（模型审批）
+  --permission-mode <模式>  本次进程使用 default（人工审批）、auto（模型审批）或 plan（只读）
   --smoke-tool        强制读取探针文件并验证模型使用结果
   --trust-hooks       跳过 Hook 信任确认并记录当前 Hook 配置
   --no-hooks          本次运行禁用全部 Hook
@@ -162,8 +163,8 @@ async function main(): Promise<void> {
       throw new AgentError('CONFIG_ERROR', '交互模式不接受位置参数，请启动后在终端输入需求。');
     }
     const permissionMode = args.values['permission-mode'];
-    if (permissionMode !== undefined && permissionMode !== 'default' && permissionMode !== 'auto') {
-      throw new AgentError('CONFIG_ERROR', '--permission-mode 只接受 default 或 auto。运行 --help 查看用法。');
+    if (permissionMode !== undefined && permissionMode !== 'default' && permissionMode !== 'auto' && permissionMode !== 'plan') {
+      throw new AgentError('CONFIG_ERROR', '--permission-mode 只接受 default、auto 或 plan。运行 --help 查看用法。');
     }
     if (args.values['smoke-tool'] && args.values['conversation-id'] !== undefined) {
       throw new AgentError('CONFIG_ERROR', '--smoke-tool 不能与 --conversation-id 同时使用。');
@@ -265,14 +266,20 @@ async function main(): Promise<void> {
       if (command === undefined) return false;
       if (command.mode !== undefined) approvalMode.switchTo(command.mode);
       if (command.invalid !== undefined) {
-        process.stdout.write(`\n未知审批模式“${command.invalid}”；可用模式：default、auto。\n`);
+        process.stdout.write(`\n未知审批模式“${command.invalid}”；可用模式：default、auto、plan。\n`);
       }
       process.stdout.write(`当前审批模式：${approvalModeLabel(currentApprovalMode())}。\n`);
       return true;
     };
     // 信任门禁的交互确认需要输入消费者，因此在 Hook 信任判断之前建立。
     if (!smokeTool) {
-      input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, executeApprovalModeCommand);
+      input = new CliInput(
+        cancellation.signal,
+        cancel,
+        config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS,
+        executeApprovalModeCommand,
+        approvalMode,
+      );
       config = await applyHookTrust(config);
     }
     if (session && !releaseSession) releaseSession = await acquireSessionLock(userHome, conversationId);
@@ -310,7 +317,7 @@ async function main(): Promise<void> {
      * 匹配 Hook 并行执行，附加上下文按配置顺序放到历史首部；故障只提示，不阻止启动。
      */
     const sessionStartContext = async (source: SessionStartSource, sessionId: string, signal: AbortSignal): Promise<ModelMessage[]> => {
-      if (config.hooks === undefined || config.disableAllHooks) return [];
+      if (currentApprovalMode() === 'plan' || config.hooks === undefined || config.disableAllHooks) return [];
       const hookInput: SessionStartHookInput = {
         ...hookInputBase('SessionStart', sessionId, sessionRecordPath(userHome, sessionId), config),
         source,
@@ -360,7 +367,7 @@ async function main(): Promise<void> {
       context: ModelMessage[];
       stop?: UserPromptSubmitStop;
     }> => {
-      if (config.hooks === undefined || config.disableAllHooks) return { context: [] };
+      if (currentApprovalMode() === 'plan' || config.hooks === undefined || config.disableAllHooks) return { context: [] };
       const hookInput: UserPromptSubmitHookInput = {
         ...hookInputBase('UserPromptSubmit', conversationId, sessionRecordPath(userHome, conversationId), config),
         prompt,
@@ -509,7 +516,7 @@ async function main(): Promise<void> {
       aliases: [],
       type: 'local',
       execute: async () => {
-        const usage = await estimateContextUsage(config, history, skills);
+        const usage = await estimateContextUsage(config, history, skills, currentApprovalMode() === 'plan');
         process.stdout.write(formatContextUsage(usage, config));
       },
     });
@@ -879,8 +886,10 @@ async function runStopHook(
   signal: AbortSignal,
   tracker: HookInjectionTracker,
   stopHookActive: boolean,
+  approvalMode?: () => ApprovalMode,
 ): Promise<StopHookOutcome> {
-  if (config.hooks === undefined || config.disableAllHooks) return { feedback: [], continuation: false };
+  if ((approvalMode?.() ?? config.approval.mode) === 'plan'
+    || config.hooks === undefined || config.disableAllHooks) return { feedback: [], continuation: false };
   // 最终回答之后、Hook 启动之前的取消仍属于取消路径，不运行 Stop。
   signal.throwIfAborted();
   const hookInput: StopHookInput = {
@@ -1098,7 +1107,7 @@ async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
         if (requested) manualCompaction = true;
         return requested;
       } } : {}),
-      // 人工控制只在当前模式为 default 时生效；运行时切换后，后续调用由模型审批或人工审批接管。
+      // 人工控制只在当前模式为 default 或 plan 时生效；运行时切换后，后续调用按新模式的审批方式接管。
       ...(humanApprovalControl === undefined ? {} : { humanApprovalControl }),
       ...(approvalMode === undefined ? {} : { approvalMode }),
     });
@@ -1109,7 +1118,7 @@ async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
     // Stop 只在最终回答产生后、轮次结束前运行；取消与异常终止都在调用前抛错。
     const stop = smokeTool
       ? { feedback: [] as ModelMessage[], continuation: false }
-      : await runStopHook(config, conversationId, userHome, firstResult.text, signal, tracker, false);
+      : await runStopHook(config, conversationId, userHome, firstResult.text, signal, tracker, false, approvalMode);
     const stopFeedback = stop.feedback;
     let finalResult = firstResult;
     let roundMessages = firstResult.roundMessages;
@@ -1139,7 +1148,7 @@ async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
         });
         signal.throwIfAborted();
         // 第二次 Stop 只记录日志：再次 block 也不续跑，也不向历史注入新的反馈。
-        await runStopHook(config, conversationId, userHome, resumed.text, signal, tracker, true);
+        await runStopHook(config, conversationId, userHome, resumed.text, signal, tracker, true, approvalMode);
         finalResult = resumed;
         roundMessages = [...roundMessages, ...stopFeedback, ...resumed.roundMessages];
         summaries = [...summaries, ...resumed.summaries];

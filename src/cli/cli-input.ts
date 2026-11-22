@@ -2,6 +2,8 @@ import { createInterface, emitKeypressEvents } from 'node:readline';
 import type { ApprovalControl } from '../tools/tool-approval.js';
 import type { ToolApprovalRequest } from '../tools/tool-registry.js';
 import type { BackgroundAgentTaskNotification } from '../tools/AgentTool/background-agent-tasks.js';
+import { approvalModeLabel } from '../tools/approval-mode.js';
+import type { ApprovalModeState } from '../tools/approval-mode.js';
 import { approvalOptionsFor, SessionApprovals } from './approval-policy.js';
 import type { ApprovalOption } from './approval-policy.js';
 import { fitText } from './terminal-text.js';
@@ -49,11 +51,15 @@ export class CliInput {
     private readonly humanTimeoutMs: number,
     /** 即时处理的本地命令；返回 true 表示该行已被消费，不作为对话或审批答复。 */
     private readonly localLineHandler?: (line: string) => boolean,
+    /** 可选的进程级审批模式；提供时提示栏展示当前模式并响应 Shift+Tab。 */
+    private readonly approvalMode?: ApprovalModeState,
   ) {
     this.cancelRequest = cancel;
     this.input = createInterface({
       input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY, signal,
     });
+    this.setPromptText();
+    if (process.stdin.isTTY) process.stdin.on('keypress', this.onModeKeypress);
     this.input.on('SIGINT', cancel);
     this.input.on('line', (line) => {
       if (this.confirmation) {
@@ -88,6 +94,7 @@ export class CliInput {
     });
     this.input.on('close', () => {
       this.closed = true;
+      process.stdin.off('keypress', this.onModeKeypress);
       this.confirmation?.close();
       this.confirmation = undefined;
       this.selector?.();
@@ -96,6 +103,24 @@ export class CliInput {
       this.wakeNext = undefined;
     });
   }
+
+  /** 提示栏只显示模式名称和语义；缺少模式状态时保持旧版裸提示符。 */
+  private setPromptText(): void {
+    this.input.setPrompt(this.approvalMode === undefined
+      ? '> '
+      : `[${approvalModeLabel(this.approvalMode.current())}] > `);
+  }
+
+  /** 交互终端的 Shift+Tab 在三个审批模式间循环，与 /permission-mode 共用同一进程状态。 */
+  private readonly onModeKeypress = (_character: string, key: { name?: string; shift?: boolean }): void => {
+    if (key.name !== 'tab' || key.shift !== true) return;
+    if (this.approvalMode === undefined || this.closed
+      || this.confirmation !== undefined || this.selector !== undefined || this.approvalMenu !== undefined) return;
+    const next = this.approvalMode.cycle();
+    process.stdout.write(`\n当前审批模式：${approvalModeLabel(next)}。\n`);
+    // 审批等待由菜单独占键盘；轮次执行中只更新状态，下一次提示符再显示新模式。
+    if (!this.busy && this.approvals.size === 0 && this.input.line === '') this.prompt();
+  };
 
   async select<T>(title: string, choices: Array<{ label: string; detail: string; value: T }>): Promise<T | undefined> {
     if (this.closed || !process.stdin.isTTY || !process.stdout.isTTY) {
@@ -249,7 +274,11 @@ export class CliInput {
     });
   };
 
-  prompt(): void { if (!this.closed) this.input.prompt(); }
+  prompt(): void {
+    if (this.closed) return;
+    this.setPromptText();
+    this.input.prompt();
+  }
   /** 主循环执行轮次或压缩期间不重新显示提示，避免打断流式输出或审批提示。 */
   setBusy(value: boolean): void { this.busy = value; }
   close(): void { this.input.close(); }

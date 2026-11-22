@@ -378,9 +378,11 @@ Bash 调用在审批前已生成沙箱执行计划，人工和模型审批详情
 }
 ```
 
-`approval.mode` 接受 `default`（默认人工审批）和 `auto`（独立模型审批）。`ask` 在两种模式下分别交给人工或模型审批。人工模式逐次展示工具名称、调用 ID 和完整参数，例如 `[人工审批 1] write_file`。
+`approval.mode` 接受 `default`（默认人工审批）、`auto`（独立模型审批）和 `plan`（只读调查）。`ask` 在 `default` 与 `plan` 下交给人工，在 `auto` 下交给模型。人工模式逐次展示工具名称、调用 ID 和完整参数，例如 `[人工审批 1] write_file`。
 
-交互会话中输入 `/permission-mode` 可查看当前审批模式，输入 `/permission-mode default` 或 `/permission-mode auto` 可切换。启动时也可用 `--permission-mode default|auto` 指定本次进程的初始模式，与 Claude Code 的同名启动参数对应；取值沿用本项目的审批语义，只接受 `default` 和 `auto`。切换只作用于当前 CLI 进程，不写入 settings 或会话记录，重启后仍使用 settings 中的 `approval.mode`。切换只影响之后进入审批的工具调用；已经等待中的人工或模型审批按进入审批时的模式完成，不会因为切到 `auto` 而被自动批准。权限规则及逐次审批语义不因切换改变。
+`plan` 只公布并允许 `Read`、`Glob` 和 `Grep`；只读工具继续按现有 `permissions` 路径规则执行，`deny` 优先于 `ask`、`ask` 优先于 `allow`，需要审批时由人工确认。配置中的 `allow`、会话批准和模型发出的调用都不能让计划模式执行写入、Bash、网络、Agent 或其他工具；范围外调用返回 `PERMISSION_DENIED`，不启动命令、不写文件。`plan` 生效期间不执行任何命令型 Hook；切出后，后续事件按所选模式原来的信任门禁与配置恢复。
+
+交互会话中输入 `/permission-mode` 可查看当前审批模式，输入 `/permission-mode default`、`/permission-mode auto` 或 `/permission-mode plan` 可切换。交互终端的提示栏显示当前模式；按 `Shift+Tab` 在 `default → auto → plan → default` 间循环切换。启动时也可用 `--permission-mode default|auto|plan` 指定本次进程的初始模式，与 Claude Code 的同名启动参数对应；取值沿用本项目的审批语义，只接受这三个模式。切换只作用于当前 CLI 进程，不写入 settings 或会话记录，重启后仍使用 settings 中的 `approval.mode`。切换只影响之后进入审批的工具调用；已经等待中的人工或模型审批按进入审批时的模式完成，不会因为切到 `auto` 而被自动批准。权限规则及逐次审批语义不因切换改变。
 
 交互终端使用键盘菜单，不需要输入 `approve` 编号：按 `1` / `2` / `3`（或 `↑`/`↓`）选择后回车确认，`Esc` 拒绝本次。选项包括“批准本次”“拒绝本次”，以及工具默认审批下的“本会话始终批准当前工具类型”。会话批准按工具名隔离，只跳过该工具默认产生的审批，不扩展到其他工具；显式 `ask` 仍逐次询问，`deny` 仍在审批前拒绝，退出进程后自动失效。为避免审批期间输入的文字被误当作批准，没有显式选择时单独回车不会确认。并发调用按到达顺序逐一显示菜单，批复一项后显示下一项。
 
@@ -479,7 +481,7 @@ Hook 从 stdin 收到恰好一个 JSON 对象。所有事件共有：
 | `session_id` | string | 对话标识；子 Agent 的工具事件沿用父对话标识 |
 | `transcript_path` | string | 会话记录路径；子 Agent 指向父对话记录 |
 | `cwd` | string | 工作区绝对路径，同时是 Hook 进程的工作目录 |
-| `approval_mode` | `model` \| `human` | 由 `approval.mode` 映射：`auto` → `model`，`default` → `human` |
+| `approval_mode` | `model` \| `human` | 由 `approval.mode` 映射：`auto` → `model`，`default` → `human`；`plan` 不执行 Hook，不会产生该字段的 plan 取值 |
 | `hook_event_name` | string | 当前事件名 |
 | `agent_id` | string，可选 | 仅子 Agent 工具事件；本次委派工具调用 ID |
 | `agent_type` | string，可选 | 仅子 Agent 工具事件 |
