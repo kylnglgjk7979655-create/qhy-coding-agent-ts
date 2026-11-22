@@ -589,6 +589,8 @@ async function main(): Promise<void> {
           process.stdout.write(`\n[Bash 作业 ${taskId}] ${formatBashJobEnd(final)}\n`);
           // 接回时已在开头展示过的说明不再重复；未展示过（已结束作业）时仍需显示。
           if (!noticeShown && final.notice !== undefined) process.stdout.write(`${final.notice}\n`);
+          // 代理拒绝汇总不在进程流里，只随终态出现；首次接回就交付，避免等到第二次 /task。
+          if (final.diagnostics !== undefined) process.stdout.write(`${final.diagnostics}\n`);
         } else if (outcome.kind === 'aborted') process.stdout.write(`\n已停止 Bash 作业：${taskId}\n`);
         else if (outcome.kind === 'busy') process.stdout.write(`\n当前已有 Bash 作业在前台运行，请等待其结束或按 Ctrl+B 切到后台。\n`);
         // 切到后台时由按键处理统一提示一次；这里不再重复输出同一任务 ID。

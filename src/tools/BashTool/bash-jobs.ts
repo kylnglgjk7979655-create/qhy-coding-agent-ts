@@ -22,6 +22,8 @@ export interface BashJobSnapshot {
   truncated: boolean;
   sandboxed: boolean;
   notice?: string;
+  /** 终态诊断（例如代理拒绝汇总）；运行中或没有诊断时省略。 */
+  diagnostics?: string;
   backgrounded: boolean;
   startedAt: number;
 }
@@ -67,8 +69,11 @@ interface Job {
   signal: string | null;
   finalResult?: BashRunResult;
   finalError?: string | undefined;
+  finalDiagnostics?: string | undefined;
   startedAt: number;
   backgrounded: boolean;
+  /** 任务 ID 交付前已取消：收尾时不再发出结束通知，作业也不在池中。 */
+  abandoned: boolean;
   /** 未耗尽的前台时限；进入后台时暂停累计。 */
   remainingMs: number;
   foregroundSince?: number | undefined;
@@ -116,6 +121,12 @@ export class BashJobs {
       const outcome = await this.waitForForeground(job, signal);
       this.pauseForeground(job);
       this.clearForeground(job);
+      // 交付边界：结束与取消在同一事件循环交错时，只要取消先被观察到就不交付结果。
+      // 取消早于结果交付意味着模型不会收到任务 ID，作业必须终止并从池中移除。
+      if (outcome === 'aborted' || signal?.aborted === true) {
+        await this.abandon(job);
+        throw signal?.reason;
+      }
       if (outcome === 'detached') {
         // 切换与命令自然结束相邻发生时，进程可能已经结束；此时按普通结果交付，
         // 不能再声称作业仍在运行，否则模型会引用一个已停止的任务。
@@ -124,22 +135,25 @@ export class BashJobs {
         job.backgrounded = true;
         return { ...this.startedResult(job), detached: true };
       }
-      if (outcome === 'aborted') {
-        job.stopRequested = true;
-        job.execution.terminate();
-        await job.done;
-        throw signal?.reason;
-      }
       return this.foregroundResult(job);
     } finally {
       this.clearForeground(job);
     }
   }
 
-  /** 直接在后台启动：进程成功启动后立即返回任务 ID；启动失败按普通调用失败返回。 */
-  async startBackground(launch: BashJobLaunch): Promise<BashJobStarted> {
+  /**
+   * 直接在后台启动：进程成功启动且任务 ID 仍可交付时返回；
+   * 启动失败按普通调用失败返回，启动回执期间取消则终止自有进程组并移除作业。
+   */
+  async startBackground(launch: BashJobLaunch, signal?: AbortSignal): Promise<BashJobStarted> {
     const job = this.createJob(launch, true);
-    const started = await job.execution.started;
+    const started = await this.waitForStartup(job.execution.started, signal);
+    if (started === 'aborted') {
+      await this.abandon(job);
+      signal?.throwIfAborted();
+      // 取消已由上面的检查抛出；此分支仅防御信号与竞速状态不一致。
+      throw signal?.reason ?? new Error('Bash 作业启动已取消。');
+    }
     if (!started) {
       await job.done;
       this.jobs.delete(job.taskId);
@@ -147,6 +161,11 @@ export class BashJobs {
         job.finalError ?? '无法启动 Bash 命令。',
         job.finalResult ?? { stdout: '', stderr: '', exitCode: null, signal: null, truncated: false, sandboxed: false },
       );
+    }
+    // 启动回执与任务 ID 交付之间仍可能取消；未交付的作业不能留在池中继续运行。
+    if (signal?.aborted) {
+      await this.abandon(job);
+      signal.throwIfAborted();
     }
     return this.startedResult(job);
   }
@@ -285,6 +304,52 @@ export class BashJobs {
     });
   }
 
+  /**
+   * 取消发生在任务 ID 交付之前：终止自有进程组、等待收尾并从作业池移除。
+   * 作业从未交付给模型，不能留下可被 `/tasks` 领取的条目；已交付的作业不经过这里。
+   */
+  private async abandon(job: Job): Promise<void> {
+    job.abandoned = true;
+    job.stopRequested = true;
+    this.pauseForeground(job);
+    this.clearForeground(job);
+    job.execution.terminate();
+    await this.waitForCleanup(job.done);
+    this.jobs.delete(job.taskId);
+  }
+
+  /** 等待启动回执；取消先到时立即返回，避免回执延迟把已取消的作业带进交付。 */
+  private async waitForStartup(started: Promise<boolean>, signal: AbortSignal | undefined): Promise<boolean | 'aborted'> {
+    if (signal === undefined) return started;
+    let abortHandler: (() => void) | undefined;
+    try {
+      return await Promise.race([
+        started,
+        new Promise<'aborted'>((resolve) => {
+          abortHandler = () => resolve('aborted');
+          signal.addEventListener('abort', abortHandler, { once: true });
+          // 监听器注册前可能已经取消；事件不会补发。
+          if (signal.aborted) abortHandler();
+        }),
+      ]);
+    } finally {
+      if (abortHandler !== undefined) signal.removeEventListener('abort', abortHandler);
+    }
+  }
+
+  /** 收尾等待有上限：逃出进程组仍持有管道的后代不能阻塞取消路径，exit 清理兜底。 */
+  private async waitForCleanup(done: Promise<void>): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        done,
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, 500); }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   /** CLI 退出时终止所有仍在运行的作业，并等待进程组收尾与沙箱资源清理。 */
   async abortAll(): Promise<void> {
     const running = [...this.jobs.values()].filter(({ status }) => status === 'running');
@@ -313,6 +378,7 @@ export class BashJobs {
       signal: null,
       startedAt: Date.now(),
       backgrounded,
+      abandoned: false,
       remainingMs: launch.timeoutMs,
       timedOut: false,
       stopRequested: false,
@@ -335,6 +401,7 @@ export class BashJobs {
     job.exitCode = controlled.exitCode;
     job.signal = controlled.signal;
     job.finalResult = job.execution.result(controlled);
+    job.finalDiagnostics = job.execution.diagnostics();
     job.status = this.terminalStatus(job, controlled);
     job.finalError = job.status === 'succeeded'
       ? undefined
@@ -349,6 +416,8 @@ export class BashJobs {
     const wasForeground = this.foreground !== undefined && this.foreground.taskId === job.taskId;
     this.clearForeground(job);
     job.resolveDone();
+    // 交付前取消的作业已从池中移除，不再向用户发出结束通知。
+    if (job.abandoned) return;
     // 进程从未启动时由 startBackground 直接返回失败结果，不产生“作业已结束”通知。
     if (job.backgrounded && !wasForeground && !controlled.startFailed) {
       notify({
@@ -392,6 +461,7 @@ export class BashJobs {
       truncated: result.truncated,
       sandboxed: result.sandboxed,
       ...(result.notice === undefined ? {} : { notice: result.notice }),
+      ...(job.finalDiagnostics === undefined ? {} : { diagnostics: job.finalDiagnostics }),
       backgrounded: job.backgrounded,
       startedAt: job.startedAt,
     };

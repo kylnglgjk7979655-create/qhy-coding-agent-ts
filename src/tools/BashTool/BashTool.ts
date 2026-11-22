@@ -118,7 +118,8 @@ export function registerBashTool(registry: ToolRegistry, context: BuiltInToolCon
         sandboxed: planned.sandboxed,
         ...(planned.notice === undefined ? {} : { notice: planned.notice }),
       };
-      if (runInBackground) return bashJobs.startBackground(launch);
+      // 后台启动把轮次信号交给作业层：启动回执到达前取消时不交付任务 ID，并终止自有进程组。
+      if (runInBackground) return bashJobs.startBackground(launch, execution.abortSignal);
       const operation = bashJobs.runForeground(launch, execution.abortSignal);
       bashOperations.add(operation);
       void operation.finally(() => bashOperations.delete(operation)).catch(() => undefined);

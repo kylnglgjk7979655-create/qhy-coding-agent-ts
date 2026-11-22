@@ -46,6 +46,11 @@ export interface PlannedBashExecution {
   readRecent(cursor: OutputCursor): RecentOutput;
   /** 把受控进程结果转换为带沙箱说明和违规汇总的可展示结果。 */
   result(controlled: ControlledProcessResult): BashRunResult;
+  /**
+   * 终态诊断：代理拒绝汇总只在此处提供，进程流本身不包含它。
+   * 前后台作业首次交付终态时用它补充诊断，避免重复整份 stdout/stderr。
+   */
+  diagnostics(): string | undefined;
   /** 按统一语义返回失败文案；成功时省略。 */
   failureMessage(controlled: ControlledProcessResult): string | undefined;
 }
@@ -132,6 +137,7 @@ export async function startPlannedBash(
     terminate: handle.terminate,
     readRecent: handle.readRecent,
     result: (controlled) => withViolations(withNotice(bashRunResult(controlled, plan.sandboxed), plan.notice), network),
+    diagnostics: () => formatSandboxViolations(network?.violations ?? []),
     failureMessage: (controlled) => bashFailureMessage(
       controlled,
       plan.sandboxed,

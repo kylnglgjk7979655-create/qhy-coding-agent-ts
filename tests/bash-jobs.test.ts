@@ -378,6 +378,101 @@ it.skipIf(process.platform === 'win32')('启动交接前取消不启动后台命
   }
 });
 
+it.skipIf(process.platform === 'win32')('启动回执延迟期间取消会终止自有进程组，且不留下无任务 ID 的作业', async () => {
+  await setup((_request, index) => index === 1
+    ? { calls: [bash('receipt-cancel', {
+      command: `echo $$ > shell.pid; printf launched > started.txt; sleep 30`,
+      run_in_background: true,
+    })] }
+    : { content: '不应请求后续模型' });
+
+  const spawned = join(cwd, 'spawned.pid');
+  const preload = join(cwd, 'delay-spawn.mjs');
+  // 子进程已经创建但 'spawn' 回执尚未送达工具层；真实环境里这个窗口很窄，这里放大到 500ms。
+  await writeFile(preload, `
+    import { createRequire } from 'node:module';
+    import { appendFileSync } from 'node:fs';
+    const cp = createRequire(import.meta.url)('node:child_process');
+    const proto = cp.ChildProcess.prototype;
+    const emit = proto.emit;
+    proto.emit = function (name, ...args) {
+      if (name === 'spawn' && this.spawnfile === 'bash') {
+        appendFileSync(${JSON.stringify(spawned)}, String(this.pid) + '\\n');
+        const self = this;
+        setTimeout(() => emit.call(self, name, ...args), 500);
+        return true;
+      }
+      return emit.call(this, name, ...args);
+    };
+  `);
+
+  const cli = startCLI({
+    cwd,
+    conversationId: 'bash-receipt-cancel',
+    pty: true,
+    env: { TEST_BASH_JOBS_KEY: 'fake-bash-jobs-key', NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` },
+  });
+  let output = '';
+  cli.child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  cli.child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  try {
+    cli.send('启动后台命令\n');
+    await waitFor(() => existsSync(spawned), `未进入 spawn 回执窗口：${output}`);
+    const shellPid = Number((await readFile(spawned, 'utf8')).trim().split('\n')[0]);
+    managedPids.push(shellPid);
+    cli.send('\u0003');
+    await waitFor(() => output.includes('Interrupt by user'), `取消后未显示用户中断：${output}`);
+    // 等待回执延迟结束：延迟到达的 started 不能复活已取消的作业。
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    cli.send('/tasks\n');
+    await waitFor(() => output.includes('当前会话没有 Bash 作业'), `取消后仍存在可领取作业：${output}`);
+    expect(fixture.requests).toHaveLength(1);
+    expect(isRunning(shellPid)).toBe(false);
+    cli.end('/exit\n');
+    expect((await cli.done).code).toBe(0);
+  } finally {
+    cli.child.kill('SIGKILL');
+  }
+});
+
+// 需要真实网络代理拒绝：仅 macOS Seatbelt 会把命令放进沙箱并走代理。
+it.skipIf(process.platform !== 'darwin')('沙箱在接回期间结束时，首次 /task 就显示结构化拒绝诊断', async () => {
+  await setup((_request, index) => index === 1
+    ? { calls: [bash('sandbox-violation', {
+      command: `curl -sS --max-time 5 https://denied.example/; printf 'AFTER_CURL\\n'; sleep 2`,
+      run_in_background: true,
+    })] }
+    : { content: '作业已启动。' }, {
+    permissions: { sandbox: { enabled: true, onUnavailable: 'open', networkAllow: ['allowed.example'], networkPorts: [443] } },
+  });
+
+  const cli = run();
+  let output = '';
+  cli.child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  cli.child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  try {
+    cli.send('启动受限网络命令\n');
+    await waitFor(() => fixture.requests.length >= 2, `模型未收到后台工具结果：${output}`);
+    const taskId = String(toolOutput(fixture.requests[1]!).output!.taskId);
+
+    cli.send(`/task ${taskId}\n`);
+    await waitFor(() => output.includes(`[Bash 作业 ${taskId}] 接回前台`), `未接回前台：${output}`);
+    await waitFor(() => output.includes(`[Bash 作业 ${taskId}] 已结束`), `作业未在接回期间结束：${output}`);
+    const attachStart = output.indexOf(`[Bash 作业 ${taskId}] 接回前台`);
+    const region = output.slice(attachStart);
+    // 代理诊断只随终态产生；首次接回必须交付，不能等到第二次 /task 才显示。
+    expect(region).toContain('<sandbox_violations>');
+    expect(region).toContain('host-not-allowed');
+    // 终态诊断不能重放整份输出：命令自身的最近/实时输出仍只出现一次。
+    expect(region.split('AFTER_CURL').length - 1).toBe(1);
+    expect(region.split('<sandbox_violations>').length - 1).toBe(1);
+    cli.end('/exit\n');
+    expect((await cli.done).code).toBe(0);
+  } finally {
+    cli.child.kill('SIGKILL');
+  }
+});
+
 it.skipIf(process.platform === 'win32')('外层命令结束后回收同进程组残留子进程', async () => {
   const worker = `const fs = require('node:fs'); fs.writeFileSync('grandchild.pid', String(process.pid)); setInterval(() => {}, 1000);`;
   await setup((_request, index) => index === 1
