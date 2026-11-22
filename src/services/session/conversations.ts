@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, chmod, mkdir, open, readFile, readdir, rename, rm, truncate, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { appendFile, chmod, mkdir, open, readFile, readdir, realpath, rename, rm, truncate, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
 import type { ModelMessage } from 'ai';
 import type { ModelConfig } from '../settings/config.js';
 import { withoutSessionRuntimeConfig, withoutWebSearchCredential, webSearchConfigSchema } from '../settings/config.js';
@@ -74,6 +74,28 @@ export interface SessionLoadOptions {
 /** 会话目录；调用方需自行校验 conversationId，进程内提交队列也用它构造同一键。 */
 function sessionDirectory(home: string, conversationId: string): string {
   return join(sessionStorageRoot(home), 'sessions', conversationId);
+}
+
+/**
+ * 把会话目录解析为实体路径，作为进程内提交队列的键。
+ * 绝对/相对写法、符号链接或大小写别名都可能指向同一目录，词法拼接会分裂队列；
+ * 目录尚不存在时向上解析最近的已存在祖先再拼回剩余段，保证首次提交与后续提交共用同一键。
+ */
+async function resolveSessionDirectory(path: string): Promise<string> {
+  const resolved = resolve(path);
+  const missing: string[] = [];
+  let current = resolved;
+  for (;;) {
+    try {
+      return join(await realpath(current), ...missing.reverse());
+    } catch (error) {
+      if (!isMissing(error)) return resolved;
+      const parent = dirname(current);
+      if (parent === current) return resolved;
+      missing.push(basename(current));
+      current = parent;
+    }
+  }
 }
 
 export function sessionTaskOutputDirectory(home: string, conversationId: string): string {
@@ -629,8 +651,10 @@ interface SessionState {
 const pendingSessionCommits = new Map<string, Promise<unknown>>();
 
 /** 串行化同一会话的读取-追加-快照更新，避免并发提交读到相同 seq 后写出重复事件。 */
-function serializeSessionCommit<T>(home: string, conversationId: string, operation: () => Promise<T>): Promise<T> {
-  const key = sessionDirectory(home, conversationId);
+async function serializeSessionCommit<T>(home: string, conversationId: string, operation: () => Promise<T>): Promise<T> {
+  // 键必须解析到实体目录：调用方可能用绝对/相对路径或符号链接交替访问同一会话。
+  // 解析在排队前完成，同一实体的并发调用因此拿到同一个键；不同会话仍各自排队。
+  const key = await resolveSessionDirectory(sessionDirectory(home, conversationId));
   const previous = pendingSessionCommits.get(key) ?? Promise.resolve();
   // 前一次提交失败不应阻塞后续提交，每次提交都会重新读取当前状态。
   const current = previous.catch(() => undefined).then(operation);

@@ -1,6 +1,6 @@
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import type { ModelMessage } from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -124,6 +124,88 @@ describe('JSONL 会话保存', () => {
         ? [(part as { toolCallId?: string }).toolCallId] : [])
       : []);
     expect(savedCalls.sort()).toEqual([...toolCallIds].sort());
+  });
+
+  it('绝对、相对和符号链接路径别名指向同一会话时仍串行提交', async () => {
+    const userHome = await home();
+    const id = 'aliased-session';
+    await createSession(userHome, { id, workspace: config.workspace, config });
+    const roundId = await startSessionRound(userHome, id, '路径别名并发', config);
+
+    // 同一实体会话的三种写法：绝对路径、相对当前目录、经由符号链接。
+    const linkedHome = join(await home(), 'linked-home');
+    await symlink(userHome, linkedHome, 'dir');
+    const homes = [userHome, relative(process.cwd(), userHome), linkedHome];
+
+    const toolCallIds = Array.from({ length: 12 }, (_, index) => `alias-call-${index}`);
+    await Promise.all(toolCallIds.map((toolCallId, index) => appendRoundMessages(
+      homes[index % homes.length]!, id, roundId, [{
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCallId, toolName: 'read_file', input: { path: `${toolCallId}.txt` } }],
+      } as unknown as ModelMessage],
+    )));
+
+    const lines = await eventLines(userHome, id);
+    expect(lines.map((line) => (JSON.parse(line) as { seq: number }).seq))
+      .toEqual(Array.from({ length: lines.length }, (_, index) => index + 1));
+    // 别名分裂队列会写出重复 seq，回放时静默丢弃其中一份，恢复记录因此缺少工具调用。
+    const record = await loadSession(userHome, id);
+    const savedCalls = (record.rounds[0]?.messages ?? []).flatMap((message) => Array.isArray(message.content)
+      ? message.content.flatMap((part) => part && typeof part === 'object' && (part as { type?: string }).type === 'tool-call'
+        ? [(part as { toolCallId?: string }).toolCallId] : [])
+      : []);
+    expect(savedCalls.sort()).toEqual([...toolCallIds].sort());
+  });
+
+  it('会话目录尚不存在时仍可确定队列键，创建后通过别名继续提交', async () => {
+    const userHome = await home();
+    const linkedHome = join(await home(), 'new-linked-home');
+    await symlink(userHome, linkedHome, 'dir');
+    const id = 'created-through-alias';
+
+    // 目录尚不存在：解析键时向上回退到已存在的 home，提交本身按既有语义报告会话不存在。
+    await expect(appendSessionEvent(userHome, id, [{ role: 'user', content: '缺失' }]))
+      .rejects.toMatchObject({ code: 'CONFIG_ERROR' });
+
+    await createSession(linkedHome, { id, workspace: config.workspace, config });
+    const roundId = await startSessionRound(userHome, id, '创建后提交', config);
+    await appendRoundMessages(linkedHome, id, roundId, [{
+      role: 'assistant',
+      content: [{ type: 'tool-call', toolCallId: 'after-alias-create', toolName: 'read_file', input: { path: 'a.txt' } }],
+    } as unknown as ModelMessage]);
+
+    const lines = await eventLines(userHome, id);
+    expect(lines.map((line) => (JSON.parse(line) as { seq: number }).seq))
+      .toEqual(Array.from({ length: lines.length }, (_, index) => index + 1));
+    expect((await loadSession(userHome, id)).rounds[0]?.messages).toHaveLength(1);
+  });
+
+  it('不同会话的并发提交各自排队且互不丢失', async () => {
+    const userHome = await home();
+    const first = 'parallel-session-a';
+    const second = 'parallel-session-b';
+    await createSession(userHome, { id: first, workspace: config.workspace, config });
+    await createSession(userHome, { id: second, workspace: config.workspace, config });
+    const firstRound = await startSessionRound(userHome, first, '会话 A', config);
+    const secondRound = await startSessionRound(userHome, second, '会话 B', config);
+
+    // 两个会话各自并发提交，队列键必须按会话隔离，且各自序号仍严格递增。
+    await Promise.all(Array.from({ length: 8 }, (_, index) => appendRoundMessages(
+      userHome,
+      index % 2 === 0 ? first : second,
+      index % 2 === 0 ? firstRound : secondRound,
+      [{
+        role: 'assistant',
+        content: [{ type: 'tool-call', toolCallId: `session-call-${index}`, toolName: 'read_file', input: { path: `${index}.txt` } }],
+      } as unknown as ModelMessage],
+    )));
+
+    for (const { id, expected } of [{ id: first, expected: 4 }, { id: second, expected: 4 }]) {
+      const lines = await eventLines(userHome, id);
+      expect(lines.map((line) => (JSON.parse(line) as { seq: number }).seq))
+        .toEqual(Array.from({ length: lines.length }, (_, index) => index + 1));
+      expect((await loadSession(userHome, id)).rounds[0]?.messages).toHaveLength(expected);
+    }
   });
 
   it('单次提交失败不会阻塞同一会话的后续提交', async () => {
