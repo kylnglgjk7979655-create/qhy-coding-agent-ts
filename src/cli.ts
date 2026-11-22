@@ -522,7 +522,7 @@ async function main(): Promise<void> {
       if (workItem.type === 'compact') {
         try {
           activeRound = new AbortController();
-          input.setBusy(true);
+          input.setBusy(true, 'compact');
           history = await compactIdleHistory(config, history, userHome, conversationId, AbortSignal.any([cancellation.signal, activeRound.signal]), legacyDirectory, recentFiles, pendingTaskStatuses, skills);
         } catch (error) {
           if (cancellation.signal.aborted) throw error;
