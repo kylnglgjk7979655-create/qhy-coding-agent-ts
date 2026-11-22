@@ -10,17 +10,17 @@ export type CliWorkItem = { type: 'user'; text: string } | { type: 'notification
 
 /**
  * 判定独立 Esc 前等待后续字节的窗口，同时作为 readline 的 escapeCodeTimeout。
- * 真实 PTY 中方向键等 CSI/SS3 序列可能拆成多次写入，实测间隔可达约 100ms；窗口必须
- * 覆盖这段间隔，否则 ESC 会被误判为独立按键并取消轮次。终端无法区分“拆包较晚的序列”
- * 与“Esc 后紧接新输入”，因此该值也是两者的共同上限：超过窗口的后续字节无法挽回。
- * 200ms 在覆盖实测间隔的同时，避免 Esc 之后的输入被长时间当作 Alt 组合键吞掉。
+ * 沿用 Node readline 历史的约 500ms 默认值作为唯一权威边界：真实 PTY 中方向键等 CSI/SS3
+ * 序列可能拆成多次写入，实测间隔可达约 400ms；窗口必须覆盖这段间隔，否则 ESC 会被误判为
+ * 独立按键。终端无法区分“拆包较晚的序列”与“Esc 后紧接新输入”，超过窗口的后续字节按历史
+ * 语义视为独立 Esc，无法挽回。判定结果只作用于按下时刻的轮次，避免迟到按键取消下一轮。
  */
-const ESCAPE_SEQUENCE_TIMEOUT_MS = 200;
+const ESCAPE_SEQUENCE_TIMEOUT_MS = 500;
 // 从 Esc 按下的时刻起，等 readline 结束判定再重新显示提示，确保提示出现后输入不再被吞。
 const ESCAPE_INPUT_SETTLE_MS = ESCAPE_SEQUENCE_TIMEOUT_MS + 20;
-// 原始输入阶段已处理的独立 Esc，readline 仍会补发一次 keypress；登记在此时间窗内的按下事件，
-// 供审批菜单与选择器忽略迟到事件，避免它被算到后续轮次。
-const ESCAPE_KEYPRESS_DELIVERY_MS = 600;
+// readline 在窗口结束时才补发 Esc keypress；登记保留窗口加事件循环余量，供审批菜单与
+// 选择器忽略迟到事件，避免它被算到后续轮次。
+const ESCAPE_KEYPRESS_DELIVERY_MS = ESCAPE_SEQUENCE_TIMEOUT_MS + 200;
 
 interface PendingApproval {
   number: number;

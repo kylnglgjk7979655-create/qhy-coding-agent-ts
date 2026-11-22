@@ -135,11 +135,12 @@ describe.skipIf(process.platform === 'win32')('交互终端 Esc 中断', () => {
     expect(JSON.stringify(model.requests[1])).toContain('恢复输入');
   });
 
-  it('第一轮结束边界：Esc 归属按下时的轮次，迟到事件不会取消已排队的下一轮', async () => {
+  it('第一轮执行中按 Esc：取消按下时的轮次，已排队的下一轮不受影响', async () => {
     const { model, cli, output } = await setup((_request, index) => index === 1
       ? { frames: [
         { delta: { content: '第一轮开始' } },
-        { delta: { content: '第一轮自然结束' }, finish_reason: 'stop', delayMs: 300 },
+        // 按键判定窗口约 500ms；第一轮在该窗口结束后仍应继续执行，才能证明取消生效。
+        { delta: { content: '第一轮自然结束' }, finish_reason: 'stop', delayMs: 900 },
       ] }
       : { frames: [
         { delta: { content: '第二轮开始' } },
@@ -151,10 +152,42 @@ describe.skipIf(process.platform === 'win32')('交互终端 Esc 中断', () => {
 
     // 先排队第二轮，再按 Esc：按键发生在第一轮，取消只应作用于第一轮。
     cli.send('第二轮请求\n');
+    const pressedAt = Date.now();
+    cli.send('\x1b');
+    await waitFor(() => output().includes('用户中断'), () => `输出=${output()}`);
+    // 独立 Esc 在历史判定窗口内给出结论，不能无限等待后续字节。
+    expect(Date.now() - pressedAt).toBeLessThan(3000);
+    await waitFor(() => output().includes('第二轮完成_MARKER'), () => `请求数=${model.requests.length}，输出=${output()}`, 12000);
+    // 第一轮在按键判定时仍在执行，已随取消终止，不会再输出自然结束后半段。
+    expect(output()).not.toContain('第一轮自然结束');
+    cli.end('/exit\n');
+    const result = await cli.done;
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(model.requests).toHaveLength(2);
+    expect(lastUserText(model.requests[1]!)).toBe('第二轮请求');
+  });
+
+  it('第一轮在 Esc 判定前自然结束：迟到判定不会取消已排队的下一轮', async () => {
+    const { model, cli, output } = await setup((_request, index) => index === 1
+      ? { frames: [
+        { delta: { content: '第一轮开始' } },
+        // 第一轮在约 300ms 自然结束，早于约 500ms 的按键判定；判定结果不得顺延到下一轮。
+        { delta: { content: '第一轮自然结束' }, finish_reason: 'stop', delayMs: 300 },
+      ] }
+      : { frames: [
+        { delta: { content: '第二轮开始' } },
+        { delta: { content: '第二轮完成_MARKER' }, finish_reason: 'stop', delayMs: 800 },
+      ] });
+    await waitForPrompt(output);
+    cli.send('第一轮请求\n');
+    await waitFor(() => output().includes('第一轮开始') && model.requests.length === 1, () => `请求数=${model.requests.length}，输出=${output()}`);
+
+    // 先排队第二轮，再按 Esc：按键归属于第一轮，第一轮结束后不得取消第二轮。
+    cli.send('第二轮请求\n');
     cli.send('\x1b');
     await waitFor(() => output().includes('第二轮完成_MARKER'), () => `请求数=${model.requests.length}，输出=${output()}`, 12000);
-    // 第一轮在按键到达前已被取消，不会再输出自然结束后半段。
-    expect(output()).not.toContain('第一轮自然结束');
+    await waitFor(() => output().includes('第一轮自然结束'), () => `输出=${output()}`);
+    expect(output()).not.toContain('用户中断');
     cli.end('/exit\n');
     const result = await cli.done;
     expect(result.code, result.stdout + result.stderr).toBe(0);
@@ -210,9 +243,10 @@ describe.skipIf(process.platform === 'win32')('交互终端 Esc 中断', () => {
     expect(model.requests).toHaveLength(1);
   });
 
-  it('轮次执行中拆包方向键不会触发取消（约 40ms / 100ms 间隔）', async () => {
-    // 真实 PTY 会把方向键拆成 ESC 与 [D 两次写入；两次写入的间隔不能决定它是不是独立 Esc。
-    for (const gap of [40, 100]) {
+  it('轮次执行中拆包方向键不会触发取消（历史窗口内的 40/100/225/250/400ms 间隔）', async () => {
+    // 真实 PTY 会把方向键拆成 ESC 与 [D 两次写入；历史 readline 窗口（约 500ms）内
+    // 的间隔不能决定它是不是独立 Esc，否则会收窄原始实现可用的兼容区间。
+    for (const gap of [40, 100, 225, 250, 400]) {
       const marker = `长流完成_${gap}ms_MARKER`;
       const { model, cli, output } = await setup(() => ({ frames: [
         { delta: { content: '长流开始' } },
@@ -234,8 +268,8 @@ describe.skipIf(process.platform === 'win32')('交互终端 Esc 中断', () => {
     }
   });
 
-  it('空闲草稿中拆包方向键仍按光标移动处理（约 40ms / 100ms 间隔）', async () => {
-    for (const gap of [40, 100]) {
+  it('空闲草稿中拆包方向键仍按光标移动处理（历史窗口内的 40/100/225/250/400ms 间隔）', async () => {
+    for (const gap of [40, 100, 225, 250, 400]) {
       const { model, cli, output } = await setup((request) => ({ content: `收到:${lastUserText(request)}` }));
       await waitForPrompt(output);
       cli.send('AB');
@@ -279,6 +313,31 @@ describe.skipIf(process.platform === 'win32')('交互终端 Esc 中断', () => {
     expect(result.code, result.stdout + result.stderr).toBe(0);
     expect(model.requests).toHaveLength(2);
     expect(lastUserText(model.requests[1]!)).toBe('继续下一轮');
+  });
+
+  it('Esc 判定期内拆包方向键随后到达：等待中的工具照常执行', async () => {
+    const { cwd, model, cli, output } = await setup((_request, index) => index === 1
+      ? { frames: [
+        { delta: { content: '准备调用工具' } },
+        // 工具在 [D 到达前已请求启动，判定窗口内必须等待而不是提前取消或放行。
+        { delta: { tool_calls: [{ index: 0, id: 'released-tool', type: 'function', function: { name: 'Bash', arguments: JSON.stringify({ command: 'touch released-tool.txt' }) } }] }, delayMs: 20 },
+        { delta: {}, finish_reason: 'tool_calls' },
+      ] }
+      : { content: '工具放行后完成_MARKER' }, { permissions: { allow: ['Bash(touch:*)'] } });
+    await waitForPrompt(output);
+    cli.send('先输出再调用工具\n');
+    await waitFor(() => output().includes('准备调用工具') && model.requests.length === 1, () => `请求数=${model.requests.length}，输出=${output()}`);
+
+    cli.send('\x1b');
+    await sleep(40);
+    cli.send('[D');
+    await waitFor(() => output().includes('工具放行后完成_MARKER'), () => `输出=${output()}`, 10000);
+    await expect(readFile(join(cwd, 'released-tool.txt'), 'utf8')).resolves.toBeDefined();
+    expect(output()).not.toContain('用户中断');
+    cli.end('/exit\n');
+    const result = await cli.done;
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(model.requests).toHaveLength(2);
   });
 
   it('轮次内已开始的压缩随 Esc 取消，保留压缩前历史并允许继续', async () => {
