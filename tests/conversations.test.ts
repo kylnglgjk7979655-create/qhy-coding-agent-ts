@@ -492,7 +492,7 @@ describe('user-level session storage', () => {
     const event = JSON.parse(line!) as { data: { record: { config: Record<string, unknown> } } };
     event.data.record.config.webSearchApiKey = 'legacy-secret';
     await writeFile(path, `${JSON.stringify(event)}\n`);
-    // CLI 在获取会话锁之前加载会话；锁已存在时不能重写可能正被追加的历史。
+    // 已有进程占用时，普通加载仍需提供只读记录。
     const lockPath = join(home, '.qhy-coding-agents', 'sessions', id, 'process.lock');
     await writeFile(lockPath, 'other-process\n');
 

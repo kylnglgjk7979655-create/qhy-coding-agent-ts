@@ -1,17 +1,16 @@
-import { open, readFile, mkdir, unlink, link } from 'node:fs/promises';
+import { open, readFile, unlink, link } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AgentError } from '../../utils/errors.js';
-import { sessionStorageRoot } from './conversations.js';
+import { sessionStorageRoot } from './session-paths.js';
 
 const idPattern = /^[a-zA-Z0-9_-]{1,128}$/;
 
-/** A per-session exclusive file held for the lifetime of the CLI process. */
+/** 占用已有会话目录，直到调用方释放会话锁。 */
 export async function acquireSessionLock(home: string, sessionId: string): Promise<() => Promise<void>> {
   if (!idPattern.test(sessionId)) throw new AgentError('CONFIG_ERROR', '会话 ID 无效。');
   const directory = join(sessionStorageRoot(home), 'sessions', sessionId);
   const path = join(directory, 'process.lock');
-  await mkdir(directory, { recursive: true, mode: 0o700 });
   const token = randomUUID();
   const owner = `${process.pid} ${await processStartToken()} ${token}\n`;
   const temporaryPath = join(directory, `.process-lock-${token}.tmp`);
@@ -37,6 +36,7 @@ export async function acquireSessionLock(home: string, sessionId: string): Promi
       };
     } catch (error) {
       await unlink(temporaryPath).catch(() => undefined);
+      if (isMissing(error)) throw new AgentError('CONFIG_ERROR', `会话记录不存在：${sessionId}。`);
       if (!isAlreadyExists(error)) throw new AgentError('PROVIDER_ERROR', '无法占用会话记录。');
       if (attempt === 0 && await removeStaleLock(path)) continue;
       throw new AgentError('CONFIG_ERROR', `会话正在被其他进程使用：${sessionId}。`);

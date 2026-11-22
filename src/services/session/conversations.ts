@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, chmod, mkdir, open, readFile, readdir, rename, rm, stat, truncate, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { appendFile, chmod, mkdir, open, readFile, readdir, rename, rm, truncate, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { ModelMessage } from 'ai';
 import type { ModelConfig } from '../settings/config.js';
@@ -8,6 +7,10 @@ import { withoutSessionRuntimeConfig, withoutWebSearchCredential, webSearchConfi
 import { AgentError } from '../../utils/errors.js';
 import { appendRecentSkillLoads } from '../skills/skill-injection.js';
 import { snapshotWorkspaceFile } from '../../tools/workspace-files.js';
+import { acquireSessionLock } from './session-lock.js';
+import { sessionStorageRoot } from './session-paths.js';
+
+export { sessionStorageRoot } from './session-paths.js';
 
 const conversationIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
 const eventLogVersion = 1;
@@ -66,10 +69,6 @@ export interface SessionLoadOptions {
   onWarning?: (warning: SessionLoadWarning) => void;
   /** 旧 record.json 是否在首次读取时转换为 JSONL，并清洗旧事件与快照中的凭据；列目录等只读场景可关闭。 */
   convertLegacy?: boolean;
-}
-
-export function sessionStorageRoot(home = homedir()): string {
-  return join(home, '.qhy-coding-agents');
 }
 
 export function sessionTaskOutputDirectory(home: string, conversationId: string): string {
@@ -146,13 +145,41 @@ export async function createSession(home: string, options: {
 }
 
 export async function loadSession(home: string, conversationId: string, options: SessionLoadOptions = {}): Promise<SessionRecord> {
-  // 只读场景（列目录、存在性检查）不重写历史；恢复会话时清洗旧版本留在磁盘上的凭据。
-  // 每次追加事件都全量扫描会放大写入成本，因此不在 commitSession 路径重复执行。
-  if (options.convertLegacy !== false) await scrubLegacySessionSecrets(home, conversationId);
+  if (options.convertLegacy !== false) {
+    const release = await acquireSessionLock(home, conversationId).catch(() => undefined);
+    if (release) {
+      try {
+        return await loadSessionUnderLock(home, conversationId, options);
+      } finally {
+        await release().catch(() => undefined);
+      }
+    }
+  }
+  return pruneSessionConfig((await readSessionState(home, conversationId, options)).record);
+}
+
+/** 续聊进程在读写会话前持有同一把锁，并在离开会话后释放。 */
+export async function openSession(home: string, conversationId: string, options: Pick<SessionLoadOptions, 'onWarning'> = {}): Promise<{
+  session: SessionRecord;
+  release: () => Promise<void>;
+}> {
+  assertConversationId(conversationId);
+  const release = await acquireSessionLock(home, conversationId);
+  try {
+    return { session: await loadSessionUnderLock(home, conversationId, options), release };
+  } catch (error) {
+    await release().catch(() => undefined);
+    throw error;
+  }
+}
+
+async function loadSessionUnderLock(home: string, conversationId: string, options: SessionLoadOptions): Promise<SessionRecord> {
+  // 清洗可能移动日志字节偏移。持锁完成清洗、快照失效和读取，避免覆盖续聊进程的追加。
+  await scrubLegacySessionSecrets(home, conversationId);
   const state = await readSessionState(home, conversationId, options);
   // 旧快照/事件里的 hooks 与网络搜索凭据直接忽略；恢复对话时按当前 settings 重新加载。
   const record = pruneSessionConfig(state.record);
-  if (state.legacy && options.convertLegacy !== false) {
+  if (state.legacy) {
     // 首次打开旧会话时按需转换；转换失败不阻塞只读续聊，后续写入会重试。
     await writeLegacyConversion(home, conversationId, record, state.eventsEmpty).catch(() => undefined);
   }
@@ -882,7 +909,7 @@ const webSearchCredentialMarker = '"webSearchApiKey"';
 
 /**
  * 清除旧版本留在磁盘上的会话凭据：读取路径已在内存中剔除字段，这里同步清洗事件日志与快照。
- * 清洗是尽力而为的维护动作；无法完整解析或正在被追加的日志保持原样，下次加载时再试。
+ * 调用方持有会话锁。清洗是尽力而为的维护动作，无法完整解析的日志保持原样。
  */
 async function scrubLegacySessionSecrets(home: string, conversationId: string): Promise<void> {
   await scrubLegacyEventLog(home, conversationId);
@@ -891,12 +918,8 @@ async function scrubLegacySessionSecrets(home: string, conversationId: string): 
 
 async function scrubLegacyEventLog(home: string, conversationId: string): Promise<void> {
   const path = sessionEventsPath(home, conversationId);
-  // CLI 在获取会话锁之前就会加载会话；锁已存在时可能正在追加事件，锁外不扫描也不重写历史。
-  if (await hasSessionLock(path)) return;
   let raw: string;
-  let before: Awaited<ReturnType<typeof stat>>;
   try {
-    before = await stat(path);
     raw = await readFile(path, 'utf8');
   } catch {
     // 只有旧 record.json 的会话没有事件日志；读取失败交给正常读取路径判定。
@@ -940,11 +963,6 @@ async function scrubLegacyEventLog(home: string, conversationId: string): Promis
   const temporaryPath = join(directory, `.events.${randomUUID()}.tmp`);
   try {
     await writeFile(temporaryPath, next, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-    // 读取期间若有其他写入，放弃本次重写，避免覆盖新追加的事件。
-    const after = await stat(path);
-    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) return;
-    // 扫描期间若有进程取得会话锁，可能已开始追加事件；放弃本次重写，避免覆盖新事件。
-    if (await hasSessionLock(path)) return;
     // 重写会移动后续事件的字节偏移；快照必须同时失效，恢复时从完整日志重建。
     await rm(sessionSnapshotPath(home, conversationId), { force: true });
     await rename(temporaryPath, path);
@@ -1001,17 +1019,6 @@ function scrubStoredEventSecrets(stored: StoredSessionEvent): StoredSessionEvent
   }
 }
 
-/** 会话锁存在说明可能有进程（含本进程）正在写入；锁外不做重写，磁盘清洗推迟到下次恢复。 */
-async function hasSessionLock(path: string): Promise<boolean> {
-  try {
-    await stat(join(dirname(path), 'process.lock'));
-    return true;
-  } catch (error) {
-    // 无法确认锁状态时按已锁定处理，宁可推迟清洗也不覆盖并发写入。
-    return !isMissing(error);
-  }
-}
-
 async function scrubLegacySnapshot(home: string, conversationId: string): Promise<void> {
   const path = sessionSnapshotPath(home, conversationId);
   let raw: string;
@@ -1021,8 +1028,6 @@ async function scrubLegacySnapshot(home: string, conversationId: string): Promis
     return;
   }
   if (!raw.includes(webSearchCredentialMarker)) return;
-  // 与事件日志一致：锁存在时另一个进程可能正在刷新快照，锁外不覆盖，留到下次恢复。
-  if (await hasSessionLock(path)) return;
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -1036,7 +1041,6 @@ async function scrubLegacySnapshot(home: string, conversationId: string): Promis
   const temporaryPath = join(dirname(path), `.snapshot.${randomUUID()}.tmp`);
   try {
     await writeFile(temporaryPath, next, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-    if (await hasSessionLock(path)) return;
     await rename(temporaryPath, path);
   } catch {
     // 快照只是恢复缓存；清洗失败不影响会话恢复。
