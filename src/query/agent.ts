@@ -519,8 +519,8 @@ export async function runAgent(
           ? undefined
           : { catalogue: options.skills, recentLoads: appendRecentSkillLoads(options.recentSkillLoads ?? [], skillInjections.map(({ name }) => name)), bodies: skillBodies };
         // 模式可在轮次中切换；每一步都让系统提示、工具定义与预算使用同一份 plan 判定。
-        const stepPlanMode = planModeActive();
-        const stepInstructions = stepPlanMode === initialPlanMode ? instructions : instructionsFor(stepPlanMode);
+        let stepPlanMode = planModeActive();
+        let stepInstructions = stepPlanMode === initialPlanMode ? instructions : instructionsFor(stepPlanMode);
         preparedHistory = await prepareConversation(config, stepInstructions, stepMessages, stepPlanMode ? planTools : tools, signal, async (summary) => {
           // 优先使用持久化层按实际 transcript 计算的覆盖边界，避免依赖摘要或附件占用的消息数量。
           let saved: { coversThrough: number } | void = undefined;
@@ -552,6 +552,9 @@ export async function runAgent(
           ...(restore === undefined ? {} : { restore }),
           ...(options.tracing === undefined ? {} : { tracing: options.tracing }),
         });
+        // 压缩等待期间用户可能切换模式；摘要返回后重新读取，确保实际下一请求的提示与工具定义同属最新模式。
+        stepPlanMode = planModeActive();
+        stepInstructions = stepPlanMode === initialPlanMode ? instructions : instructionsFor(stepPlanMode);
         preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;
         signal.throwIfAborted();

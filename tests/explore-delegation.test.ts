@@ -899,11 +899,12 @@ describe('后台子 Agent 启动', () => {
     }
   });
 
-  it('plan 生效期间 Explore 的工具 Hook 与主 Agent 一样暂停', async () => {
+  it('plan 生效期间 Explore 公布规范只读工具、完成调查并暂停工具 Hook', async () => {
     workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-plan-'));
+    await writeFile(join(workspace, 'note.txt'), '可读内容');
     const fixture = await startLocalOpenAIModel((_request, index) => index === 1
       ? { calls: [{ id: 'explore-read', type: 'function', function: {
-        name: 'read_file', arguments: JSON.stringify({ path: 'note.txt' }),
+        name: 'Read', arguments: JSON.stringify({ file_path: 'note.txt' }),
       } }] }
       : index === 2 ? { content: 'Explore 完成。' } : { content: '意外额外请求。' });
     closeFixture = fixture.close;
@@ -913,9 +914,18 @@ describe('后台子 Agent 启动', () => {
       baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
       hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: "printf 'hook' >> hook-marker.txt" }] }] },
     };
+    const skills = {
+      skills: [{
+        type: 'prompt' as const, name: 'demo', displayName: 'Demo', aliases: [], description: '演示 Skill',
+        getPromptForCommand: () => '演示正文',
+      }],
+      instructions: 'SKILL_CATALOGUE_MARKER',
+      diagnostics: [],
+    };
 
     const report = await runExplore(config, '只读调查', '读取 note.txt', {
       approvalMode: () => 'plan',
+      skills,
       hookScope: {
         sessionId: 'parent-session', transcriptPath: join(workspace, 'session.json'),
         agentId: 'explore-call', agentType: 'Explore',
@@ -923,9 +933,12 @@ describe('后台子 Agent 启动', () => {
     });
 
     expect(report).toContain('Explore 完成。');
-    // 旧只读名称仍受 plan 的规范工具名范围约束，但 Hook 在审批前已经暂停，不会执行命令。
+    expect(fixture.requests[1]!.tools.map(({ function: fn }) => fn.name).sort()).toEqual(['Glob', 'Grep', 'Read']);
+    // plan 下不公布 Skill，提示也不注入清单，避免公布后被能力范围拒绝。
+    expect(fixture.requests[1]!.messages[0]!.content).not.toContain('SKILL_CATALOGUE_MARKER');
     const toolResult = fixture.requests[1]!.messages.find(({ role }) => role === 'tool');
-    expect(JSON.parse(toolResult!.content)).toMatchObject({ is_error: true, error: { code: 'PERMISSION_DENIED' } });
+    expect(JSON.parse(toolResult!.content)).toMatchObject({ is_error: false, output: { content: '可读内容' } });
+    // 正常只读调用可以继续，但 Hook 在 plan 中仍然暂停，不会执行命令。
     await expect(readFile(join(workspace, 'hook-marker.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

@@ -1,7 +1,9 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { runAgent } from '../src/query/agent.js';
+import type { ResolvedConfig } from '../src/services/settings/config.js';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureRequest, FixtureResponse, FixtureToolCall } from './helpers/local-openai-fixture.js';
@@ -343,6 +345,59 @@ describe('plan 审批模式', () => {
     expect(result.code, result.stdout + result.stderr).toBe(0);
     // startup 与 plan 轮都不执行 Hook；切回 default 后只需一次用户提交即可恢复全部事件。
     expect(await readFile(join(cwd, 'hook-events.txt'), 'utf8')).toBe('upqs');
+  });
+
+  it.skipIf(process.platform === 'win32')('Shift+Tab 切换模式时保留输入草稿与光标位置', async () => {
+    await setup(() => ({ content: '草稿已提交。' }));
+    const running = runInteractive();
+    await running.waitFor('[default（人工审批）] > ');
+    running.send('草稿AB');
+    await running.waitFor('草稿AB');
+    // 光标移到 A 与 B 之间；切换模式后继续输入应仍插入同一位置。
+    running.send('\x1b[D');
+    running.send('\x1b[Z');
+    await running.waitFor('当前审批模式：auto（模型审批）。');
+    await running.waitFor('[auto（模型审批）] > 草稿AB');
+    const output = running.output();
+    const noticeAt = output.lastIndexOf('当前审批模式：auto（模型审批）。');
+    expect(output.slice(noticeAt)).toContain('[auto（模型审批）] > 草稿AB');
+
+    running.send('X\n');
+    await running.waitFor('草稿已提交。');
+    running.end('/exit\n');
+    const result = await running.done;
+
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(fixture!.requests[0]!.messages.find(({ role }) => role === 'user')?.content).toBe('草稿AXB');
+  });
+
+  it('压缩等待期间切换到 plan 后，实际主请求使用 plan 提示与只读工具', async () => {
+    await setup(() => ({ content: '压缩后只读回答。' }));
+    let mode: 'auto' | 'plan' = 'auto';
+    let requestedCompaction = false;
+    const config: ResolvedConfig = {
+      approval: { mode: 'auto', timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'TEST_PLAN_KEY', apiKey: 'fake-plan-key',
+      baseURL: fixture!.baseURL, workspace: await realpath(cwd), timeoutMs: 5000, maxSteps: 4,
+    };
+
+    const result = await runAgent(config, '压缩期间切换模式', {
+      smokeTool: false,
+      approvalMode: () => mode,
+      // 强制首次主请求前压缩，并在摘要持久化回调中切换模式，模拟压缩等待期间用户按 Shift+Tab。
+      consumeCompactionRequest: () => {
+        if (requestedCompaction) return false;
+        requestedCompaction = true;
+        return true;
+      },
+      onCompaction: async () => { mode = 'plan'; },
+    });
+
+    expect(result.text).toBe('压缩后只读回答。');
+    expect(fixture!.summaryRequests).toHaveLength(1);
+    const main = fixture!.requests[0]!;
+    expect(toolNames(main)).toEqual(['Glob', 'Grep', 'Read']);
+    expect(main.messages[0]!.content).toContain('plan（只读）模式');
   });
 
   it('plan 模式拒绝 --smoke-tool，避免强制调用未公布的 read_file', async () => {

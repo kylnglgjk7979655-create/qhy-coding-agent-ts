@@ -1,4 +1,4 @@
-import { createInterface, emitKeypressEvents } from 'node:readline';
+import { clearScreenDown, createInterface, cursorTo, emitKeypressEvents, moveCursor } from 'node:readline';
 import type { ApprovalControl } from '../tools/tool-approval.js';
 import type { ToolApprovalRequest } from '../tools/tool-registry.js';
 import type { BackgroundAgentTaskNotification } from '../tools/AgentTool/background-agent-tasks.js';
@@ -117,10 +117,36 @@ export class CliInput {
     if (this.approvalMode === undefined || this.closed
       || this.confirmation !== undefined || this.selector !== undefined || this.approvalMenu !== undefined) return;
     const next = this.approvalMode.cycle();
+    // 有草稿时 readline 内部仍保留整行；先清掉已渲染的提示区，再输出模式提示并完整重绘草稿与光标。
+    const restoreDraft = !this.busy && this.approvals.size === 0 && this.input.line !== '';
+    if (restoreDraft) this.clearRenderedInput();
     process.stdout.write(`\n当前审批模式：${approvalModeLabel(next)}。\n`);
+    if (restoreDraft) this.redrawInput();
     // 审批等待由菜单独占键盘；轮次执行中只更新状态，下一次提示符再显示新模式。
-    if (!this.busy && this.approvals.size === 0 && this.input.line === '') this.prompt();
+    else if (!this.busy && this.approvals.size === 0) this.prompt();
   };
+
+  /** 清除 readline 已渲染的提示区；草稿可能跨行，需连同上方各行一起清除。 */
+  private clearRenderedInput(): void {
+    const input = this.input as unknown as { prevRows?: number };
+    const rows = input.prevRows ?? 0;
+    if (rows > 0) moveCursor(process.stdout, 0, -rows);
+    cursorTo(process.stdout, 0);
+    clearScreenDown(process.stdout);
+  }
+
+  /** 重绘提示符、完整草稿和光标位置；readline 的刷新方法负责跨行与宽字符的定位。 */
+  private redrawInput(): void {
+    this.setPromptText();
+    const input = this.input as unknown as { _refreshLine?: () => void; prevRows?: number };
+    // 提示区已经清除，重置行数避免刷新时错误地回退到模式提示行。
+    input.prevRows = 0;
+    if (typeof input._refreshLine === 'function') {
+      input._refreshLine();
+      return;
+    }
+    process.stdout.write(`${this.input.getPrompt()}${this.input.line}`);
+  }
 
   async select<T>(title: string, choices: Array<{ label: string; detail: string; value: T }>): Promise<T | undefined> {
     if (this.closed || !process.stdin.isTTY || !process.stdout.isTTY) {
