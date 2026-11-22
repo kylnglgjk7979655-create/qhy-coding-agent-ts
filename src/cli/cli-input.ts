@@ -40,8 +40,7 @@ export class CliInput {
   private approvalMenu: ApprovalMenu | undefined;
   private confirmation: { answer: (line: string) => void; close: () => void } | undefined;
   private compactRequested = false;
-  private busy = false;
-  private escCancels = true;
+  private busy: 'turn' | 'compact' | undefined;
   private readonly cancelRequest: () => void;
 
   constructor(
@@ -256,16 +255,15 @@ export class CliInput {
   prompt(): void { if (!this.closed) this.input.prompt(); }
   /**
    * 主循环执行轮次或压缩期间不重新显示提示，避免打断流式输出或审批提示。
-   * 轮次中 Esc 取消本轮；手动压缩只沿用 Ctrl+C 取消，Esc 不生效。
+   * `turn` 期间 Esc 取消本轮（含轮次内触发的压缩）；单独的手动压缩只沿用 Ctrl+C 取消。
    */
   setBusy(value: boolean, work: 'turn' | 'compact' = 'turn'): void {
-    this.busy = value;
-    this.escCancels = work === 'turn';
+    this.busy = value ? work : undefined;
   }
   close(): void { this.input.close(); }
 
   private readonly onKeypress = (_character: string, key: { name?: string; ctrl?: boolean }): void => {
-    if (key.name !== 'escape' || !this.busy || !this.escCancels) return;
+    if (key.name !== 'escape' || this.busy !== 'turn') return;
     // 审批菜单、选择器和信任确认优先处理 Esc，避免取消整个轮次。
     if (this.approvalMenu || this.approvals.size > 0 || this.selector || this.confirmation) return;
     this.cancelRequest();

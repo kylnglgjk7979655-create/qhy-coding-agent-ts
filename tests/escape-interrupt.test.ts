@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { startCLI } from './helpers/cli-process.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureRequest } from './helpers/local-openai-fixture.js';
+import { readStoredSession } from './helpers/session-store.js';
 
 const secret = 'escape-interrupt-test-key';
 const roots: string[] = [];
@@ -128,6 +129,47 @@ describe.skipIf(process.platform === 'win32')('交互终端 Esc 中断', () => {
     expect(model.requests).toHaveLength(2);
     expect(JSON.stringify(model.requests[1])).not.toContain('esc-sleep');
     expect(JSON.stringify(model.requests[1])).toContain('恢复输入');
+  });
+
+  it('轮次内已开始的压缩随 Esc 取消，保留压缩前历史并允许继续', async () => {
+    const { cwd, userDir, model, cli, output } = await setup(
+      (_request, index) => index === 1
+        ? { calls: [{ id: 'esc-compact', type: 'function', function: {
+          name: 'Bash',
+          arguments: JSON.stringify({
+            command: 'node -e "const fs=require(\'fs\');const timer=setInterval(()=>{if(fs.existsSync(\'release-compact.txt\')){clearInterval(timer);console.log(\'工具结果_MARKER\');process.exit(0)}},50);setTimeout(()=>{clearInterval(timer);process.exit(1)},5000)"',
+          }),
+        } }] }
+        : { content: '压缩取消后继续完成' },
+      { permissions: { allow: ['Bash(node:*)'] } },
+      // 摘要请求保持未完成，便于在压缩执行期间发送 Esc。
+      () => undefined,
+    );
+    await waitForPrompt(output);
+    cli.send('轮次内压缩需求\n');
+    await waitFor(() => output().includes('Bash(') && output().includes('运行中'), () => `输出=${output()}`);
+    cli.send('/compact\n');
+    await waitFor(() => output().includes('已收到 /compact'), () => `输出=${output()}`);
+    await writeFile(join(cwd, 'release-compact.txt'), 'released');
+    await waitFor(() => model.summaryRequests.length === 1, () => `摘要请求数=${model.summaryRequests.length}，输出=${output()}`);
+
+    cli.send('\x1b');
+    await waitFor(() => output().includes('用户中断'), () => `摘要请求数=${model.summaryRequests.length}，请求数=${model.requests.length}，输出=${output()}`);
+    expect(output()).not.toContain('压缩取消后继续完成');
+    await waitForPrompt(output);
+
+    cli.send('压缩取消后继续\n');
+    await waitFor(() => output().includes('压缩取消后继续完成'), () => `输出=${output()}`);
+    cli.end('/exit\n');
+    const result = await cli.done;
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    // 取消轮次不再发起主模型请求；下一轮仍带取消前的用户消息和已完成的工具结果，摘要没有生效。
+    expect(model.requests).toHaveLength(2);
+    expect(JSON.stringify(model.requests[1])).toContain('轮次内压缩需求');
+    expect(JSON.stringify(model.requests[1])).toContain('工具结果_MARKER');
+    expect(JSON.stringify(model.requests[1])).toContain('压缩取消后继续');
+    const record = await readStoredSession(userDir, 'escape');
+    expect(record.summaries).toEqual([]);
   });
 
   it('单独 /compact 时 Esc 不取消，Ctrl+C 取消后返回输入', async () => {
