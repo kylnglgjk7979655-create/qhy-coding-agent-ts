@@ -118,7 +118,7 @@ export function startControlledProcess(
 
   // 已取消时不再启动：调用方可能依赖“未启动”保证，例如审批后取消不应产生副作用。
   if (signal?.aborted) {
-    resolveStarted(true);
+    resolveStarted(false);
     resolveCompletion(emptyResult({ cancelled: true }));
     return { started, completion, snapshot: () => emptyResult({ cancelled: true }), terminate: () => undefined };
   }

@@ -9,6 +9,7 @@ import { estimateContextUsage, runAgent } from './query/agent.js';
 import type { ContextUsageEstimate } from './query/agent.js';
 import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession, type BackgroundTaskStatusEntry } from './tools/AgentTool/background-agent-tasks.js';
 import { abortAllBashJobs, bashJobsForSession, subscribeBashJobNotifications } from './tools/BashTool/bash-jobs.js';
+import type { BashJobSnapshot } from './tools/BashTool/bash-jobs.js';
 import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, persistableSessionConfig, restoreSessionConfig } from './services/settings/config.js';
 import type { ApprovalMode } from './services/settings/config.js';
 import { approvalModeLabel, createApprovalModeState, parseApprovalModeCommand } from './tools/approval-mode.js';
@@ -549,6 +550,9 @@ async function main(): Promise<void> {
       }
       process.stdout.write('使用 /task <任务 ID> 接回前台；使用 /tasks stop <任务 ID> 停止运行中的作业。\n');
     };
+    /** 接回已结束作业时的终态说明；启动前读取与 attach 结束都使用同一排版。 */
+    const formatBashJobEnd = (snapshot: BashJobSnapshot): string =>
+      `已结束：${snapshot.status}，退出码 ${snapshot.exitCode ?? '无'}${snapshot.signal === null ? '' : `，信号 ${snapshot.signal}`}${snapshot.truncated ? '，输出已截断' : ''}。`;
     /** 接回前台时先显示保留输出，再由作业层继续追加；结束、停止和再次切后台都会返回输入。 */
     const attachBashJob = async (taskId: string): Promise<void> => {
       const jobs = bashJobsForSession(conversationId);
@@ -558,7 +562,8 @@ async function main(): Promise<void> {
         return;
       }
       if (snapshot.status !== 'running') {
-        process.stdout.write(`\n[Bash 作业 ${taskId}] 已结束：${snapshot.status}，退出码 ${snapshot.exitCode ?? '无'}${snapshot.signal === null ? '' : `，信号 ${snapshot.signal}`}${snapshot.truncated ? '，输出已截断' : ''}。\n`);
+        process.stdout.write(`\n[Bash 作业 ${taskId}] ${formatBashJobEnd(snapshot)}\n`);
+        if (snapshot.notice !== undefined) process.stdout.write(`${snapshot.notice}\n`);
         if (snapshot.stdout !== '') process.stdout.write(snapshot.stdout.endsWith('\n') ? snapshot.stdout : `${snapshot.stdout}\n`);
         if (snapshot.stderr !== '') process.stdout.write(snapshot.stderr.endsWith('\n') ? snapshot.stderr : `${snapshot.stderr}\n`);
         return;
@@ -575,8 +580,11 @@ async function main(): Promise<void> {
         if (outcome.kind === 'not_found') process.stdout.write(`\n未找到 Bash 作业：${taskId}\n`);
         else if (outcome.kind === 'ended') {
           const final = outcome.snapshot;
-          process.stdout.write(`\n[Bash 作业 ${taskId}] 已结束：${final.status}，退出码 ${final.exitCode ?? '无'}${final.signal === null ? '' : `，信号 ${final.signal}`}${final.truncated ? '，输出已截断' : ''}。\n`);
+          process.stdout.write(`\n[Bash 作业 ${taskId}] ${formatBashJobEnd(final)}\n`);
+          // 通知信息不在标准输出流里，已结束作业的沙箱/执行说明仍需在接回时展示。
+          if (final.notice !== undefined) process.stdout.write(`${final.notice}\n`);
         } else if (outcome.kind === 'aborted') process.stdout.write(`\n已停止 Bash 作业：${taskId}\n`);
+        else if (outcome.kind === 'busy') process.stdout.write(`\n当前已有 Bash 作业在前台运行，请等待其结束或按 Ctrl+B 切到后台。\n`);
         else process.stdout.write(`\n已切换到后台：任务 ${taskId}\n`);
       } catch (error) {
         if (cancellation.signal.aborted) throw error;
@@ -700,8 +708,8 @@ input.setBusy(true);
         const rest = prompt.slice('/tasks'.length).trim();
         if (rest === '') listBashJobs();
         else {
-          const stop = /^(?:stop|kill|cancel)\s+(\S+)$/u.exec(rest);
-          if (stop) process.stdout.write(`${bashJobsForSession(conversationId).stop(stop[1]!).message}\n`);
+          const stop = /^stop\s+(\S+)$/u.exec(rest);
+          if (stop) process.stdout.write(`${bashJobsForSession(conversationId).stop(stop[1]!)}\n`);
           else process.stdout.write('用法：/tasks 或 /tasks stop <任务 ID>\n');
         }
         if (process.stdin.isTTY) input.prompt();

@@ -106,6 +106,9 @@ export class BashJobs {
       this.pauseForeground(job);
       this.clearForeground(job);
       if (outcome === 'detached') {
+        // 切换与命令自然结束相邻发生时，进程可能已经结束；此时按普通结果交付，
+        // 不能再声称作业仍在运行，否则模型会引用一个已停止的任务。
+        if (job.status !== 'running') return this.foregroundResult(job);
         // 进程保持运行，工具调用只交付一次带任务 ID 的结果。
         job.backgrounded = true;
         return { taskId: job.taskId, status: 'running', detached: true, hint: startedHint };
@@ -149,16 +152,14 @@ export class BashJobs {
     return job === undefined ? undefined : this.snapshot(job);
   }
 
-  /** 停止运行中的作业；终态作业不发送信号。 */
-  stop(taskId: string): { taskId: string; status: BashJobStatus | 'not_found'; requested: boolean; message: string } {
+  /** 停止运行中的作业并返回可展示结果；终态作业不发送信号。 */
+  stop(taskId: string): string {
     const job = this.jobs.get(taskId);
-    if (!job) return { taskId, status: 'not_found', requested: false, message: `未找到 Bash 作业：${taskId}` };
-    if (job.status !== 'running') {
-      return { taskId, status: job.status, requested: false, message: `作业 ${taskId} 已结束（${job.status}），未发送停止请求。` };
-    }
+    if (!job) return `未找到 Bash 作业：${taskId}`;
+    if (job.status !== 'running') return `作业 ${taskId} 已结束（${job.status}），未发送停止请求。`;
     job.stopRequested = true;
     job.execution.terminate();
-    return { taskId, status: job.status, requested: true, message: `已停止 Bash 作业：${taskId}` };
+    return `已停止 Bash 作业：${taskId}`;
   }
 
   /** Ctrl+B：把当前前台的 Bash 作业切到后台，返回被切换的任务 ID。 */
@@ -178,12 +179,17 @@ export class BashJobs {
   async attach(
     taskId: string,
     options: { signal: AbortSignal; write: (text: string) => void },
-  ): Promise<{ kind: 'ended' | 'detached' | 'aborted'; snapshot: BashJobSnapshot } | { kind: 'not_found' }> {
+  ): Promise<
+    { kind: 'ended' | 'detached' | 'aborted'; snapshot: BashJobSnapshot }
+    | { kind: 'not_found' }
+    | { kind: 'busy'; snapshot: BashJobSnapshot }
+  > {
     const job = this.jobs.get(taskId);
     if (!job) return { kind: 'not_found' };
     if (job.status !== 'running') return { kind: 'ended', snapshot: this.snapshot(job) };
     if (this.foreground !== undefined) {
-      return { kind: 'ended', snapshot: this.snapshot(job) };
+      // 调用方应等当前前台作业结束后再重试；这里不能报告为 ended。
+      return { kind: 'busy', snapshot: this.snapshot(job) };
     }
 
     const initial = job.execution.snapshot();
@@ -216,7 +222,11 @@ export class BashJobs {
       flushNewOutput();
       this.pauseForeground(job);
       this.clearForeground(job);
-      return { kind: outcome, snapshot: this.snapshot(job) };
+      // 切换与结束相邻发生时，进程可能已在切走前结束；以终态报告，避免重复承诺“仍在后台运行”。
+      return {
+        kind: outcome === 'detached' && job.status !== 'running' ? 'ended' : outcome,
+        snapshot: this.snapshot(job),
+      };
     } finally {
       clearInterval(interval);
       this.clearForeground(job);

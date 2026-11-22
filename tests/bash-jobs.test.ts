@@ -84,6 +84,8 @@ it.skipIf(process.platform === 'win32')('run_in_background 立即返回任务 ID
     const launched = toolOutput(fixture.requests[1]!);
     expect(launched.is_error).toBe(false);
     expect(launched.output).toMatchObject({ status: 'running' });
+    // 每次工具调用只交付一个结果；切换到后台不额外补造第二条。
+    expect(fixture.requests[1]!.messages.filter(({ role }) => role === 'tool')).toHaveLength(1);
     const taskId = String(launched.output!.taskId);
     expect(taskId).toMatch(/[0-9a-f-]{36}/u);
 
@@ -149,12 +151,56 @@ it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')('Ctrl+B
   }
 });
 
+it.skipIf(process.platform === 'win32')('接回前台后 Ctrl+C 停止作业并回到空闲输入', async () => {
+  await setup((_request, index) => index === 1
+    ? { calls: [bash('ctrl-c-stop', {
+      // 标记拆成相邻引号，避免与工具活动里回显的命令文本混淆。
+      command: `echo $$ > shell.pid; printf '%s\\n' 'ATTACHED''_MARKER'; sleep 30`,
+      run_in_background: true,
+    })] }
+    : { content: '后台作业已启动。' });
+
+  const cli = startCLI({
+    cwd,
+    conversationId: 'bash-ctrl-c',
+    pty: true,
+    env: { TEST_BASH_JOBS_KEY: 'fake-bash-jobs-key' },
+  });
+  let output = '';
+  cli.child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  cli.child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  try {
+    cli.send('启动后台长命令\n');
+    await waitFor(() => fixture.requests.length >= 2, `模型未收到后台工具结果：${output}`);
+    const taskId = String(toolOutput(fixture.requests[1]!).output!.taskId);
+    await waitFor(() => existsSync(join(cwd, 'shell.pid')), `后台命令未启动：${output}`);
+    const shellPid = Number(await readFile(join(cwd, 'shell.pid'), 'utf8'));
+    managedPids.push(shellPid);
+
+    cli.send(`/task ${taskId}\n`);
+    await waitFor(() => output.includes(`[Bash 作业 ${taskId}] 接回前台`), `未接回前台：${output}`);
+    await waitFor(() => output.includes('ATTACHED_MARKER'), `接回后未显示保留输出：${output}`);
+    cli.send('\u0003');
+    await waitFor(() => output.includes(`已停止 Bash 作业：${taskId}`), `Ctrl+C 未停止接回的作业：${output}`);
+    await waitFor(() => !isRunning(shellPid), '停止后作业进程仍在运行。', 3000);
+
+    // 停止后终端回到空闲命令处理；列表保留终态与输出。
+    cli.send('/tasks\n');
+    await waitFor(() => output.includes(`- ${taskId} [cancelled]`), `未回到空闲输入：${output}`);
+    cli.end('/exit\n');
+    expect((await cli.done).code).toBe(0);
+  } finally {
+    cli.child.kill('SIGKILL');
+  }
+});
+
 it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')('后台运行不计入前台时限，接回后继续使用剩余预算', async () => {
+  const timeoutMs = 2400;
   await setup((_request, index) => index === 1
     ? { calls: [bash('budget', {
       command: `echo $$ > shell.pid; sleep 10`,
     })] }
-    : { content: '前台命令已切换。' }, { bash: { timeoutMs: 1500 } });
+    : { content: '前台命令已切换。' }, { bash: { timeoutMs } });
 
   const cli = startCLI({
     cwd,
@@ -170,24 +216,92 @@ it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')('后台
     await waitFor(() => existsSync(join(cwd, 'shell.pid')), `命令未启动：${output}`);
     const shellPid = Number(await readFile(join(cwd, 'shell.pid'), 'utf8'));
     managedPids.push(shellPid);
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    // 前台先用掉约一半时限，再切到后台。
+    await new Promise((resolve) => setTimeout(resolve, 1200));
     cli.send('\u0002');
     await waitFor(() => output.includes('已切换到后台：任务 '), `Ctrl+B 未切换作业：${output}`);
 
     // 在后台停留的时间超过完整前台时限；进程必须仍在运行。
-    await new Promise((resolve) => setTimeout(resolve, 1800));
+    await new Promise((resolve) => setTimeout(resolve, timeoutMs + 200));
     expect(isRunning(shellPid)).toBe(true);
 
     await waitFor(() => fixture.requests.length >= 2, `模型未收到任务 ID：${output}`);
     const taskId = String(toolOutput(fixture.requests[1]!).output!.taskId);
     const resumedAt = Date.now();
     cli.send(`/task ${taskId}\n`);
-    await waitFor(() => output.includes(`[Bash 作业 ${taskId}] 已结束：timed_out`), `接回后未继续使用剩余时限：${output}`, 5000);
-    // 已用约 400ms，剩余约 1.1s；接回后不应重新获得完整时限。
-    expect(Date.now() - resumedAt).toBeLessThan(4000);
+    await waitFor(() => output.includes(`[Bash 作业 ${taskId}] 已结束：timed_out`), `接回后未继续使用剩余时限：${output}`, 4000);
+    // 已用约 1.2s，剩余约 1.2s；若接回后重新获得完整时限，耗时会接近 timeoutMs。
+    const elapsed = Date.now() - resumedAt;
+    expect(elapsed).toBeGreaterThan(400);
+    expect(elapsed).toBeLessThan(timeoutMs - 500);
     await waitFor(() => !isRunning(shellPid), '前台时限用尽后进程仍在运行。', 3000);
     cli.end('/exit\n');
     expect((await cli.done).code).toBe(0);
+  } finally {
+    cli.child.kill('SIGKILL');
+  }
+});
+
+it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')('直接在后台启动的作业首次接回获得完整前台时限', async () => {
+  const timeoutMs = 1200;
+  await setup((_request, index) => index === 1
+    ? { calls: [bash('background-budget', {
+      command: `echo $$ > shell.pid; sleep 10`,
+      run_in_background: true,
+    })] }
+    : { content: '后台作业已启动。' }, { bash: { timeoutMs } });
+
+  const cli = run();
+  let output = '';
+  cli.child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  cli.child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  try {
+    cli.send('启动后台长命令\n');
+    await waitFor(() => fixture.requests.length >= 2, `模型未收到后台工具结果：${output}`);
+    const taskId = String(toolOutput(fixture.requests[1]!).output!.taskId);
+    await waitFor(() => existsSync(join(cwd, 'shell.pid')), `后台命令未启动：${output}`);
+    const shellPid = Number(await readFile(join(cwd, 'shell.pid'), 'utf8'));
+    managedPids.push(shellPid);
+    // 后台已运行超过完整前台时限；接回时必须重新获得完整预算，而不是立即超时。
+    await new Promise((resolve) => setTimeout(resolve, timeoutMs + 300));
+    expect(isRunning(shellPid)).toBe(true);
+
+    cli.send(`/task ${taskId}\n`);
+    await waitFor(() => output.includes('接回前台'), `未接回前台：${output}`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(output).not.toContain(`[Bash 作业 ${taskId}] 已结束：timed_out`);
+    await waitFor(() => output.includes(`[Bash 作业 ${taskId}] 已结束：timed_out`), `首次接回未获得完整时限：${output}`, 3000);
+    await waitFor(() => !isRunning(shellPid), '前台时限用尽后进程仍在运行。', 3000);
+    cli.end('/exit\n');
+    expect((await cli.done).code).toBe(0);
+  } finally {
+    cli.child.kill('SIGKILL');
+  }
+});
+
+it.skipIf(process.platform === 'win32')('CLI 正常退出时终止仍在运行的后台作业与受管子进程', async () => {
+  await setup((_request, index) => index === 1
+    ? { calls: [bash('exit-cleanup', {
+      command: `echo $$ > shell.pid; sleep 30`,
+      run_in_background: true,
+    })] }
+    : { content: '后台作业已启动。' });
+
+  const cli = run();
+  let output = '';
+  cli.child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  cli.child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  try {
+    cli.send('启动常驻后台命令\n');
+    await waitFor(() => fixture.requests.length >= 2, `模型未收到后台工具结果：${output}`);
+    await waitFor(() => existsSync(join(cwd, 'shell.pid')), `后台命令未启动：${output}`);
+    const shellPid = Number(await readFile(join(cwd, 'shell.pid'), 'utf8'));
+    managedPids.push(shellPid);
+    expect(isRunning(shellPid)).toBe(true);
+
+    cli.end('/exit\n');
+    expect((await cli.done).code).toBe(0);
+    await waitFor(() => !isRunning(shellPid), 'CLI 退出后后台作业仍在运行。', 3000);
   } finally {
     cli.child.kill('SIGKILL');
   }
@@ -209,9 +323,7 @@ it.skipIf(process.platform === 'win32')('/tasks stop 终止后台作业并保留
     cli.send('启动可停止命令\n');
     await waitFor(() => fixture.requests.length >= 2, `模型未收到后台工具结果：${output}`);
     const taskId = String(toolOutput(fixture.requests[1]!).output!.taskId);
-    await waitFor(() => {
-      try { return require('node:fs').existsSync(join(cwd, 'shell.pid')); } catch { return false; }
-    }, `后台命令未启动：${output}`);
+    await waitFor(() => existsSync(join(cwd, 'shell.pid')), `后台命令未启动：${output}`);
     const shellPid = Number(await readFile(join(cwd, 'shell.pid'), 'utf8'));
     managedPids.push(shellPid);
 
