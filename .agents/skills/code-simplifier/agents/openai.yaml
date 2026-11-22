@@ -1,0 +1,3 @@
+interface:
+  display_name: "Code Simplifier"
+  short_description: "简化本次改动并保持行为不变"

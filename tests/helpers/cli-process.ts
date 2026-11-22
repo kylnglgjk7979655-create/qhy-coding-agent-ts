@@ -48,8 +48,8 @@ export function startCLI(options: {
   };
   const done = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
     const timer = setTimeout(() => child.kill('SIGKILL'), 7000);
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); onOutput?.(stdout); markReady(); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; onOutput?.(stdout); markReady(); });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
     child.once('error', (error) => { clearTimeout(timer); reject(error); });
     child.once('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
   });

@@ -57,7 +57,7 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 
 `agent:review`、`agent:implement`（PR）、`agent:update-branch` 共用同一个 per-PR 并发组，保证不会同时改写同一分支；不同 Issue、不同 PR 属于不同组，可以并行。
 
-`ready-for-agent` 只表示准备完成。QA 暂不接入 workflow：`agent:qa` / `agent:qa-only` 入口已移除。`agent:explore` 与 `agent:implement-spec` 入口同样已移除，本地仍可用对应 skill。
+`ready-for-agent` 只表示准备完成。`agent:explore` 与 `agent:implement-spec` 入口已移除，本地仍可用对应 skill。
 
 ## 定期架构巡检
 
