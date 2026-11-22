@@ -10,12 +10,14 @@ export type CliWorkItem = { type: 'user'; text: string } | { type: 'notification
 
 /**
  * 判定独立 Esc 前等待后续字节的窗口，同时作为 readline 的 escapeCodeTimeout。
- * 真实终端的转义序列（方向键等）通常与 ESC 同批或紧邻到达；readline 默认的 500ms
- * 会让 Esc 之后的第一个输入字符被当成 Alt 组合键吞掉，因此这里同步收紧。
+ * 真实 PTY 中方向键等 CSI/SS3 序列可能拆成多次写入，实测间隔可达约 100ms；窗口必须
+ * 覆盖这段间隔，否则 ESC 会被误判为独立按键并取消轮次。终端无法区分“拆包较晚的序列”
+ * 与“Esc 后紧接新输入”，因此该值也是两者的共同上限：超过窗口的后续字节无法挽回。
+ * 200ms 在覆盖实测间隔的同时，避免 Esc 之后的输入被长时间当作 Alt 组合键吞掉。
  */
-const ESCAPE_SEQUENCE_GRACE_MS = 30;
+const ESCAPE_SEQUENCE_TIMEOUT_MS = 200;
 // 从 Esc 按下的时刻起，等 readline 结束判定再重新显示提示，确保提示出现后输入不再被吞。
-const ESCAPE_INPUT_SETTLE_MS = 100;
+const ESCAPE_INPUT_SETTLE_MS = ESCAPE_SEQUENCE_TIMEOUT_MS + 20;
 // 原始输入阶段已处理的独立 Esc，readline 仍会补发一次 keypress；登记在此时间窗内的按下事件，
 // 供审批菜单与选择器忽略迟到事件，避免它被算到后续轮次。
 const ESCAPE_KEYPRESS_DELIVERY_MS = 600;
@@ -38,6 +40,17 @@ interface ApprovalMenu {
   onKeypress: (character: string, key: { name?: string; ctrl?: boolean }) => void;
 }
 
+/** 一次尚不能确定是否为独立按键的原始 Esc；轮次身份在按下时固定，最终判定稍后给出。 */
+interface PendingEscape {
+  id: number;
+  roundId: number;
+  pressedAt: number;
+  overlay: boolean;
+  timer: NodeJS.Timeout;
+  /** 工具启动前等待最终判定的调用方；参数表示该 Esc 是否真的取消了当前轮次。 */
+  waiters: Array<(canceled: boolean) => void>;
+}
+
 // 单一输入消费者将对话消息与正在等待的审批答复分开，已排队的消息不会变成批准。
 export class CliInput {
   private readonly input;
@@ -56,7 +69,7 @@ export class CliInput {
   /** 每次进入忙碌工作（轮次、通知轮次或压缩）递增，用于把 Esc 归属到按键按下时的轮次。 */
   private roundId = 0;
   private escapeId = 0;
-  private pendingEscape: { id: number; roundId: number; pressedAt: number; overlay: boolean; timer: NodeJS.Timeout } | undefined;
+  private pendingEscape: PendingEscape | undefined;
   /** 已在原始输入阶段处理的独立 Esc 按下事件，用于忽略 readline 迟到补发的 keypress。 */
   private readonly handledEscapes: Array<{ id: number; pressedAt: number }> = [];
   private settleInputUntil = 0;
@@ -73,10 +86,10 @@ export class CliInput {
     this.cancelRequest = cancel;
     this.input = createInterface({
       input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY, signal,
-      escapeCodeTimeout: ESCAPE_SEQUENCE_GRACE_MS,
+      escapeCodeTimeout: ESCAPE_SEQUENCE_TIMEOUT_MS,
     });
     this.input.on('SIGINT', cancel);
-    // 直接从原始输入识别独立 Esc：readline 会缓存约 500ms 才发出 keypress，
+    // 直接从原始输入识别独立 Esc：readline 会按 escapeCodeTimeout 缓存按键才发出 keypress，
     // 若按键时所在轮次在这段时间内结束，迟到的 keypress 会错误取消已排队的下一轮，
     // 并让尚未启动的工具获得执行机会。按键归属以原始输入到达时的轮次为准。
     if (process.stdin.isTTY) {
@@ -119,8 +132,8 @@ export class CliInput {
       this.closed = true;
       process.stdin.off('data', this.onRawInput);
       process.stdin.off('keypress', this.onEscapeKeypress);
-      if (this.pendingEscape) clearTimeout(this.pendingEscape.timer);
-      this.pendingEscape = undefined;
+      // 输入关闭时结束待判定状态，避免等待工具启动的调用方悬挂。
+      if (this.pendingEscape) this.settlePendingEscape(this.pendingEscape, false);
       if (this.promptTimer) clearTimeout(this.promptTimer);
       this.promptTimer = undefined;
       this.confirmation?.close();
@@ -326,11 +339,10 @@ export class CliInput {
     const pending = this.pendingEscape;
     if (pending) {
       // 与 readline 一致：ESC 后继续到达的字节属于转义序列或 Alt 组合键，不是独立按键。
-      clearTimeout(pending.timer);
-      this.pendingEscape = undefined;
+      // 先按“非取消”结束判定，放行等待工具启动的调用方；后续字节仍交给 readline 解码。
+      this.settlePendingEscape(pending, false);
       // 若在按下时就登记了迟到事件（尚未确认），此时撤销，避免误吞之后真正的 Esc。
       if (!pending.overlay) this.forgetHandledEscape(pending.id);
-      return;
     }
     const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
     for (let index = 0; index < bytes.length; index += 1) {
@@ -340,23 +352,37 @@ export class CliInput {
         index += 1;
         continue;
       }
-      const pressedAt = Date.now();
-      // 按键时打开的审批菜单、选择器或信任确认自行消费 Esc，这里不登记也不取消。
-      const overlay = Boolean(this.approvalMenu || this.approvals.size > 0 || this.selector || this.confirmation);
-      const id = ++this.escapeId;
-      this.pendingEscape = {
-        id,
-        roundId: this.roundId,
-        pressedAt,
-        overlay,
-        timer: setTimeout(() => this.finishRawEscape(), ESCAPE_SEQUENCE_GRACE_MS),
-      };
-      // 在按下时刻登记，而不是等确认后：readline 补发的 keypress 可能与确认定时器同刻到达，
-      // 先登记才能保证审批菜单和选择器不会收到属于先前轮次的事件。
-      if (!overlay) this.handledEscapes.push({ id, pressedAt });
+      // 只有数据块末尾的 ESC 需要等待后续字节；同一批数据里可能还有新的独立按键。
+      this.beginPendingEscape();
       return;
     }
   };
+
+  /** 记录一次位于数据块末尾、尚不能确定是否为独立按键的 Esc，并固定其轮次身份。 */
+  private beginPendingEscape(): void {
+    const pressedAt = Date.now();
+    // 按键时打开的审批菜单、选择器或信任确认自行消费 Esc，这里不登记也不取消。
+    const overlay = Boolean(this.approvalMenu || this.approvals.size > 0 || this.selector || this.confirmation);
+    const id = ++this.escapeId;
+    this.pendingEscape = {
+      id,
+      roundId: this.roundId,
+      pressedAt,
+      overlay,
+      timer: setTimeout(() => this.finishRawEscape(), ESCAPE_SEQUENCE_TIMEOUT_MS),
+      waiters: [],
+    };
+    // 在按下时刻登记，而不是等确认后：readline 补发的 keypress 可能与确认定时器同刻到达，
+    // 先登记才能保证审批菜单和选择器不会收到属于先前轮次的事件。
+    if (!overlay) this.handledEscapes.push({ id, pressedAt });
+  }
+
+  /** 结束一次 Esc 判定：清除定时器与待判定状态，并唤醒等待工具启动的调用方。 */
+  private settlePendingEscape(pending: PendingEscape, canceled: boolean): void {
+    clearTimeout(pending.timer);
+    if (this.pendingEscape === pending) this.pendingEscape = undefined;
+    for (const resolve of pending.waiters.splice(0)) resolve(canceled);
+  }
 
   /** 清除已到达且无人消费的登记；审批菜单与选择器会消费的按键保留给它们。 */
   private readonly onEscapeKeypress = (_character: string, key: { name?: string; ctrl?: boolean }): void => {
@@ -368,14 +394,28 @@ export class CliInput {
   private finishRawEscape(): void {
     const pending = this.pendingEscape;
     if (!pending) return;
-    this.pendingEscape = undefined;
-    if (pending.overlay) return;
+    if (pending.overlay) {
+      // 审批菜单、选择器与信任确认自行消费 Esc，这里只结束待判定状态。
+      this.settlePendingEscape(pending, false);
+      return;
+    }
     // 等 readline 结束 Esc 判定后再恢复提示，避免随后的第一个字符被当作 Alt 组合键。
     this.settleInputUntil = Math.max(this.settleInputUntil, pending.pressedAt + ESCAPE_INPUT_SETTLE_MS);
-    // 只有按键时所在的轮次仍在执行才取消；旧轮次已结束时不得把取消顺延到已排队的下一轮。
-    if (pending.roundId !== this.roundId) return;
-    if (this.busy !== 'turn') return;
-    this.cancelRequest();
+    // 轮次身份已在按下时固定；最终判定只决定是否取消该轮次，旧轮次已结束时不得顺延到下一轮。
+    const canceled = pending.roundId === this.roundId && this.busy === 'turn';
+    if (canceled) this.cancelRequest();
+    this.settlePendingEscape(pending, canceled);
+  }
+
+  /**
+   * 工具启动前等待原始 Esc 的最终判定。返回 true 表示该按键确认取消了当前轮次，
+   * 调用方不应再启动工具；没有待判定按键、按键属于审批/选择器，或已判定为转义序列
+   * （包括拆包方向键）与其他轮次时立即返回 false。
+   */
+  async waitForEscapeDecision(): Promise<boolean> {
+    const pending = this.pendingEscape;
+    if (!pending || pending.overlay) return false;
+    return new Promise<boolean>((resolve) => { pending.waiters.push(resolve); });
   }
 
   private forgetHandledEscape(id: number): void {

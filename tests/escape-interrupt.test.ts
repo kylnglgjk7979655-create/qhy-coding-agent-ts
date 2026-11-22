@@ -28,6 +28,10 @@ function waitFor(predicate: () => boolean, describe: () => string, timeout = 800
   });
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function lastUserText(request: FixtureRequest): string {
   return request.messages.filter(({ role }) => role === 'user').at(-1)?.content ?? '';
 }
@@ -204,6 +208,77 @@ describe.skipIf(process.platform === 'win32')('交互终端 Esc 中断', () => {
     const result = await cli.done;
     expect(result.code, result.stdout + result.stderr).toBe(0);
     expect(model.requests).toHaveLength(1);
+  });
+
+  it('轮次执行中拆包方向键不会触发取消（约 40ms / 100ms 间隔）', async () => {
+    // 真实 PTY 会把方向键拆成 ESC 与 [D 两次写入；两次写入的间隔不能决定它是不是独立 Esc。
+    for (const gap of [40, 100]) {
+      const marker = `长流完成_${gap}ms_MARKER`;
+      const { model, cli, output } = await setup(() => ({ frames: [
+        { delta: { content: '长流开始' } },
+        { delta: { content: marker }, finish_reason: 'stop', delayMs: 1200 },
+      ] }));
+      await waitForPrompt(output);
+      cli.send('长流请求\n');
+      await waitFor(() => output().includes('长流开始'), () => `间隔=${gap}ms，输出=${output()}`);
+      await sleep(60);
+      cli.send('\x1b');
+      await sleep(gap);
+      cli.send('[D');
+      await waitFor(() => output().includes(marker), () => `间隔=${gap}ms，输出=${output()}`, 8000);
+      expect(output(), `间隔=${gap}ms 不应取消轮次`).not.toContain('用户中断');
+      cli.end('/exit\n');
+      const result = await cli.done;
+      expect(result.code, `间隔=${gap}ms：${result.stdout}${result.stderr}`).toBe(0);
+      expect(model.requests, `间隔=${gap}ms`).toHaveLength(1);
+    }
+  });
+
+  it('空闲草稿中拆包方向键仍按光标移动处理（约 40ms / 100ms 间隔）', async () => {
+    for (const gap of [40, 100]) {
+      const { model, cli, output } = await setup((request) => ({ content: `收到:${lastUserText(request)}` }));
+      await waitForPrompt(output);
+      cli.send('AB');
+      await sleep(120);
+      cli.send('\x1b');
+      await sleep(gap);
+      cli.send('[D');
+      await sleep(150);
+      cli.send('Z\r');
+      await waitFor(() => output().includes('收到:AZB'), () => `间隔=${gap}ms，输出=${output()}`);
+      cli.end('/exit\n');
+      const result = await cli.done;
+      expect(result.code, `间隔=${gap}ms：${result.stdout}${result.stderr}`).toBe(0);
+      expect(model.requests.map(lastUserText), `间隔=${gap}ms`).toEqual(['AZB']);
+    }
+  });
+
+  it('Esc 判定期内尚未启动的工具等待判定，确认独立 Esc 后不执行', async () => {
+    const { cwd, model, cli, output } = await setup((_request, index) => index === 1
+      ? { frames: [
+        { delta: { content: '准备调用工具' } },
+        // 工具计划在按键判定窗口内启动：若不先等判定，就会在取消生效前执行。
+        { delta: { tool_calls: [{ index: 0, id: 'gate-tool', type: 'function', function: { name: 'Bash', arguments: JSON.stringify({ command: 'touch gate-tool.txt' }) } }] }, delayMs: 120 },
+        { delta: {}, finish_reason: 'tool_calls' },
+      ] }
+      : { content: '取消后继续完成' }, { permissions: { allow: ['Bash(touch:*)'] } });
+    await waitForPrompt(output);
+    cli.send('先输出再调用工具\n');
+    await waitFor(() => output().includes('准备调用工具') && model.requests.length === 1, () => `请求数=${model.requests.length}，输出=${output()}`);
+
+    cli.send('\x1b');
+    await waitFor(() => output().includes('用户中断'), () => `输出=${output()}`);
+    await waitForPrompt(output);
+    await sleep(400);
+    await expect(readFile(join(cwd, 'gate-tool.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+
+    cli.send('继续下一轮\n');
+    await waitFor(() => output().includes('取消后继续完成'), () => `输出=${output()}`);
+    cli.end('/exit\n');
+    const result = await cli.done;
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(model.requests).toHaveLength(2);
+    expect(lastUserText(model.requests[1]!)).toBe('继续下一轮');
   });
 
   it('轮次内已开始的压缩随 Esc 取消，保留压缩前历史并允许继续', async () => {

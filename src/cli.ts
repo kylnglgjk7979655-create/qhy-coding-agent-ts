@@ -563,6 +563,7 @@ input.setBusy(true);
             recentFiles,
             getTaskStatuses: pendingTaskStatuses,
             approvalMode: currentApprovalMode,
+            waitForEscapeDecision: () => input!.waitForEscapeDecision(),
             hookInjectionTracker,
           });
           const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId, { convertLegacy: false }));
@@ -741,6 +742,7 @@ const submitted = await runUserPromptSubmit(prompt, turnSignal);
           getTaskStatuses: pendingTaskStatuses,
           approvalMode: currentApprovalMode,
           promptContext: submitted.context,
+          waitForEscapeDecision: () => input!.waitForEscapeDecision(),
           hookInjectionTracker,
         });
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId, { convertLegacy: false }));
@@ -935,6 +937,8 @@ interface TurnOptions {
   promptContext?: ModelMessage[];
   /** 首次运行与 Stop 续跑共享的 Hook 注入去重集合。 */
   hookInjectionTracker?: HookInjectionTracker;
+  /** 工具启动前等待原始 Esc 完成判定；返回 true 表示该 Esc 已取消当前轮次。 */
+  waitForEscapeDecision?: () => Promise<boolean>;
 }
 
 async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
@@ -943,7 +947,7 @@ async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
     humanApprovalControl, approvalMode, legacyDirectory,
     recoveredRoundIds = [], fileBaselines = new Map<string, WorkspaceFileSnapshot>(),
     consumeCompactionRequest, recentFiles = new RecentFileTracker(), getTaskStatuses,
-    promptContext = [], hookInjectionTracker,
+    promptContext = [], hookInjectionTracker, waitForEscapeDecision,
   } = options;
   let roundId: string | undefined;
   let summaryCoverageBase = 0;
@@ -1031,11 +1035,14 @@ async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
       onFileRead: (target) => recentFiles.record(target),
       getRecentFiles: () => recentFiles.list(),
       ...(getTaskStatuses ? { getTaskStatuses } : {}),
-      onToolCallStart: async ({ callId, toolName, input }) => {
-        toolInputs.set(callId, { toolName, input });
+      onToolCallStart: async ({ callId, toolName, input: toolInput }) => {
+        // Esc 仍在判定期时先等待：确认独立 Esc 会取消本轮，registry 随后通过中止信号
+        // 阻止执行；判定为拆包方向键或其他轮次的按键则放行，避免误取消与误停工具。
+        if (await waitForEscapeDecision?.() === true) return;
+        toolInputs.set(callId, { toolName, input: toolInput });
         if (!smokeTool && roundId) {
           await appendRoundMessages(userHome, conversationId, roundId, [{
-            role: 'assistant', content: [{ type: 'tool-call', toolCallId: callId, toolName, input }],
+            role: 'assistant', content: [{ type: 'tool-call', toolCallId: callId, toolName, input: toolInput }],
           } as unknown as ModelMessage]);
         }
       },
