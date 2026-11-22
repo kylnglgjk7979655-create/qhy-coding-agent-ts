@@ -16,8 +16,8 @@ disable-model-invocation: true
 
 在支持且允许使用子智能体的会话中，将 Standards、Spec 和 Bugs 分配给三个独立任务并行执行。每个任务拿到同一组提交哈希，只执行分配的审查项，并返回结论和证据。子智能体不可用时逐项完成，并在报告里注明。
 
-- **Standards** 读取 `.agents/skills/code-review/SKILL.md` 的 Standards 部分，按仓库规范和其中的 smell baseline 审查。随后给出下方的简化判断。
-- **Spec** 读取同一个 Skill 的 Spec 部分。优先使用调用者指定的 Issue 或 spec，随后按 Skill 查找相关需求。需求缺失或无法读取时报告 `SKIP` 并说明。
+- **Standards** 按 `.agents/skills/code-review/SKILL.md` 第 3–5 步的 Standards 审查轴，使用其中的规范来源与 smell baseline 审查。随后给出下方的简化判断。
+- **Spec** 按同一个 Skill 第 3–5 步的 Spec 审查轴。优先使用调用者指定的 Issue 或 spec，随后按 Skill 查找相关需求。需求缺失或无法读取时报告 `SKIP` 并说明。
 - **Bugs** 读取 `.agents/skills/bug-review/SKILL.md`，按 Warden 的口径追踪调用方和契约。每条发现须有触发条件、被破坏的契约和可观察后果。
 
 ### 简化判断

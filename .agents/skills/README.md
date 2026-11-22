@@ -8,7 +8,7 @@
 | code-review | 规范、需求两个独立视角审查 | Matt 固定版本 |
 | bug-review | 沿调用方和契约追踪改动引入的缺陷 | Sentry Warden 英文原文 |
 | code-simplifier | 简化本次改动并保持行为 | Q 项目自定义 |
-| verify | 从真实入口运行受影响的行为并留证 | Claude Code 2.1.328 英文原文 |
+| verify | 从真实入口运行受影响的行为并留证 | Claude Code 英文原文 |
 | tdd | 通过公共接口测试行为，逐条 red→green | Matt 固定版本 |
 | diagnosing-bugs | 可复现反馈、最小化、诊断、回归 | Matt 固定版本 |
 | codebase-design | 共享设计词汇与深化方法 | Matt 固定版本 |

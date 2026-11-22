@@ -1,5 +1,5 @@
 ---
-name: code-review
+name: bug-review
 description: Finds real correctness bugs in code changes. Use for adversarial code review, bug hunts, regression review, PR correctness review, logic errors, data loss, race conditions, state bugs, interface contract breaks, error handling bugs, edge cases, broken builds, or broken workflows. Excludes style, readability, architecture, AppSec, and best-practice-only feedback unless the issue causes a demonstrable bug.
 allowed-tools: Read Grep Glob
 ---
