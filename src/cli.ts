@@ -10,7 +10,7 @@ import type { ContextUsageEstimate } from './query/agent.js';
 import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession, type BackgroundTaskStatusEntry } from './tools/AgentTool/background-agent-tasks.js';
 import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, persistableSessionConfig, restoreSessionConfig } from './services/settings/config.js';
 import type { ApprovalMode } from './services/settings/config.js';
-import { approvalModeLabel, createApprovalModeState, parseApprovalModeCommand } from './tools/approval-mode.js';
+import { approvalModeLabel, createApprovalModeState, isApprovalMode, parseApprovalModeCommand } from './tools/approval-mode.js';
 import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, openSession, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, saveManualCompaction, sessionRecordPath, sessionTaskOutputDirectory, startSessionRound, type SessionLoadWarning, type SessionRecord } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
 import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './services/session/file-checkpoints.js';
@@ -163,7 +163,7 @@ async function main(): Promise<void> {
       throw new AgentError('CONFIG_ERROR', '交互模式不接受位置参数，请启动后在终端输入需求。');
     }
     const permissionMode = args.values['permission-mode'];
-    if (permissionMode !== undefined && permissionMode !== 'default' && permissionMode !== 'auto' && permissionMode !== 'plan') {
+    if (permissionMode !== undefined && !isApprovalMode(permissionMode)) {
       throw new AgentError('CONFIG_ERROR', '--permission-mode 只接受 default、auto 或 plan。运行 --help 查看用法。');
     }
     if (args.values['smoke-tool'] && args.values['conversation-id'] !== undefined) {
@@ -260,6 +260,10 @@ async function main(): Promise<void> {
     }
     // 审批模式是进程级运行状态：切会话不变，重启后重新取 settings；切换不写回配置或会话记录。
     const approvalMode = createApprovalModeState(permissionMode ?? config.approval.mode);
+    // 冒烟需要工作区可写并强制调用 read_file；plan 只公布只读的规范工具名，组合运行必然失败。
+    if (smokeTool && approvalMode.current() === 'plan') {
+      throw new AgentError('CONFIG_ERROR', '--smoke-tool 不能在 plan 模式下运行。运行 --help 查看用法。');
+    }
     const currentApprovalMode = (): ApprovalMode => approvalMode.current();
     const executeApprovalModeCommand = (line: string): boolean => {
       const command = parseApprovalModeCommand(line);
@@ -930,7 +934,7 @@ interface TurnOptions {
   conversationId: string;
   signal: AbortSignal;
   smokeTool: boolean;
-  /** CLI 人工审批控制；仅在当前模式为 default 时使用。 */
+  /** CLI 人工审批控制；在当前模式为 default 或 plan 时使用。 */
   humanApprovalControl?: ApprovalControl;
   /** 当前进程的审批模式；每个工具调用进入审批前读取。 */
   approvalMode?: () => ApprovalMode;

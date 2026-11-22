@@ -39,7 +39,7 @@ export interface ExploreOptions {
   modelOverride?: string;
   signal?: AbortSignal;
   approvalControl?: ApprovalControl;
-  /** CLI 人工审批控制；仅在当前模式为 default 时使用。 */
+  /** CLI 人工审批控制；在当前模式为 default 或 plan 时使用。 */
   humanApprovalControl?: ApprovalControl;
   approvalMode?: () => ApprovalMode;
   skills?: SkillCatalogue;
@@ -57,6 +57,8 @@ export async function runExplore(
 ): Promise<string> {
   const { modelOverride, signal, approvalControl, humanApprovalControl, approvalMode, skills, hookScope, tracing } = options;
   signal?.throwIfAborted();
+  // Explore 可能在父轮次中运行；用户切到 plan 后，后续工具 Hook 必须与主 Agent 一样暂停。
+  const planModeActive = (): boolean => (approvalMode?.() ?? config.approval.mode) === 'plan';
   const provider = createOpenAI({
     apiKey: config.apiKey,
     fetch: validatedOpenAIFetch,
@@ -77,7 +79,7 @@ export async function runExplore(
     input: PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput,
     toolSignal: AbortSignal | undefined,
   ): Promise<HookEventResult | undefined> => {
-    if (hooksConfig === undefined || activeHookScope === undefined) return undefined;
+    if (planModeActive() || hooksConfig === undefined || activeHookScope === undefined) return undefined;
     try {
       return await runHookEvent(hooksConfig, event, input, {
         cwd: config.workspace,

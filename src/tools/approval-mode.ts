@@ -12,6 +12,21 @@ export function isPlanModeToolAllowed(toolName: string): boolean {
   return (PLAN_MODE_TOOL_NAMES as readonly string[]).includes(toolName);
 }
 
+/** plan 只公布只读工具；/context 估算与实际请求共用同一份过滤，避免口径漂移。 */
+export function planModeTools<T>(tools: Readonly<Record<string, T>>): Record<string, T> {
+  return Object.fromEntries(Object.entries(tools).filter(([name]) => isPlanModeToolAllowed(name)));
+}
+
+/** 配置与启动参数共用的模式合法性判定，新增模式时只需改 APPROVAL_MODES。 */
+export function isApprovalMode(value: string): value is ApprovalMode {
+  return (APPROVAL_MODES as readonly string[]).includes(value);
+}
+
+/** default 与 plan 都由人工确认需要审批的调用；plan 额外强制只读。 */
+export function usesHumanApproval(mode: ApprovalMode): boolean {
+  return mode === 'default' || mode === 'plan';
+}
+
 /** 当前 CLI 进程的审批模式；初始值来自 settings 或启动参数，切换不改写 settings。 */
 export interface ApprovalModeState {
   current(): ApprovalMode;
@@ -55,7 +70,7 @@ export function parseApprovalModeCommand(input: string): ApprovalModeCommand | u
   if (!match) return undefined;
   const argument = match[1]?.trim() ?? '';
   if (argument === '') return {};
-  if ((APPROVAL_MODES as readonly string[]).includes(argument)) return { mode: argument as ApprovalMode };
+  if (isApprovalMode(argument)) return { mode: argument };
   return { invalid: argument };
 }
 
@@ -74,7 +89,7 @@ export function selectApprovalControl(
   approvalControl: ApprovalControl | undefined,
   humanApprovalControl: ApprovalControl | undefined,
 ): ApprovalControl | undefined {
-  return mode === 'default' || mode === 'plan' ? (humanApprovalControl ?? approvalControl) : approvalControl;
+  return usesHumanApproval(mode) ? (humanApprovalControl ?? approvalControl) : approvalControl;
 }
 
 /**

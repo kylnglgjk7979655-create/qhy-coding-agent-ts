@@ -25,7 +25,7 @@ export interface BuiltInToolContext {
   allowAgent?: boolean;
   allowWorkspaceExternalRead?: boolean;
   approvalControl?: ApprovalControl;
-  /** CLI 人工审批控制；子 Agent 仅在当前模式为 default 时使用。 */
+  /** CLI 人工审批控制；子 Agent 在当前模式为 default 或 plan 时使用。 */
   humanApprovalControl?: ApprovalControl;
   /** 当前进程的审批模式，供子 Agent 与主 Agent 使用同一运行时状态。 */
   approvalMode?: () => ApprovalMode;

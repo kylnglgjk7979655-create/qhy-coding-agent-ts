@@ -7,7 +7,7 @@ import { AgentError } from '../utils/errors.js';
 import type { ToolApprovalRequest } from './tool-registry.js';
 import { assertInputBudget } from '../services/compact/context-summary.js';
 import { evaluatePermission, toPermissionRuleSet } from './tool-permission-policy.js';
-import { isPlanModeToolAllowed } from './approval-mode.js';
+import { isPlanModeToolAllowed, usesHumanApproval } from './approval-mode.js';
 import { AgentObservations } from '../services/observability/agent-observations.js';
 import type { TracingScope } from '../services/observability/langfuse.js';
 
@@ -64,7 +64,7 @@ export async function approveToolCall(
   if (decision.outcome === 'deny') return false;
   if (!hookAsk && hookAllowSkipsDefaultApproval) return true;
 
-  if (config.approval.mode === 'default' || config.approval.mode === 'plan') {
+  if (usesHumanApproval(config.approval.mode)) {
     if (!control) return false;
     humanWait?.pause();
     const timeout = new AbortController();

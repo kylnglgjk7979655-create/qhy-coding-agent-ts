@@ -124,6 +124,64 @@ describe('plan 审批模式', () => {
     expect(session.rounds?.at(-1)?.config?.approval?.mode).toBe('default');
   });
 
+  it('plan 可以连续进行两轮只读对话，每轮都只公布只读工具', async () => {
+    await setup((_request, index) => index === 1
+      ? { content: '第一轮只读回答。' }
+      : index === 2 ? { content: '第二轮只读回答。' } : { content: '意外额外请求。' });
+
+    const result = await run('/permission-mode plan\n第一个问题\n第二个问题\n/exit\n').done;
+
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toContain('第一轮只读回答。');
+    expect(result.stdout).toContain('第二轮只读回答。');
+    expect(fixture!.requests).toHaveLength(2);
+    for (const request of fixture!.requests) expect(toolNames(request)).toEqual(['Glob', 'Grep', 'Read']);
+  });
+
+  it('plan 对话写入会话记录后，可在新进程继续同一段只读对话', async () => {
+    await setup((_request, index) => index === 1
+      ? { content: '第一轮只读回答。' }
+      : index === 2 ? { content: '续聊只读回答。' } : { content: '意外额外请求。' });
+    const first = await run('/permission-mode plan\n第一问\n/exit\n', ['--conversation-id', 'plan-resume']).done;
+    expect(first.code, first.stdout + first.stderr).toBe(0);
+
+    const second = await run('/permission-mode plan\n继续问\n/exit\n', ['--conversation-id', 'plan-resume']).done;
+
+    expect(second.code, second.stdout + second.stderr).toBe(0);
+    expect(second.stdout).toContain('续聊只读回答。');
+    const resumed = fixture!.requests.at(-1)!;
+    expect(toolNames(resumed)).toEqual(['Glob', 'Grep', 'Read']);
+    expect(resumed.messages.some(({ role, content }) => role === 'assistant'
+      && JSON.stringify(content).includes('第一轮只读回答。'))).toBe(true);
+  });
+
+  it('plan 中 Glob 与 Grep 正常工作，Read 的 deny 规则仍然优先', async () => {
+    await setup((_request, index) => index === 1
+      ? { calls: [
+        call('glob', 'Glob', { pattern: '*.txt', path: 'notes' }),
+        call('grep', 'Grep', { pattern: '允许', path: 'notes' }),
+        call('read', 'Read', { file_path: 'notes/note.txt' }),
+      ] }
+      : { content: '只读规则检查完成。' }, { permissions: { deny: ['Read'] } });
+    await mkdir(join(cwd, 'notes'), { recursive: true });
+    await writeFile(join(cwd, 'notes', 'note.txt'), '允许读取');
+
+    const result = await run('/permission-mode plan\n检查规则\n/exit\n').done;
+
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toContain('只读规则检查完成。');
+    const toolResults = fixture!.requests.at(-1)!.messages
+      .filter(({ role }) => role === 'tool') as unknown as Array<{ tool_call_id: string; content: string }>;
+    const resultFor = (id: string): { is_error: boolean; output?: Record<string, unknown>; error?: { code: string } } =>
+      JSON.parse(toolResults.find(({ tool_call_id }) => tool_call_id === id)!.content);
+    expect(resultFor('glob')).toMatchObject({ is_error: false, output: { paths: ['notes/note.txt'] } });
+    expect(resultFor('grep')).toMatchObject({ is_error: false, output: {
+      matches: [expect.objectContaining({ path: 'notes/note.txt', text: '允许读取' })],
+    } });
+    expect(resultFor('read')).toMatchObject({ is_error: true, error: { code: 'PERMISSION_DENIED' } });
+    expect(fixture!.approvalRequests).toHaveLength(0);
+  });
+
   it('plan 中即使配置允许也拒绝写入、命令与其他工具，只读调用继续工作', async () => {
     await setup((_request, index) => index === 1
       ? { calls: [
@@ -214,6 +272,36 @@ describe('plan 审批模式', () => {
     await rm(outside, { recursive: true, force: true });
   });
 
+  it.skipIf(process.platform === 'win32')('plan 切回 auto 后恢复模型审批，不再询问人工', async () => {
+    const outside = await tempDir('qhy-plan-auto-');
+    await writeFile(join(outside, 'secret.txt'), '切回后的外部内容');
+    await setup((_request, index) => index === 1
+      ? { calls: [call('outside-read', 'Read', { file_path: join(outside, 'secret.txt') })] }
+      : index === 2 ? { content: '切回 auto 后读取完成。' } : { content: '意外额外请求。' });
+
+    const running = runInteractive();
+    await running.waitFor('[default（人工审批）] > ');
+    running.send('/permission-mode plan\n');
+    await running.waitFor('[plan（只读）] > ');
+    running.send('/permission-mode auto\n');
+    await running.waitFor('[auto（模型审批）] > ');
+    running.send('读取外部文件\n');
+    await running.waitFor('切回 auto 后读取完成。');
+    running.end('/exit\n');
+    const result = await running.done;
+
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(running.output()).not.toContain('[人工审批');
+    expect(fixture!.approvalRequests).toHaveLength(1);
+    const toolResult = fixture!.requests.at(-1)!.messages
+      .find(({ role }) => role === 'tool') as unknown as { content: string };
+    expect(JSON.parse(toolResult.content)).toEqual({
+      is_error: false,
+      output: expect.objectContaining({ content: '切回后的外部内容' }),
+    });
+    await rm(outside, { recursive: true, force: true });
+  });
+
   it.skipIf(process.platform === 'win32')('plan 期间暂停全部命令型 Hook，退出后下一轮恢复原模式 Hook 行为', async () => {
     const marker = (text: string) => ({
       type: 'command' as const,
@@ -255,5 +343,15 @@ describe('plan 审批模式', () => {
     expect(result.code, result.stdout + result.stderr).toBe(0);
     // startup 与 plan 轮都不执行 Hook；切回 default 后只需一次用户提交即可恢复全部事件。
     expect(await readFile(join(cwd, 'hook-events.txt'), 'utf8')).toBe('upqs');
+  });
+
+  it('plan 模式拒绝 --smoke-tool，避免强制调用未公布的 read_file', async () => {
+    await setup(() => ({ content: '不应请求模型' }));
+
+    const result = await run('', ['--smoke-tool', '--permission-mode', 'plan']).done;
+
+    expect(result.code).not.toBe(0);
+    expect(result.stdout + result.stderr).toContain('--smoke-tool');
+    expect(fixture!.requests).toHaveLength(0);
   });
 });

@@ -12,7 +12,7 @@ import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
 import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
 import type { ApprovalControl } from '../tools/tool-approval.js';
-import { isPlanModeToolAllowed, PLAN_MODE_TOOL_NAMES, resolveApproval } from '../tools/approval-mode.js';
+import { isPlanModeToolAllowed, PLAN_MODE_TOOL_NAMES, planModeTools, resolveApproval } from '../tools/approval-mode.js';
 import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.js';
 import { registerBuiltInTools } from '../tools/register-built-in-tools.js';
 import { bashSandboxGuidance } from '../tools/BashTool/sandbox-guidance.js';
@@ -131,9 +131,7 @@ export async function estimateContextUsage(
   });
   const allTools = registry.tools();
   // plan 只发送三个只读工具定义；/context 与实际请求保持同一集合。
-  const tools = planMode
-    ? Object.fromEntries(Object.entries(allTools).filter(([name]) => isPlanModeToolAllowed(name)))
-    : allTools;
+  const tools = planMode ? planModeTools(allTools) : allTools;
   const definitions = await toolDefinitionsForEstimate(tools);
   const capacityTokens = (config.context ?? DEFAULT_CONTEXT).capacityTokens;
   const estimatedInputTokens = estimateInput(buildInstructions(config, {
@@ -167,7 +165,7 @@ export async function runAgent(
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
-    /** CLI 人工审批控制；仅在当前模式为 default 时使用。 */
+    /** CLI 人工审批控制；在当前模式为 default 或 plan 时使用。 */
     humanApprovalControl?: ApprovalControl;
     /** 当前进程的审批模式；省略时沿用配置模式。每次工具调用进入审批前读取。 */
     approvalMode?: () => ApprovalMode;
@@ -465,7 +463,7 @@ export async function runAgent(
     const instructions = instructionsFor(initialPlanMode);
     const tools = registry.tools();
     // plan 的发送前预算也只按实际公布的三个工具估算，避免压缩阈值被未启用定义抬高。
-    const planTools = Object.fromEntries(Object.entries(tools).filter(([name]) => isPlanModeToolAllowed(name)));
+    const planTools = planModeTools(tools);
     let preparedResponseCount = 0;
     const summaries: RunResult['summaries'] = [];
     // 本运行内已生成的 Skill 注入；注入消息随 SDK 的步进消息延续到后续请求。

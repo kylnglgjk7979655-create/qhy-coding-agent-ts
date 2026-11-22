@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runAgent } from '../src/query/agent.js';
+import { runExplore } from '../src/query/explore.js';
 import { BackgroundAgentTasks } from '../src/tools/AgentTool/background-agent-tasks.js';
 import { DEFAULT_SANDBOX, type ResolvedConfig } from '../src/services/settings/config.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
@@ -896,5 +897,35 @@ describe('后台子 Agent 启动', () => {
     } finally {
       await rm(outputDirectory, { recursive: true, force: true });
     }
+  });
+
+  it('plan 生效期间 Explore 的工具 Hook 与主 Agent 一样暂停', async () => {
+    workspace = await mkdtemp(join(tmpdir(), 'qhy-explore-plan-'));
+    const fixture = await startLocalOpenAIModel((_request, index) => index === 1
+      ? { calls: [{ id: 'explore-read', type: 'function', function: {
+        name: 'read_file', arguments: JSON.stringify({ path: 'note.txt' }),
+      } }] }
+      : index === 2 ? { content: 'Explore 完成。' } : { content: '意外额外请求。' });
+    closeFixture = fixture.close;
+    const config: ResolvedConfig = {
+      approval: { mode: 'auto', timeoutMs: 30_000 },
+      provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+      baseURL: fixture.baseURL, workspace: await realpath(workspace), timeoutMs: 5000, maxSteps: 4,
+      hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: "printf 'hook' >> hook-marker.txt" }] }] },
+    };
+
+    const report = await runExplore(config, '只读调查', '读取 note.txt', {
+      approvalMode: () => 'plan',
+      hookScope: {
+        sessionId: 'parent-session', transcriptPath: join(workspace, 'session.json'),
+        agentId: 'explore-call', agentType: 'Explore',
+      },
+    });
+
+    expect(report).toContain('Explore 完成。');
+    // 旧只读名称仍受 plan 的规范工具名范围约束，但 Hook 在审批前已经暂停，不会执行命令。
+    const toolResult = fixture.requests[1]!.messages.find(({ role }) => role === 'tool');
+    expect(JSON.parse(toolResult!.content)).toMatchObject({ is_error: true, error: { code: 'PERMISSION_DENIED' } });
+    await expect(readFile(join(workspace, 'hook-marker.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

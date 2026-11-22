@@ -373,7 +373,7 @@ pnpm exec vitest run tests/config.test.ts tests/agent-execution.test.ts tests/se
 | 字段 | 产品默认值 / 用途 |
 | --- | --- |
 | `timeoutMs`、`maxSteps` | 60000ms、20；整轮执行预算与主模型步骤上限 |
-| `approval.mode` | `default`；`auto` 使用独立模型审批。旧 `approval.rules` 不提供授权 |
+| `approval.mode` | `default`；`auto` 使用独立模型审批；`plan` 只读调查并暂停命令型 Hook。旧 `approval.rules` 不提供授权 |
 | `approval.timeoutMs`、`approval.humanTimeoutMs` | 30000ms、300000ms；人工等待不扣整轮执行预算，不重置此前已消耗时间 |
 | `approval.model` | 可选 `{provider, model, baseURL, apiKeyEnv}`，默认复用主模型；独立审查携带受控上下文，不提供工具 |
 | `permissions.allow`、`permissions.ask`、`permissions.deny` | 分别按文件路径、Bash 命令、MCP 服务/工具及 Agent/RuntimeInfo 能力配置；权限规则各层合并去重，`deny` 优先 |

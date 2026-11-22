@@ -38,7 +38,7 @@ function subagentTracing(
 export interface AgentToolContext {
   config: ResolvedConfig;
   approvalControl?: ApprovalControl;
-  /** CLI 人工审批控制；子 Agent 仅在当前模式为 default 时使用。 */
+  /** CLI 人工审批控制；子 Agent 在当前模式为 default 或 plan 时使用。 */
   humanApprovalControl?: ApprovalControl;
   approvalMode?: () => ApprovalMode;
   backgroundTasks?: BackgroundAgentTasks;
