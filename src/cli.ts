@@ -11,7 +11,7 @@ import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession, type Back
 import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, persistableSessionConfig, restoreSessionConfig } from './services/settings/config.js';
 import type { ApprovalMode } from './services/settings/config.js';
 import { approvalModeLabel, createApprovalModeState, parseApprovalModeCommand } from './tools/approval-mode.js';
-import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, saveManualCompaction, sessionRecordPath, sessionTaskOutputDirectory, startSessionRound, type SessionLoadWarning, type SessionRecord } from './services/session/conversations.js';
+import { appendRoundMessages, appendRoundText, appendSessionEvent, createSession, finishSessionRound, listSessions, loadLegacyConversation, loadSession, newConversationId, openSession, recordFileBackup, reconstructSessionHistory, saveCompactionCheckpoint, saveLegacyConversation, saveManualCompaction, sessionRecordPath, sessionTaskOutputDirectory, startSessionRound, type SessionLoadWarning, type SessionRecord } from './services/session/conversations.js';
 import type { WorkspaceFileSnapshot } from './tools/workspace-files.js';
 import { applyFileRewind, fileRewindPlanChanged, formatFileRewindPreview, prepareFileRewind } from './services/session/file-checkpoints.js';
 import type { FileRewindPlan } from './services/session/file-checkpoints.js';
@@ -231,7 +231,9 @@ async function main(): Promise<void> {
     let sessionStartedFresh = false;
     if (!smokeTool && args.values['conversation-id'] !== undefined) {
       try {
-        session = await loadSession(userHome, conversationId, { onWarning: (warning) => reportSessionWarning(conversationId, warning) });
+        ({ session, release: releaseSession } = await openSession(userHome, conversationId, {
+          onWarning: (warning) => reportSessionWarning(conversationId, warning),
+        }));
         config = await restoreSessionConfig(session.config, process.env);
       } catch (error) {
         if (!(error instanceof Error) || !error.message.startsWith('会话记录不存在：')) throw error;
@@ -273,7 +275,7 @@ async function main(): Promise<void> {
       input = new CliInput(cancellation.signal, cancel, config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, executeApprovalModeCommand);
       config = await applyHookTrust(config);
     }
-    if (session) releaseSession = await acquireSessionLock(userHome, conversationId);
+    if (session && !releaseSession) releaseSession = await acquireSessionLock(userHome, conversationId);
     // 最近读取文件记录跨进程续聊保留；进程内以该记录为准，轮次结束或压缩时持久化。
     const recentFiles = new RecentFileTracker(session?.recentFiles ?? []);
     const legacyDirectory = join(process.cwd(), '.agent', 'conversations');
@@ -426,24 +428,31 @@ async function main(): Promise<void> {
       return backgroundAgentTasksForSession(conversationId, sessionTaskOutputDirectory(userHome, conversationId), context.capacityTokens - context.answerReserveTokens).pendingStatuses();
     };
     const switchSession = async (id: string) => {
-      const resumed = await resumeSession(userHome, id);
-      // 恢复对话时从磁盘重新加载 Hook 配置，并按当前配置重新检查信任。
-      resumed.config = await applyHookTrust(resumed.config);
-      if (id !== conversationId) {
-        const nextRelease = await acquireSessionLock(userHome, id);
-        await releaseSession?.();
-        releaseSession = nextRelease;
-        fileBaselines = fileBaselinesForSession(id);
+      const onWarning = (warning: SessionLoadWarning) => reportSessionWarning(id, warning);
+      const opened = id === conversationId ? undefined : await openSession(userHome, id, { onWarning });
+      try {
+        const session = opened?.session ?? await loadSession(userHome, id, { onWarning, convertLegacy: false });
+        const resumed = await resumeSession(session);
+        // 恢复对话时从磁盘重新加载 Hook 配置，并按当前配置重新检查信任。
+        resumed.config = await applyHookTrust(resumed.config);
+        if (opened) {
+          await releaseSession?.();
+          releaseSession = opened.release;
+          fileBaselines = fileBaselinesForSession(id);
+        }
+        config = resumed.config;
+        conversationId = id;
+        recentFiles.replace(resumed.recentFiles);
+        skills = await loadSkills();
+        bindBackgroundNotifications(id);
+        // 进程内切换与启动恢复使用同一来源；Hook 配置与信任已在上面按磁盘当前状态重新判定。
+        resumed.history = [...resumed.history, ...await runSessionStart('resume', id)];
+        process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
+        return resumed;
+      } finally {
+        // 配置或信任检查失败时保留原会话，释放尚未接管的目标会话。
+        if (opened && releaseSession !== opened.release) await opened.release().catch(() => undefined);
       }
-      config = resumed.config;
-      conversationId = id;
-      recentFiles.replace(resumed.recentFiles);
-      skills = await loadSkills();
-      bindBackgroundNotifications(id);
-      // 进程内切换与启动恢复使用同一来源；Hook 配置与信任已在上面按磁盘当前状态重新判定。
-      resumed.history = [...resumed.history, ...await runSessionStart('resume', id)];
-      process.stdout.write(`已继续会话：${id}（工作区：${resumed.config.workspace}）\n`);
-      return resumed;
     };
     let rewindSelection: { plan: FileRewindPlan } | undefined;
     // 失败或取消的轮次可能已保存压缩检查点；内存历史需与磁盘一致，避免覆盖边界与摘要基数错位。
@@ -451,6 +460,7 @@ async function main(): Promise<void> {
       try {
         const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId, {
           onWarning: (warning) => reportSessionWarning(conversationId, warning),
+          convertLegacy: false,
         }));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
@@ -555,7 +565,7 @@ input.setBusy(true);
             approvalMode: currentApprovalMode,
             hookInjectionTracker,
           });
-          const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
+          const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId, { convertLegacy: false }));
           history = recovered.history;
           recoveredRoundIds = recovered.recoveredRoundIds;
         } catch (error) {
@@ -587,7 +597,7 @@ input.setBusy(true);
           continue;
         }
         try {
-          const refreshed = await prepareFileRewind(await loadSession(userHome, conversationId), rewindSelection.plan.checkpoint.id);
+          const refreshed = await prepareFileRewind(await loadSession(userHome, conversationId, { convertLegacy: false }), rewindSelection.plan.checkpoint.id);
           if (fileRewindPlanChanged(rewindSelection.plan, refreshed)) {
             rewindSelection.plan = refreshed;
             process.stdout.write(`文件状态已变化，预览已刷新。\n${formatFileRewindPreview(refreshed)}\n请再次确认恢复请输入 yes，输入 no 或 /cancel 取消：\n`);
@@ -620,7 +630,7 @@ input.setBusy(true);
         continue;
       }
       if (prompt === '/rewind') {
-        const currentSession = await loadSession(userHome, conversationId);
+        const currentSession = await loadSession(userHome, conversationId, { convertLegacy: false });
         const checkpoints = [...currentSession.checkpoints].reverse();
         if (checkpoints.length === 0) process.stdout.write('当前会话没有可用的消息检查点。\n');
         else {
@@ -640,7 +650,7 @@ input.setBusy(true);
           const checkpointId = await input.select('选择要预览的用户消息恢复点', choices);
           if (checkpointId) {
             try {
-              const plan = await prepareFileRewind(await loadSession(userHome, conversationId), checkpointId);
+              const plan = await prepareFileRewind(await loadSession(userHome, conversationId, { convertLegacy: false }), checkpointId);
               rewindSelection = { plan };
               process.stdout.write(`${formatFileRewindPreview(plan)}\n确认恢复请输入 yes，输入 no 或 /cancel 取消：\n`);
             } catch (error) {
@@ -733,7 +743,7 @@ const submitted = await runUserPromptSubmit(prompt, turnSignal);
           promptContext: submitted.context,
           hookInjectionTracker,
         });
-        const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId));
+        const recovered = reconstructSessionHistory(await loadSession(userHome, conversationId, { convertLegacy: false }));
         history = recovered.history;
         recoveredRoundIds = recovered.recoveredRoundIds;
       } catch (error) {
@@ -806,7 +816,7 @@ async function compactIdleHistory(
       : { tracer: langfuseTracer, traceId: langfuseTrace.id };
     const observations = new AgentObservations(tracing);
     // 空闲压缩与自动压缩共用 Skill 恢复路径，按会话记录中的最近加载顺序补回被摘要移除的正文。
-    const current = await loadSession(userHome, conversationId);
+    const current = await loadSession(userHome, conversationId, { convertLegacy: false });
     const restore = skills === undefined
       ? undefined
       : {
@@ -958,7 +968,7 @@ async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
       roundId = await startSessionRound(userHome, conversationId, prompt, persistableSessionConfig(config), () => {
         reportCheckpointWarning('checkpoint.snapshot_failed', '消息检查点文件快照失败，本轮继续处理。', { conversationId });
       });
-      const current = await loadSession(userHome, conversationId);
+      const current = await loadSession(userHome, conversationId, { convertLegacy: false });
       const lastSummary = current.summaries.at(-1);
       summaryCoverageBase = lastSummary?.coversThrough ?? 0;
       summaryRestoredBase = lastSummary?.restoredMessages ?? 0;
@@ -1117,7 +1127,7 @@ async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
         process.stderr.write('[hook] Stop: 已达到本轮步数上限，不再续跑\n');
       } else {
         // 第一次运行可能已写压缩检查点；续跑从磁盘读取最新摘要边界与 Skill 状态。
-        const current = await loadSession(userHome, conversationId);
+        const current = await loadSession(userHome, conversationId, { convertLegacy: false });
         const lastSummary = current.summaries.at(-1);
         const resumed = await runAgentTurn(undefined, [...firstResult.effectiveHistory, ...stopFeedback], {
           promptContext: [],
@@ -1237,17 +1247,16 @@ function parseCliArgs() {
 
 await main();
 
-async function resumeSession(userHome: string, id: string): Promise<{
+async function resumeSession(session: SessionRecord): Promise<{
   config: Awaited<ReturnType<typeof loadConfig>>;
   conversationId: string;
   history: ModelMessage[];
   recoveredRoundIds: string[];
   recentFiles: string[];
 }> {
-  const session = await loadSession(userHome, id, { onWarning: (warning) => reportSessionWarning(id, warning) });
   const config = await restoreSessionConfig(session.config, process.env);
   const recovered = reconstructSessionHistory(session);
-  return { config, conversationId: id, ...recovered, recentFiles: session.recentFiles };
+  return { config, conversationId: session.id, ...recovered, recentFiles: session.recentFiles };
 }
 
 function userMessageText(message: ModelMessage): string {
