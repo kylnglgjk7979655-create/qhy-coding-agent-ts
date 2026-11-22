@@ -23,8 +23,8 @@ export function registerBashTool(registry: ToolRegistry, context: BuiltInToolCon
       cwd: z.string().min(1).optional(),
       // 仅申请，不构成授权：是否获准完全由沙箱配置与整条命令的排除表匹配决定。
       disableSandbox: z.boolean().optional(),
-      // 直接启动后台作业；省略或 false 时保持原有前台调用语义。
-      run_in_background: z.boolean().optional(),
+      // 直接启动后台作业；只有绑定主会话时才公布该参数，子 Agent 的工具定义不宣称此能力。
+      ...(bashJobs === undefined ? {} : { run_in_background: z.boolean().optional() }),
     }),
     // 计划在审批前生成，使人工审批与模型审批都能看到执行模式与不可用说明；执行层只消费同一份计划。
     prepare: async (input) => {
@@ -75,14 +75,14 @@ export function registerBashTool(registry: ToolRegistry, context: BuiltInToolCon
         throw error;
       }
     },
-    execute: async (
-      { command, cwd, requestedCwd, approvedCwd, plan, network, ownership, run_in_background },
-      execution,
-    ) => {
+    execute: async (input, execution) => {
+      const { command, cwd, requestedCwd, approvedCwd, plan, network, ownership } = input;
+      // 子 Agent 的 schema 不提供该参数；这里仅作防御，保持“无会话不启动后台作业”的边界。
+      const runInBackground = (input as { run_in_background?: boolean }).run_in_background === true;
       await verifyBashWorkingDirectory(config.workspace, requestedCwd, approvedCwd);
       // 没有绑定会话的调用（例如子 Agent）不能管理后台作业，保留原有前台语义。
       if (bashJobs === undefined) {
-        if (run_in_background === true) {
+        if (runInBackground) {
           throw new ToolExecutionError('当前调用没有绑定主会话，无法启动后台 Bash 作业。', undefined);
         }
         const operation = runPlannedBash(
@@ -95,10 +95,30 @@ export function registerBashTool(registry: ToolRegistry, context: BuiltInToolCon
       execution.abortSignal?.throwIfAborted();
       const timeoutMs = config.bash?.timeoutMs ?? 30_000;
       // 进程不绑定轮次信号：切到后台后轮次结束或取消不能误杀仍在运行的作业；前台取消由作业层终止。
-      const planned = await startPlannedBash(plan, command, cwd ?? config.workspace, network, { timeoutMs: null });
+      // 启动阶段单独传入 startupSignal，审批后取消不会让 cwd 检查后的命令继续启动。
+      const planned = await startPlannedBash(plan, command, cwd ?? config.workspace, network, {
+        timeoutMs: null,
+        ...(execution.abortSignal === undefined ? {} : { startupSignal: execution.abortSignal }),
+        // 作业接管进程组：外层 shell 结束时回收同组残留进程，并为 /task 保留最近输出。
+        reapGroupOnExit: true,
+        recentOutputLimitBytes: 65_536,
+      });
+      // 交接前保持取消语义：启动期间轮次已取消时终止进程组并等待清理，不交付任务 ID。
+      // 已成功交接（后台启动返回或前台切换交付任务 ID）的作业不绑定轮次信号，继续独立运行。
+      if (execution.abortSignal?.aborted) {
+        planned.terminate();
+        await planned.completion.catch(() => undefined);
+        execution.abortSignal.throwIfAborted();
+      }
       ownership.jobOwned = true;
-      const launch = { command, execution: planned, timeoutMs };
-      if (run_in_background === true) return bashJobs.startBackground(launch);
+      const launch = {
+        command,
+        execution: planned,
+        timeoutMs,
+        sandboxed: planned.sandboxed,
+        ...(planned.notice === undefined ? {} : { notice: planned.notice }),
+      };
+      if (runInBackground) return bashJobs.startBackground(launch);
       const operation = bashJobs.runForeground(launch, execution.abortSignal);
       bashOperations.add(operation);
       void operation.finally(() => bashOperations.delete(operation)).catch(() => undefined);

@@ -569,6 +569,12 @@ async function main(): Promise<void> {
         return;
       }
       process.stdout.write(`\n[Bash 作业 ${taskId}] 接回前台，显示最近输出：\n`);
+      // 运行中的快照同样携带计划里的沙箱状态与说明；首次接回就应看到豁免或未隔离原因。
+      let noticeShown = false;
+      if (snapshot.notice !== undefined) {
+        noticeShown = true;
+        process.stdout.write(`${snapshot.notice}\n`);
+      }
       const controller = new AbortController();
       activeRound = controller;
       input!.setBusy(true);
@@ -581,11 +587,11 @@ async function main(): Promise<void> {
         else if (outcome.kind === 'ended') {
           const final = outcome.snapshot;
           process.stdout.write(`\n[Bash 作业 ${taskId}] ${formatBashJobEnd(final)}\n`);
-          // 通知信息不在标准输出流里，已结束作业的沙箱/执行说明仍需在接回时展示。
-          if (final.notice !== undefined) process.stdout.write(`${final.notice}\n`);
+          // 接回时已在开头展示过的说明不再重复；未展示过（已结束作业）时仍需显示。
+          if (!noticeShown && final.notice !== undefined) process.stdout.write(`${final.notice}\n`);
         } else if (outcome.kind === 'aborted') process.stdout.write(`\n已停止 Bash 作业：${taskId}\n`);
         else if (outcome.kind === 'busy') process.stdout.write(`\n当前已有 Bash 作业在前台运行，请等待其结束或按 Ctrl+B 切到后台。\n`);
-        else process.stdout.write(`\n已切换到后台：任务 ${taskId}\n`);
+        // 切到后台时由按键处理统一提示一次；这里不再重复输出同一任务 ID。
       } catch (error) {
         if (cancellation.signal.aborted) throw error;
         process.stdout.write(`\n${formatUserError(error)}\n`);

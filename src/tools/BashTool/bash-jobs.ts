@@ -40,6 +40,10 @@ export interface BashJobStarted {
   status: 'running';
   detached?: true;
   hint: string;
+  /** 本次作业实际的执行模式；后台启动同样保留沙箱状态。 */
+  sandboxed: boolean;
+  /** 沙箱不可用、豁免获准等执行说明；后台启动结果不能丢弃该说明。 */
+  notice?: string;
 }
 
 export interface BashJobLaunch {
@@ -47,12 +51,17 @@ export interface BashJobLaunch {
   execution: PlannedBashExecution;
   /** 前台累计时限；后台运行期间不计入。 */
   timeoutMs: number;
+  /** 执行计划的沙箱状态与说明；运行中的快照与启动结果都使用它。 */
+  sandboxed: boolean;
+  notice?: string;
 }
 
 interface Job {
   taskId: string;
   command: string;
   execution: PlannedBashExecution;
+  sandboxed: boolean;
+  notice?: string;
   status: BashJobStatus;
   exitCode: number | null;
   signal: string | null;
@@ -72,6 +81,8 @@ interface Job {
 }
 
 const startedHint = 'Bash 作业在后台运行；使用 /tasks 查看作业，使用 /task <任务 ID> 接回前台。避免重复启动同一命令。';
+/** 最近输出窗口已丢弃较早内容时的明确提示；只显示一次，避免每个轮询重复刷屏。 */
+const recentOutputTruncatedNotice = '\n（输出超过保留上限，较早部分已丢弃，以下为最近输出）\n';
 const notificationListeners = new Set<(notification: BashJobNotification) => void>();
 
 /** 订阅本次 CLI 进程内所有会话的后台 Bash 作业结束通知。 */
@@ -109,9 +120,9 @@ export class BashJobs {
         // 切换与命令自然结束相邻发生时，进程可能已经结束；此时按普通结果交付，
         // 不能再声称作业仍在运行，否则模型会引用一个已停止的任务。
         if (job.status !== 'running') return this.foregroundResult(job);
-        // 进程保持运行，工具调用只交付一次带任务 ID 的结果。
+        // 进程保持运行，工具调用只交付一次带任务 ID 的结果；沙箱状态与说明随结果交付。
         job.backgrounded = true;
-        return { taskId: job.taskId, status: 'running', detached: true, hint: startedHint };
+        return { ...this.startedResult(job), detached: true };
       }
       if (outcome === 'aborted') {
         job.stopRequested = true;
@@ -137,7 +148,18 @@ export class BashJobs {
         job.finalResult ?? { stdout: '', stderr: '', exitCode: null, signal: null, truncated: false, sandboxed: false },
       );
     }
-    return { taskId: job.taskId, status: 'running', hint: startedHint };
+    return this.startedResult(job);
+  }
+
+  /** 启动成功后的统一结果；保留与前台结果一致的沙箱状态与说明。 */
+  private startedResult(job: Job): BashJobStarted {
+    return {
+      taskId: job.taskId,
+      status: 'running',
+      hint: startedHint,
+      sandboxed: job.sandboxed,
+      ...(job.notice === undefined ? {} : { notice: job.notice }),
+    };
   }
 
   /** 当前对话的作业，按启动时间排序；终态作业仍保留输出直到 CLI 退出。 */
@@ -168,7 +190,10 @@ export class BashJobs {
     if (!foreground) return undefined;
     const job = this.jobs.get(foreground.taskId);
     if (!job || job.status !== 'running' || job.detach === undefined) return undefined;
-    job.detach();
+    // 立即清空挂点：同一前台作业不会因连续按键再次报告“已切换到后台”。
+    const detach = job.detach;
+    job.detach = undefined;
+    detach();
     return { taskId: job.taskId };
   }
 
@@ -192,22 +217,22 @@ export class BashJobs {
       return { kind: 'busy', snapshot: this.snapshot(job) };
     }
 
-    const initial = job.execution.snapshot();
-    let printedStdout = initial.stdout.length;
-    let printedStderr = initial.stderr.length;
-    // 先显示后台期间保留的输出；随后只追加新增部分，避免重复打印。
-    if (initial.stdout !== '') options.write(initial.stdout);
-    if (initial.stderr !== '') options.write(initial.stderr);
-    const flushNewOutput = (): void => {
-      const current = job.execution.snapshot();
-      const stdout = current.stdout.slice(printedStdout);
-      const stderr = current.stderr.slice(printedStderr);
-      printedStdout = current.stdout.length;
-      printedStderr = current.stderr.length;
-      if (stdout !== '') options.write(stdout);
-      if (stderr !== '') options.write(stderr);
+    // 使用最近输出窗口与字节游标：超过有界保存上限后仍能显示最近内容与后续实时输出。
+    let cursor = { stdout: 0, stderr: 0 };
+    let droppedNoticeShown = false;
+    const writeRecent = (): void => {
+      const recent = job.execution.readRecent(cursor);
+      cursor = recent.cursor;
+      if (recent.dropped && !droppedNoticeShown) {
+        droppedNoticeShown = true;
+        options.write(recentOutputTruncatedNotice);
+      }
+      if (recent.stdout !== '') options.write(recent.stdout);
+      if (recent.stderr !== '') options.write(recent.stderr);
     };
-    const interval = setInterval(flushNewOutput, 100);
+    // 先显示后台期间保留的最近输出；随后只追加新增部分，避免重复打印。
+    writeRecent();
+    const interval = setInterval(writeRecent, 100);
 
     this.claimForeground(job);
     this.startForegroundTimer(job);
@@ -219,7 +244,7 @@ export class BashJobs {
         await job.done;
       }
       clearInterval(interval);
-      flushNewOutput();
+      writeRecent();
       this.pauseForeground(job);
       this.clearForeground(job);
       // 切换与结束相邻发生时，进程可能已在切走前结束；以终态报告，避免重复承诺“仍在后台运行”。
@@ -281,6 +306,8 @@ export class BashJobs {
       taskId: randomUUID(),
       command: launch.command,
       execution: launch.execution,
+      sandboxed: launch.sandboxed,
+      ...(launch.notice === undefined ? {} : { notice: launch.notice }),
       status: 'running',
       exitCode: null,
       signal: null,
@@ -344,13 +371,15 @@ export class BashJobs {
   private snapshot(job: Job): BashJobSnapshot {
     // 运行中读取实时快照；结束后使用最终结果，避免清理阶段丢失输出。
     const controlled = job.finalResult === undefined ? job.execution.snapshot() : undefined;
+    // 运行中的作业同样保留计划里的执行模式与说明，避免首次接回/列表丢失沙箱状态。
     const result = job.finalResult ?? {
       stdout: controlled!.stdout,
       stderr: controlled!.stderr,
       exitCode: null,
       signal: null,
       truncated: controlled!.stdoutTruncated || controlled!.stderrTruncated,
-      sandboxed: false,
+      sandboxed: job.sandboxed,
+      ...(job.notice === undefined ? {} : { notice: job.notice }),
     };
     return {
       taskId: job.taskId,

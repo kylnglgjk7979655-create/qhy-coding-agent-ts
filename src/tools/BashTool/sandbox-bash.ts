@@ -4,7 +4,12 @@ import { cleanupSandboxPlan } from '../../services/sandbox/sandbox-plan.js';
 import type { SandboxPlan } from '../../services/sandbox/sandbox-plan.js';
 import { formatSandboxViolations } from '../../services/sandbox/sandbox-network.js';
 import type { SandboxNetwork } from '../../services/sandbox/sandbox-network.js';
-import type { ControlledProcessHandle, ControlledProcessResult } from '../../services/process/controlled-process.js';
+import type {
+  ControlledProcessHandle,
+  ControlledProcessResult,
+  OutputCursor,
+  RecentOutput,
+} from '../../services/process/controlled-process.js';
 import { ToolExecutionError } from '../tool-registry.js';
 import { bashFailureMessage, bashRunResult, startBashProcess } from './host-bash.js';
 import type { BashRunResult } from './host-bash.js';
@@ -15,8 +20,14 @@ const REJECTED_RESULT: BashRunResult = {
 
 export interface PlannedBashOptions {
   signal?: AbortSignal;
+  /** 只在启动阶段生效的取消信号；作业接管后不再绑定轮次。 */
+  startupSignal?: AbortSignal;
   /** 进程层超时；`null` 表示由作业层按前台预算计时。 */
   timeoutMs?: number | null;
+  /** 作业模式：子进程退出后回收同进程组的残留成员。 */
+  reapGroupOnExit?: boolean;
+  /** 作业模式：额外保留每路最近输出，供 `/task` 在超过保存上限后继续显示。 */
+  recentOutputLimitBytes?: number;
 }
 
 /**
@@ -26,8 +37,13 @@ export interface PlannedBashOptions {
 export interface PlannedBashExecution {
   readonly started: Promise<boolean>;
   readonly completion: Promise<ControlledProcessResult>;
+  /** 本计划的执行模式与说明；后台启动结果同样交付给模型。 */
+  readonly sandboxed: boolean;
+  readonly notice?: string;
   snapshot(): ControlledProcessResult;
   terminate(): void;
+  /** 读取滑动窗口内的最近输出并推进游标；未启用最近输出窗口时返回空文本。 */
+  readRecent(cursor: OutputCursor): RecentOutput;
   /** 把受控进程结果转换为带沙箱说明和违规汇总的可展示结果。 */
   result(controlled: ControlledProcessResult): BashRunResult;
   /** 按统一语义返回失败文案；成功时省略。 */
@@ -45,7 +61,7 @@ export async function startPlannedBash(
   network: SandboxNetwork | undefined,
   options: PlannedBashOptions = {},
 ): Promise<PlannedBashExecution> {
-  const { signal, timeoutMs = 30_000 } = options;
+  const { signal, startupSignal, timeoutMs = 30_000 } = options;
   if (plan.mode === 'reject') {
     // 拒绝计划同样要释放准备阶段启动的代理与临时目录。
     try {
@@ -63,7 +79,10 @@ export async function startPlannedBash(
       handle = await startBashProcess('bash', ['--noprofile', '--norc', '-c', command], {
         cwd, sandboxed: false,
         ...(signal === undefined ? {} : { signal }),
+        ...(startupSignal === undefined ? {} : { startupSignal }),
         timeoutMs,
+        ...(options.reapGroupOnExit === true ? { reapGroupOnExit: true } : {}),
+        ...(options.recentOutputLimitBytes === undefined ? {} : { recentOutputLimitBytes: options.recentOutputLimitBytes }),
       });
     } else {
       // profile 只放在本次调用的 0700 目录内，避免暴露给其他用户或混入工作区。
@@ -75,8 +94,11 @@ export async function startPlannedBash(
         {
           cwd, env: plan.env, sandboxed: true,
           ...(signal === undefined ? {} : { signal }),
+          ...(startupSignal === undefined ? {} : { startupSignal }),
           timeoutMs,
           startFailureMessage: '无法启动沙箱 Bash 命令。',
+          ...(options.reapGroupOnExit === true ? { reapGroupOnExit: true } : {}),
+          ...(options.recentOutputLimitBytes === undefined ? {} : { recentOutputLimitBytes: options.recentOutputLimitBytes }),
         },
       );
     }
@@ -104,8 +126,11 @@ export async function startPlannedBash(
   return {
     started: handle.started,
     completion,
+    sandboxed: plan.sandboxed,
+    ...(plan.notice === undefined ? {} : { notice: plan.notice }),
     snapshot: handle.snapshot,
     terminate: handle.terminate,
+    readRecent: handle.readRecent,
     result: (controlled) => withViolations(withNotice(bashRunResult(controlled, plan.sandboxed), plan.notice), network),
     failureMessage: (controlled) => bashFailureMessage(
       controlled,

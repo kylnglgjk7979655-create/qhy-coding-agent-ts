@@ -2,7 +2,11 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
+import { runAgent } from '../src/query/agent.js';
+import { DEFAULT_SANDBOX } from '../src/services/settings/config.js';
+import type { ResolvedConfig } from '../src/services/settings/config.js';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import type { FixtureToolCall, FixtureRequest } from './helpers/local-openai-fixture.js';
 import { startCLI } from './helpers/cli-process.js';
@@ -305,6 +309,254 @@ it.skipIf(process.platform === 'win32')('CLI 正常退出时终止仍在运行�
   } finally {
     cli.child.kill('SIGKILL');
   }
+});
+
+it.skipIf(process.platform === 'win32')('启动交接前取消不启动后台命令，也不留下无任务 ID 的作业', async () => {
+  await setup((_request, index) => index === 1
+    ? { calls: [bash('aborted-launch', {
+      command: 'printf launched > started.txt; sleep 30',
+      run_in_background: true,
+    })] }
+    : { content: '不应请求后续模型' });
+
+  const pause = join(cwd, 'pause-stats');
+  const ready = join(cwd, 'stat-paused');
+  const release = join(cwd, 'stat-resume');
+  const preload = join(cwd, 'pause-bash-stat.mjs');
+  // 延迟 execute 阶段的 cwd 检查，并在第二次检查（startPlannedBash 内部）暂停，
+  // 制造“轮次已取消、进程尚未 spawn”的窗口；只作用于 CLI 子进程。
+  await writeFile(preload, `
+    import { existsSync, writeFileSync } from 'node:fs';
+    import { createRequire, syncBuiltinESMExports } from 'node:module';
+    import { setTimeout } from 'node:timers/promises';
+    const io = createRequire(import.meta.url)('node:fs/promises');
+    const stat = io.stat;
+    let checks = 0;
+    io.stat = async (path, ...rest) => {
+      if (String(path) === ${JSON.stringify(cwd)}) {
+        await setTimeout(300);
+        if (existsSync(${JSON.stringify(pause)})) {
+          checks += 1;
+          if (checks >= 2) {
+            writeFileSync(${JSON.stringify(ready)}, '', { flag: 'wx' });
+            while (!existsSync(${JSON.stringify(release)})) await setTimeout(10);
+          }
+        }
+      }
+      return stat(path, ...rest);
+    };
+    syncBuiltinESMExports();
+  `);
+
+  const cli = startCLI({
+    cwd,
+    conversationId: 'bash-aborted-launch',
+    env: { TEST_BASH_JOBS_KEY: 'fake-bash-jobs-key', NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` },
+  });
+  let output = '';
+  cli.child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  cli.child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  try {
+    cli.send('启动后台命令\n');
+    // prepare 先于审批完成；审批请求出现后开启暂停，随后 execute 的 cwd 检查会停在这里。
+    await waitFor(() => fixture.approvalRequests.length >= 1, `未进入审批：${output}`);
+    await writeFile(pause, '');
+    await waitFor(() => existsSync(ready), `未停在启动前的 cwd 检查：${output}`);
+    cli.child.kill('SIGINT');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await writeFile(release, '');
+
+    // 回到空闲输入后确认没有可接回的作业，也没有执行过命令。
+    cli.send('/tasks\n');
+    await waitFor(() => output.includes('当前会话没有 Bash 作业'), `取消后仍存在作业：${output}`);
+    expect(fixture.requests).toHaveLength(1);
+    await expect(readFile(join(cwd, 'started.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    cli.end('/exit\n');
+    expect((await cli.done).code).toBe(0);
+  } finally {
+    cli.child.kill('SIGKILL');
+  }
+});
+
+it.skipIf(process.platform === 'win32')('外层命令结束后回收同进程组残留子进程', async () => {
+  const worker = `const fs = require('node:fs'); fs.writeFileSync('grandchild.pid', String(process.pid)); setInterval(() => {}, 1000);`;
+  await setup((_request, index) => index === 1
+    ? { calls: [bash('group-reap', {
+      command: `echo $$ > shell.pid; ${process.execPath} -e ${JSON.stringify(worker)} >/dev/null 2>&1 & `
+        + `sleep 0.5; printf 'parent-done\\n'`,
+      run_in_background: true,
+    })] }
+    : { content: '作业已结束。' });
+
+  const cli = run();
+  let output = '';
+  cli.child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  cli.child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  try {
+    cli.send('启动带残留子进程的作业\n');
+    await waitFor(() => fixture.requests.length >= 2, `模型未收到后台工具结果：${output}`);
+    const reaped = toolOutput(fixture.requests[1]!);
+    expect(reaped.is_error, JSON.stringify(reaped)).toBe(false);
+    const taskId = String(reaped.output!.taskId);
+    await waitFor(() => existsSync(join(cwd, 'grandchild.pid')), `子进程未启动：${output}`);
+    const grandchildPid = Number(await readFile(join(cwd, 'grandchild.pid'), 'utf8'));
+    managedPids.push(grandchildPid);
+    const shellPid = Number(await readFile(join(cwd, 'shell.pid'), 'utf8'));
+    managedPids.push(shellPid);
+
+    // 外层 shell 已退出且关闭 stdio；同 PGID 的子进程必须在作业收尾时被回收。
+    cli.send(`/task ${taskId}\n`);
+    await waitFor(() => output.includes(`[Bash 作业 ${taskId}] 已结束：succeeded`), `未显示终态：${output}`);
+    expect(output).toContain('parent-done');
+    await waitFor(() => !isRunning(grandchildPid), '同进程组的残留子进程仍在运行。', 3000);
+    expect(isRunning(shellPid)).toBe(false);
+    cli.end('/exit\n');
+    expect((await cli.done).code).toBe(0);
+  } finally {
+    cli.child.kill('SIGKILL');
+  }
+});
+
+it.skipIf(process.platform === 'win32')('输出超过 64 KiB 后 /task 仍显示最近内容与明确的截断提示', async () => {
+  const producer = `const fs = require('node:fs'); const line = 'x'.repeat(1023) + '\\n'; `
+    + `for (let i = 0; i < 80; i++) fs.writeSync(1, line); fs.writeSync(1, 'RECENT_MARKER\\n'); setInterval(() => {}, 1000);`;
+  await setup((_request, index) => index === 1
+    ? { calls: [bash('recent-output', {
+      command: `${process.execPath} -e ${JSON.stringify(producer)}`,
+      run_in_background: true,
+    })] }
+    : { content: '作业已启动。' });
+
+  const cli = run();
+  let output = '';
+  cli.child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  cli.child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  try {
+    cli.send('启动大量输出的后台命令\n');
+    await waitFor(() => fixture.requests.length >= 2, `模型未收到后台工具结果：${output}`);
+    const taskId = String(toolOutput(fixture.requests[1]!).output!.taskId);
+    // 等待超过 64 KiB 的输出全部写入后再接回；早先内容已从最近窗口丢弃。
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    cli.send(`/task ${taskId}\n`);
+    await waitFor(() => output.includes('接回前台'), `未接回前台：${output}`);
+    await waitFor(() => output.includes('超过保留上限'), `未提示最近输出被截断：${output}`);
+    await waitFor(() => output.includes('RECENT_MARKER'), `未显示最近输出：${output}`);
+
+    // 接回后在空闲前停止作业，确认状态回到 cancelled 并保留终态。
+    cli.child.kill('SIGINT');
+    await waitFor(() => output.includes(`已停止 Bash 作业：${taskId}`), `未停止作业：${output}`);
+    cli.send('/exit\n');
+    expect((await cli.done).code).toBe(0);
+  } finally {
+    cli.child.kill('SIGKILL');
+  }
+});
+
+it.skipIf(process.platform === 'win32')('后台启动结果与首次接回都保留沙箱状态和说明', async () => {
+  // 豁免获准（macOS Seatbelt）或沙箱不可用时都会给出 notice；两种情况都应在后台结果中出现。
+  await setup((_request, index) => index === 1
+    ? { calls: [bash('sandbox-notice', {
+      command: `printf 'SANDBOX_MARKER\\n'; sleep 1.2`,
+      disableSandbox: true,
+      run_in_background: true,
+    })] }
+    : { content: '后台作业已启动。' }, {
+    permissions: { sandbox: { enabled: true, onUnavailable: 'open', bypassAllowedCommands: ['printf:*', 'sleep:*'] } },
+  });
+
+  const cli = run();
+  let output = '';
+  cli.child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  cli.child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  try {
+    cli.send('启动沙箱外命令\n');
+    await waitFor(() => fixture.requests.length >= 2, `模型未收到后台工具结果：${output}`);
+    const started = toolOutput(fixture.requests[1]!).output!;
+    expect(started).toMatchObject({ status: 'running', sandboxed: false });
+    const visibleNotice = String(started.notice);
+    expect(visibleNotice).toMatch(/豁免获准|未隔离/u);
+    const taskId = String(started.taskId);
+
+    cli.send(`/task ${taskId}\n`);
+    await waitFor(() => output.includes('接回前台'), `未接回前台：${output}`);
+    // 首次接回运行中作业时也要显示同一份沙箱状态说明。
+    await waitFor(() => output.includes(visibleNotice), `接回时丢失沙箱说明：${output}`);
+    await waitFor(() => output.includes('SANDBOX_MARKER'), `未显示命令输出：${output}`);
+    await waitFor(() => output.includes(`[Bash 作业 ${taskId}] 已结束：succeeded`), `未显示终态：${output}`);
+    cli.end('/exit\n');
+    expect((await cli.done).code).toBe(0);
+  } finally {
+    cli.child.kill('SIGKILL');
+  }
+});
+
+it.skipIf(process.platform === 'win32')('接回前台时再次按 Ctrl+B 只提示一次切换', async () => {
+  await setup((_request, index) => index === 1
+    ? { calls: [bash('detach-attached', {
+      command: `echo $$ > shell.pid; sleep 30`,
+      run_in_background: true,
+    })] }
+    : { content: '后台作业已启动。' });
+
+  const cli = startCLI({
+    cwd,
+    conversationId: 'bash-detach-attached',
+    pty: true,
+    env: { TEST_BASH_JOBS_KEY: 'fake-bash-jobs-key' },
+  });
+  let output = '';
+  cli.child.stdout.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  cli.child.stderr.on('data', (chunk: Buffer) => { output += chunk.toString(); });
+  try {
+    cli.send('启动后台长命令\n');
+    await waitFor(() => fixture.requests.length >= 2, `模型未收到后台工具结果：${output}`);
+    const taskId = String(toolOutput(fixture.requests[1]!).output!.taskId);
+    await waitFor(() => existsSync(join(cwd, 'shell.pid')), `后台命令未启动：${output}`);
+    const shellPid = Number(await readFile(join(cwd, 'shell.pid'), 'utf8'));
+    managedPids.push(shellPid);
+
+    cli.send(`/task ${taskId}\n`);
+    await waitFor(() => output.includes(`[Bash 作业 ${taskId}] 接回前台`), `未接回前台：${output}`);
+    cli.send('\u0002');
+    await waitFor(() => output.includes(`已切换到后台：任务 ${taskId}`), `Ctrl+B 未切换：${output}`);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const switches = output.split(`已切换到后台：任务 ${taskId}`).length - 1;
+    expect(switches, `切换提示重复出现：${output}`).toBe(1);
+    expect(isRunning(shellPid)).toBe(true);
+
+    cli.send(`/tasks stop ${taskId}\n`);
+    await waitFor(() => output.includes(`已停止 Bash 作业：${taskId}`), `未停止作业：${output}`);
+    await waitFor(() => !isRunning(shellPid), '停止后作业仍在运行。', 3000);
+    cli.end('/exit\n');
+    expect((await cli.done).code).toBe(0);
+  } finally {
+    cli.child.kill('SIGKILL');
+  }
+});
+
+it.skipIf(process.platform === 'win32')('子 Agent 的提示与 Bash 工具定义不宣称后台作业能力', async () => {
+  await setup((_request, index) => index === 1
+    ? { calls: [bash('subagent-bash', { command: 'printf subagent-ok' })] }
+    : { content: '子任务完成。' });
+  const config: ResolvedConfig = {
+    approval: { mode: 'default', rules: [], timeoutMs: 30_000, humanTimeoutMs: 30_000 },
+    permissions: { allow: [], ask: [], deny: [], sandbox: { ...DEFAULT_SANDBOX, enabled: false } },
+    provider: 'openai', model: 'fixture', apiKeyEnv: 'FIXTURE_KEY', apiKey: 'fixture-key',
+    baseURL: fixture.baseURL, workspace: cwd, timeoutMs: 5000, maxSteps: 4,
+  };
+  const result = await runAgent(config, '执行子任务', {
+    smokeTool: false,
+    generalPurposeSubagent: true,
+    approvalControl: async () => 'approve',
+  });
+
+  const request = fixture.requests[0]!;
+  const bashTool = request.tools.find(({ function: definition }) => definition.name === 'Bash');
+  expect(bashTool).toBeDefined();
+  expect(JSON.stringify(bashTool!.function.parameters)).not.toContain('run_in_background');
+  const instructions = request.messages.filter(({ role }) => role === 'system').map(({ content }) => content).join('\n');
+  expect(instructions).not.toContain('run_in_background');
+  expect(result.text).toBeTruthy();
 });
 
 it.skipIf(process.platform === 'win32')('/tasks stop 终止后台作业并保留可读取的终态输出', async () => {

@@ -77,7 +77,10 @@ function buildInstructions(config: ResolvedConfig, options: {
     '可用 TodoWrite 记录本次任务的待办列表；调用会以完整列表替换旧状态，最多一个任务处于 in_progress。',
     'WebFetch 只访问公开 HTTP/HTTPS 地址并拒绝本机、内网与云 metadata 地址；WebSearch 使用 Tavily，凭据从环境变量读取。两者默认需要独立审批。',
     'Write、write_file、Edit、Bash、WebFetch、WebSearch 默认需要独立审批，批准只适用于当前调用及参数；权限拒绝不会执行操作。',
-    `Bash 可运行命令和项目测试，每次使用独立 shell；长时间命令可传 run_in_background: true 直接作为当前会话的后台作业启动，并从结果取得任务 ID。${bashSandboxGuidance(config.permissions?.sandbox ?? DEFAULT_SANDBOX)}`,
+    // 后台作业只在绑定主会话时可用；子 Agent 的提示与工具定义都不能宣称该能力。
+    options.generalPurposeSubagent === true
+      ? `Bash 可运行命令和项目测试，每次使用独立 shell。${bashSandboxGuidance(config.permissions?.sandbox ?? DEFAULT_SANDBOX)}`
+      : `Bash 可运行命令和项目测试，每次使用独立 shell；长时间命令可传 run_in_background: true 直接作为当前会话的后台作业启动，并从结果取得任务 ID。${bashSandboxGuidance(config.permissions?.sandbox ?? DEFAULT_SANDBOX)}`,
     '工具结果中的 is_error: true 表示该调用失败；必须在答复中明确说明失败，不得声称操作成功或把失败调用的输出当成已验证结果。',
     'runtimeInfo 可获取工作区路径和本次探针。',
     '如公布了 mcp_ 前缀工具，可调用对应远程 MCP 服务；这些工具默认需要独立审批，调用可能产生远端副作用。',
