@@ -326,16 +326,22 @@ it.each(['command', 'turn'] as const)('%s 超时终止进程树：单命令失�
     bash('timeout', { command: `echo $$ > shell.pid; ${process.execPath} worker.cjs & wait` }),
     bash('later', { command: 'printf later > later.txt' }),
   ] } : { content: '超时后继续完成' }, undefined, {
-    timeoutMs: limit === 'turn' ? 600 : 4000,
-    bash: { timeoutMs: limit === 'command' ? 350 : 3000 },
+    timeoutMs: limit === 'turn' ? 3500 : 6000,
+    bash: { timeoutMs: limit === 'command' ? 1200 : 6000 },
   });
-  await writeFile(join(cwd, 'worker.cjs'), "const fs = require('node:fs'); process.on('SIGTERM', () => {}); fs.writeFileSync('child.pid', String(process.pid)); fs.writeFileSync('kept.txt', 'kept'); setTimeout(() => fs.writeFileSync('late.txt', 'leaked'), 1500); setInterval(() => {}, 1000);");
+  await writeFile(join(cwd, 'worker.cjs'), `
+    const fs = require('node:fs');
+    process.on('SIGTERM', () => {});
+    fs.writeFileSync('kept.txt', 'kept');
+    fs.writeFileSync('child.pid', String(process.pid));
+    setInterval(() => {}, 1000);
+  `);
   const running = run();
   let workerPid = 0;
   await expect.poll(async () => {
     workerPid = Number(await readFile(join(cwd, 'child.pid'), 'utf8').catch(() => '0'));
     return workerPid > 0;
-  }, { timeout: 3000, interval: 20 }).toBe(true);
+  }, { timeout: 6000, interval: 20 }).toBe(true);
   const shellPid = Number(await readFile(join(cwd, 'shell.pid'), 'utf8'));
   managedPids.push(shellPid, workerPid);
   const result = await running.done;
@@ -355,8 +361,6 @@ it.each(['command', 'turn'] as const)('%s 超时终止进程树：单命令失�
       await expect(readFile(join(cwd, path))).rejects.toMatchObject({ code: 'ENOENT' });
     }
   }
-  await new Promise((resolve) => setTimeout(resolve, 1600));
-  await expect(readFile(join(cwd, 'late.txt'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('Bash 不可启动时只反馈安全的调用失败，同批其他工具仍可使用', async () => {

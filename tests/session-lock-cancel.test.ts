@@ -1,6 +1,7 @@
-import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startLocalOpenAIModel } from './helpers/local-openai-fixture.js';
 import { startCLI } from './helpers/cli-process.js';
@@ -30,6 +31,77 @@ describe.skipIf(process.platform === 'win32')('CLI 会话占用与轮次中断',
     }));
   }
 
+  async function addLegacyCredential(userDir: string, id: string): Promise<string> {
+    const path = join(userDir, '.qhy-coding-agents', 'sessions', id, 'events.jsonl');
+    const [first, ...rest] = (await readFile(path, 'utf8')).split('\n');
+    const event = JSON.parse(first!) as { data: { record: { config: Record<string, unknown> } } };
+    event.data.record.config.webSearchApiKey = 'legacy-fixture-key';
+    await writeFile(path, [JSON.stringify(event), ...rest].join('\n'));
+    return path;
+  }
+
+  it('清洗旧会话日志时阻止另一进程追加，并允许释放锁后继续', async () => {
+    const cwd = await directory('scrub-race-cwd');
+    const userDir = await directory('scrub-race-user');
+    const model = await startLocalOpenAIModel(() => ({ content: '续聊成功' }));
+    const conversationId = 'scrub-race';
+    const options = { cwd, userDir, conversationId, env: { TEST_MODEL_API_KEY: secret } };
+    try {
+      await configure(cwd, model.baseURL);
+      expect((await startCLI({ ...options, input: '旧会话\n/exit\n' }).done).code).toBe(0);
+      const events = await addLegacyCredential(userDir, conversationId);
+      const preload = join(cwd, 'pause-before-session-replace.mjs');
+      const ready = join(cwd, 'session-replace-ready');
+      const proceed = join(cwd, 'session-replace-proceed');
+      // 在真正替换日志前暂停，只控制两个 CLI 的交错顺序。
+      await writeFile(preload, `
+        import { existsSync, writeFileSync } from 'node:fs';
+        import { createRequire, syncBuiltinESMExports } from 'node:module';
+        import { setTimeout } from 'node:timers/promises';
+        const io = createRequire(import.meta.url)('node:fs/promises');
+        const rename = io.rename;
+        io.rename = async (source, target) => {
+          if (source.includes('.events.') && target === ${JSON.stringify(events)}) {
+            writeFileSync(${JSON.stringify(ready)}, '', { flag: 'wx' });
+            while (!existsSync(${JSON.stringify(proceed)})) await setTimeout(10);
+          }
+          return rename(source, target);
+        };
+        syncBuiltinESMExports();
+      `);
+      const first = startCLI({
+        ...options,
+        env: { ...options.env, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` },
+        input: '清洗进程续聊\n/exit\n',
+      });
+      let concurrent: Awaited<typeof first.done>;
+      try {
+        await expect.poll(() => access(ready).then(() => true, () => false), { timeout: 5000 }).toBe(true);
+        concurrent = await startCLI({ ...options, input: '另一个进程续聊\n/exit\n' }).done;
+        if (concurrent.code === 0) expect(await readFile(events, 'utf8')).toContain('另一个进程续聊');
+      } finally {
+        await writeFile(proceed, '');
+        await first.done;
+      }
+      expect((await first.done).code).toBe(0);
+      if (concurrent.code === 0) {
+        const preserved = (await readFile(events, 'utf8')).includes('另一个进程续聊');
+        expect(preserved, '清洗覆盖了另一个进程已经追加的轮次').toBe(true);
+      }
+      expect(concurrent.code).toBe(2);
+      expect(concurrent.stderr).toContain('会话正在被其他进程使用');
+
+      expect((await startCLI({ ...options, input: '另一个进程续聊\n/exit\n' }).done).code).toBe(0);
+      const saved = await readFile(events, 'utf8');
+      expect(saved).toContain('清洗进程续聊');
+      expect(saved).toContain('另一个进程续聊');
+      expect(saved).not.toContain('legacy-fixture-key');
+      expect(JSON.stringify(model.requests.at(-1)?.messages)).toContain('清洗进程续聊');
+    } finally {
+      await model.close();
+    }
+  });
+
   it('拒绝同会话并发进程而不影响占用者，并在 SIGKILL 后释放占用', async () => {
     const cwd = await directory('lock-cwd');
     const userDir = await directory('lock-user');
@@ -51,10 +123,12 @@ describe.skipIf(process.platform === 'win32')('CLI 会话占用与轮次中断',
       await waitFor(() => model.requests.length === 1);
       first.child.kill('SIGKILL');
       await first.done;
+      const events = await addLegacyCredential(userDir, id);
 
       const resumed = startCLI({ cwd, userDir, conversationId: id, env: { TEST_MODEL_API_KEY: secret }, input: '强制结束后恢复\n/exit\n' });
       expect((await resumed.done).code).toBe(0);
       expect(model.requests).toHaveLength(2);
+      expect(await readFile(events, 'utf8')).not.toContain('legacy-fixture-key');
     } finally {
       await model.close();
     }

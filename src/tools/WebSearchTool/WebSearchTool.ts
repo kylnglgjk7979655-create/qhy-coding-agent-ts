@@ -31,7 +31,8 @@ const tavilySearchResponseSchema = z.object({
     content: z.string(),
     score: z.number().optional(),
   })).default([]),
-  answer: z.string().optional(),
+  // Tavily 在 include_answer=false 时返回 answer: null，视为未提供摘要。
+  answer: z.string().nullish(),
 });
 
 class TavilyWebSearchProvider implements WebSearchProvider {
@@ -78,11 +79,13 @@ class TavilyWebSearchProvider implements WebSearchProvider {
     catch { throw new Error('Tavily 响应无效。'); }
     const parsed = tavilySearchResponseSchema.safeParse(payload);
     if (!parsed.success) throw new Error('Tavily 响应无法解析。');
+    // 将 null 摘要归一化为“无 answer”，保持对外 WebSearchProvider 返回类型不变。
+    const answer = parsed.data.answer ?? undefined;
     return {
       results: parsed.data.results.map(({ title, url, content, score }) => ({
         title, url, content, ...(score === undefined ? {} : { score }),
       })),
-      ...(parsed.data.answer === undefined ? {} : { answer: parsed.data.answer }),
+      ...(answer === undefined ? {} : { answer }),
     };
   }
 }

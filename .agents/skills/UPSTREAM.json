@@ -35,15 +35,19 @@
     "to-tickets/agents/openai.yaml": "21bc6215fffcd7614e9f772bb1760e87cc5fc7dcc707e7d282bc9414267a6090",
     "implement/SKILL.md": "91348548d8ec80def1bc4ac16dac48debb3079295c091a8dc6d9358e8dcf6f90",
     "implement/agents/openai.yaml": "8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc",
-    "qa-only/CREDITS.md": "fe90cb121b576d499605bc78a78a82cff6a1afdd814cff699f2afec2b6572ad5",
-    "qa-only/SKILL.md": "ac08bdab58c94725c2d54d1486fb49eec9706b0ae437a1a90635152fd4ee9807",
-    "qa-only/agents/openai.yaml": "31f1106874de3035fd6d1e2237c52b8092c30bf1aae20d95ad1d4e557360c4a9",
-    "qa-only/report-template.md": "c55a3dff132d95e1b26d39535a7bb35c83037d828d9d1803f3ff14852a6f88c9",
-    "qa-only/surfaces.md": "0909c2aba40fdda87146e6d7adfce8fceb99ded1953913fb2e86a07997f8c932",
-    "qa/SKILL.md": "cd5541f320e3e074196dc3beca570e9c0dd2c92f75901ff99b10affd5270211f",
-    "qa/agents/openai.yaml": "3bca121ec20ef2a07c53c47ca1324ebc8739305853809610609a0a9ba3790f7a",
-    "qa/loop-state.md": "7c8b7ab4390e28c732cb7a53a80aab9709ffcba2572bc5b8ad91283dc40973d7",
-    "qa-only/permissions.md": "2f616a17f1f87290752d3fce97fb51a073e197d2436268f249f0056c666eeda5"
+    "pr-review/SKILL.md": "bb5b5be52c6a19770a26fc84bddf9ff3f34de47c92b25df54c89de303812dc32",
+    "pr-review/agents/openai.yaml": "a1499d95abd8447558c535fe5554adcc3c9b988a0a39264a6283d430effe1e94",
+    "bug-review/LICENSE.warden": "3f4ff135dc8351ce7302b0e24e251bcb7d25af5e187ca39bc17163001f3001c7",
+    "bug-review/SKILL.md": "ddd46ec8f7a9bd261669f9f559d76ec260dba90981cff15b23f3b873a0713295",
+    "bug-review/references/github-workflows.md": "68811fca3e2ad52d5dfbd833ba3cb10e6df82c6946c0269fb9d98cf4d6d6c3d8",
+    "bug-review/references/javascript-typescript.md": "1bbd199fca1c270366e93f62dd3c8f92bad3a63d8afda96b5306cb32370cdedf",
+    "bug-review/references/python.md": "d445c9ff0454d553f9fbd2718b8097d88062a3603eeea1f53a435ef7b95f97a5",
+    "code-simplifier/LICENSE.anthropic": "8c6db340475136df3c1201d458fa5755698eace76e510471ecc9d857d6083dac",
+    "code-simplifier/SKILL.md": "f023be3c1cba259d1ce2dcb1375322bf2b76268b2e6650c36706b274e2441895",
+    "code-simplifier/agents/openai.yaml": "a484ef4785e6f4a2a07b545003f793027495ba9fab65c49d333029ee8d332335",
+    "verify/SKILL.md": "1555c291f4eaf9a496176f3d07c0e86449a6650f91179fa5d3ac1712b63837ac",
+    "verify/examples/cli.md": "2dac3346b9080b21faec00b078a24f30da6054c910164173e4054185e45dac5c",
+    "verify/examples/server.md": "f9e5b8c511066f83fb6796d4cca179217f07bb7c75535c5f13598a07df7b8ec3"
   },
   "localSnapshots": {
     "implement-spec": {
@@ -66,18 +70,28 @@
     }
   },
   "projectSkills": {
-    "qa-only": {
-      "description": "项目自定义的只读功能验收；逐条映射需求、校验 QA 预期，通过真实入口运行并记录版本与证据。",
+    "pr-review": {
+      "description": "本地只读 PR 审查入口，Codex 通过 $pr-review 显式调用。其简化判断也由 Claude Code 的 /review-pr 使用。"
+    },
+    "bug-review": {
+      "description": "Sentry Warden 的英文缺陷审查原文及其参考文件；仅改写 frontmatter name，避免与仓库内 code-review 技能重名。Claude Code 中通过目录名 /bug-review 调用，Codex 通过 $bug-review 调用。",
       "references": [
-        "https://github.com/mattpocock/skills/tree/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
-        "https://github.com/garrytan/gstack/tree/6b327148e37134e2628d2d20cd98f33dcbeef51c"
+        "https://github.com/getsentry/warden/tree/b81c9d025eff73ad760a4c102f9f2e58b4c2513f/packages/warden/src/builtin-skills/code-review"
+      ],
+      "modifications": [
+        "frontmatter name 由上游的 code-review 改为 bug-review。"
       ]
     },
-    "qa": {
-      "description": "项目自定义的本地 QA 循环；先分诊再批量修复，使用整轮预算、独立复验和最终版本审查收口。",
+    "code-simplifier": {
+      "description": "项目自定义的提交前简化步骤；改编自 Anthropic 的 code-simplifier agent，限定本次实现改动并保持行为不变。",
       "references": [
-        "https://github.com/mattpocock/skills/tree/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d",
-        "https://github.com/garrytan/gstack/tree/6b327148e37134e2628d2d20cd98f33dcbeef51c"
+        "https://github.com/anthropics/claude-plugins-official/blob/e6143c9807a001832badb63e89d58ffe25d542ec/plugins/code-simplifier/agents/code-simplifier.md"
+      ]
+    },
+    "verify": {
+      "description": "从 Claude Code 安装包提取的 /verify 英文原文及配套示例。",
+      "references": [
+        "https://code.claude.com/docs/en/skills#run-and-verify-your-app"
       ]
     }
   }

@@ -301,16 +301,20 @@ it('一个服务连接失败不影响健康服务及内置工具，不输出原�
   expect(result.stdout + result.stderr).not.toMatch(/fake-mcp-header-marker|TypeError|fetch failed|MCPClientError/);
 });
 
-it.each(['initialize', 'tools/list', 'tools/call'] as const)('基础独立上限约束 %s 等待，其他工具仍可用', async (phase) => {
+it.each([
+  ['initialize', 'connectTimeoutMs'],
+  ['tools/list', 'discoveryTimeoutMs'],
+  ['tools/call', 'callTimeoutMs'],
+] as const)('基础独立上限约束 %s 等待，其他工具仍可用', async (phase, timeoutKey) => {
   const remote = await startLocalMCP({ hang: phase });
   cleanup.push(remote.close);
   const model = await setup((_request, index) => phase === 'tools/call' && index === 1 ? { calls: [
     call('remote', 'mcp_alpha_echo', { text: '挂起' }), call('local', 'runtimeInfo', {}),
   ] } : { content: '完成' }, undefined, { mcp: {
-    servers: [{ name: 'alpha', url: remote.url }], connectTimeoutMs: 120, discoveryTimeoutMs: 120, callTimeoutMs: 120,
+    servers: [{ name: 'alpha', url: remote.url }], [timeoutKey]: 1200,
   } });
   const result = await run().done;
-  expect(remote.requests.some(({ method }) => method === phase)).toBe(true);
+  expect(remote.requests.map(({ method }) => method)).toContain(phase);
   expect(result.code).toBe(0);
   expect(result.stdout).toContain('完成');
   expect(result.stderr).not.toContain('"errorCode":"TIMEOUT"');
@@ -334,7 +338,11 @@ it.each(['deadline', 'SIGINT'] as const)('发现期间遵守公共 %s 停止入�
   });
   const running = run();
   if (stop === 'SIGINT') {
-    await expect.poll(() => remote.requests.some(({ method }) => method === 'tools/list')).toBe(true);
+    // 全量并行时 CLI 子进程启动和 MCP 握手可能超过 Vitest 默认的 1s 轮询超时；放宽等待但仍限定上限。
+    await expect.poll(
+      () => remote.requests.some(({ method }) => method === 'tools/list'),
+      { timeout: 5000, interval: 20, message: '并行负载下等待 MCP tools/list 请求超时' },
+    ).toBe(true);
     running.child.kill('SIGINT');
   }
   const result = await running.done;

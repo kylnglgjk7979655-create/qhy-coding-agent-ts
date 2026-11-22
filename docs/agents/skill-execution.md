@@ -11,9 +11,9 @@
 - **PR 反馈修改**：PR 评论后加 `agent:implement`；需要改代码时调用 `/implement`，workflow 发布提交与回复。
 - **分支更新**：`agent:update-branch` 合并最新基准；有冲突才调用 Agent。
 
-## QA 的当前边界
+## 本地 PR 审查
 
-GitHub workflow 暂不接入 QA：`agent:qa`、`agent:qa-only` 的 workflow 和脚本已移除。`.agents/skills/qa-only` 与 `.agents/skills/qa` 仍保留，可在本地 Claude 会话中通过 `/qa-only` 执行只读验收，或用 `/qa` 在验收失败后批量修复并复验、全绿后做一次 CR。以后恢复入口时再补 workflow 和自动化测试。
+在 PR 工作树中，Claude Code 输入 `/review-pr`，Codex 输入 `$pr-review`。两者默认将已提交的 HEAD 与 `origin/main` 比较，可在指令后指定比较基准和需求来源。报告汇总规范、需求、回归、简化判断和运行验证。审查只判断是否值得简化，具体简化由修改阶段的 `code-simplifier` Skill 执行。
 
 ## 规范与交付
 
