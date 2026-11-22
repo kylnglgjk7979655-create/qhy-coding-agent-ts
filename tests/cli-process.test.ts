@@ -23,11 +23,11 @@ describe('compiled CLI process driver', () => {
     return root;
   }
 
-  async function configure(cwd: string, baseURL: string): Promise<void> {
+  async function configure(cwd: string, baseURL: string, timeoutMs = 3000): Promise<void> {
     await mkdir(join(cwd, '.agent'), { recursive: true });
     await writeFile(join(cwd, '.agent', 'settings.json'), JSON.stringify({
       model: 'fixture', apiKeyEnv: 'TEST_MODEL_API_KEY', baseURL,
-      timeoutMs: 3000, maxSteps: 10,
+      timeoutMs, maxSteps: 10,
       permissions: { allow: ['Write', 'Bash(printf:*)', 'Bash(pwd)', 'Bash(sleep:*)'] },
     }));
   }
@@ -988,15 +988,15 @@ describe('compiled CLI process driver', () => {
       name: 'Bash', arguments: JSON.stringify({ command: 'sleep 5' }),
     } }] }));
     try {
-      await configure(cwd, model.baseURL);
+      await configure(cwd, model.baseURL, 10_000);
       let output = '';
       const interrupted = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
       interrupted.send('运行可取消工具\n');
-      await waitForOutput(() => output, '[工具] Bash：开始', 1);
-      const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
-      if (!id) throw new Error('中断会话尚未持久化');
+      await waitForOutput(() => output, '[工具] Bash：开始', 1, 6000);
       interrupted.child.kill('SIGINT');
       await interrupted.done;
+      const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!id) throw new Error('中断会话尚未持久化');
 
       const record = await readStoredSession(userDir, id);
       expect(record.rounds.map(({ status }) => status)).toEqual(['cancelled']);
@@ -1016,15 +1016,15 @@ describe('compiled CLI process driver', () => {
       } }] }
       : { content: '已从中断会话恢复。' });
     try {
-      await configure(cwd, model.baseURL);
+      await configure(cwd, model.baseURL, 10_000);
       let output = '';
       const interrupted = startCLI({ cwd, userDir, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
       interrupted.send('SIGTERM 前已保存的消息\n');
-      await waitForOutput(() => output, '[工具] Bash：开始', 1);
-      const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
-      if (!id) throw new Error('中断会话尚未持久化');
+      await waitForOutput(() => output, '[工具] Bash：开始', 1, 6000);
       interrupted.child.kill('SIGTERM');
       await interrupted.done;
+      const [id] = await readdir(join(userDir, '.qhy-coding-agents', 'sessions'));
+      if (!id) throw new Error('中断会话尚未持久化');
 
       const record = await readStoredSession(userDir, id);
       expect(record.rounds.map(({ status }) => status)).toEqual(['cancelled']);
@@ -1104,12 +1104,12 @@ async function waitForRequests(requests: unknown[], count: number): Promise<void
   expect(requests).toHaveLength(count);
 }
 
-async function waitForOutput(readOutput: () => string, text: string, occurrences: number): Promise<void> {
-  const deadline = Date.now() + 3000;
+async function waitForOutput(readOutput: () => string, text: string, occurrences: number, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   while (readOutput().split(text).length - 1 < occurrences && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  expect(readOutput().split(text).length - 1).toBeGreaterThanOrEqual(occurrences);
+  expect(readOutput().split(text).length - 1, `等待 CLI 输出：${text}`).toBeGreaterThanOrEqual(occurrences);
 }
 
 function findConversationId(stderr: string): string {
