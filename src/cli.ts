@@ -270,7 +270,8 @@ async function main(): Promise<void> {
       process.stdout.write(`当前审批模式：${approvalModeLabel(currentApprovalMode())}。\n`);
       return true;
     };
-    // 输入状态行与压缩附件共用的只读任务视图；先于输入消费者定义，避免排队输入在初始化前读取。
+    // 输入状态行与压缩附件共用的只读任务视图；不领取结果或改变通知状态。
+    // 先于输入消费者定义，避免排队输入在初始化前读取。
     const pendingTaskStatuses = (): readonly BackgroundTaskStatusEntry[] => {
       const context = config.context ?? DEFAULT_CONTEXT;
       return backgroundAgentTasksForSession(conversationId, sessionTaskOutputDirectory(userHome, conversationId), context.capacityTokens - context.answerReserveTokens).pendingStatuses();
@@ -437,7 +438,6 @@ async function main(): Promise<void> {
       unsubscribeNotifications = tasks.subscribeNotifications((notification) => input?.enqueueNotification(id, notification));
     };
     bindBackgroundNotifications(conversationId);
-    // 压缩附件也复用上面定义的只读任务视图，不领取结果或改变通知状态。
     const switchSession = async (id: string) => {
       const onWarning = (warning: SessionLoadWarning) => reportSessionWarning(id, warning);
       const opened = id === conversationId ? undefined : await openSession(userHome, id, { onWarning });

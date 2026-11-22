@@ -32,6 +32,14 @@ function expectDebugEventsHidden(stdout: string) {
   expect(stdout).not.toContain('"toolSmokePassed"');
 }
 
+async function waitFor(predicate: () => boolean, describe: () => string): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`等待 CLI 状态超时：${describe()}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe('interactive compiled CLI', () => {
   let cwd: string;
   let server: Server;
@@ -125,6 +133,9 @@ describe('interactive compiled CLI', () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('第1轮回答。');
     expect(result.stdout).toContain('第2轮回答。');
+    // 非交互管道不输出输入区装饰与状态行。
+    expect(result.stdout).not.toContain('▸▸');
+    expect(result.stdout).not.toContain('─');
     expect(requests).toHaveLength(2);
     const started = logs(result.stderr).find((event) => event.event === 'run.started');
     const finished = logs(result.stderr).find((event) => event.event === 'run.finished');
@@ -237,18 +248,22 @@ describe('interactive compiled CLI', () => {
 
   it.skipIf(process.platform === 'win32')('在真实交互终端显示输入框分隔线与审批模式状态行', async () => {
     reply = (_request, index) => ({ body: response(`第${index}轮回答。`) });
-    const cliProcess = startCLI({
-      cwd, pty: true,
-      input: '你好\n/permission-mode auto\n第二条\n/exit\n',
-      env: { TEST_MODEL_API_KEY: secret },
-    });
+    let output = '';
+    // 逐行发送，确保每次提交时输入框都已绘制，状态行才反映该次提交的现场状态。
+    const cliProcess = startCLI({ cwd, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (value) => { output = value; });
+    cliProcess.send('你好\n');
+    await waitFor(() => output.includes('第1轮回答。') && output.lastIndexOf('> ') > output.lastIndexOf('第1轮回答。'), () => output);
+    cliProcess.send('/permission-mode auto\n');
+    await waitFor(() => output.includes('当前审批模式：auto（模型审批）。') && output.includes('▸▸ 审批模式：auto（模型审批） · /permission-mode 切换'), () => output);
+    cliProcess.send('第二条\n');
+    await waitFor(() => output.includes('第2轮回答。'), () => output);
+    cliProcess.end('/exit\n');
     const result = await cliProcess.done;
 
     expect(result.code, result.stdout + result.stderr).toBe(0);
-    // 输入区上下各有一条分隔线，状态行跟随输入提交显示，并随 /permission-mode 切换更新。
-    expect((result.stdout.match(/─{20,}/gu) ?? []).length).toBeGreaterThanOrEqual(2);
-    expect(result.stdout).toMatch(/▸▸[^\r\n]*default（人工审批）[^\r\n]*\/permission-mode/u);
-    expect(result.stdout).toMatch(/▸▸[^\r\n]*auto（模型审批）/u);
+    // 状态行紧贴底部分隔线；切换命令之后的状态行显示新模式，而不是提交命令前的模式。
+    expect(result.stdout).toMatch(/─{20,}\r?\n▸▸[^\r\n]*default（人工审批）[^\r\n]*\/permission-mode/u);
+    expect(result.stdout).toMatch(/当前审批模式：auto（模型审批）。\r?\n─{20,}\r?\n▸▸[^\r\n]*auto（模型审批）/u);
   });
 
   it.skipIf(process.platform === 'win32')('在真实交互终端以可读错误显示启动失败', async () => {

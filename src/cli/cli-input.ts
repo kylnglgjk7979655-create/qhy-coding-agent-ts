@@ -12,7 +12,6 @@ export type CliWorkItem = { type: 'user'; text: string } | { type: 'notification
 export interface CliInputPromptStatus {
   /** 当前审批模式展示标签，例如 `default（人工审批）`。 */
   approvalMode: string;
-  /** 运行中的后台子 Agent 任务数。 */
   runningTasks: number;
 }
 
@@ -68,6 +67,13 @@ export class CliInput {
     });
     this.input.on('SIGINT', cancel);
     this.input.on('line', (line) => {
+      // 本地命令可能改写审批模式；先执行命令再补齐状态行，避免状态行显示切换前的模式。
+      if (!this.confirmation && !this.selector && this.localLineHandler?.(line.trim())) {
+        this.closePromptFrame();
+        // 审批等待或轮次执行中也可切换模式；只有空闲时才重新显示输入提示。
+        if (!this.busy && this.approvals.size === 0 && !this.closed && process.stdin.isTTY) this.prompt();
+        return;
+      }
       // 一行提交即结束本次输入框，先补齐样式再做分发，使状态行紧贴用户输入。
       this.closePromptFrame();
       if (this.confirmation) {
@@ -75,9 +81,6 @@ export class CliInput {
         this.confirmation.answer(line);
       } else if (this.selector) {
         // Enter 由活动中的键盘选择器消费，不能变成聊天或审批答复。
-      } else if (this.localLineHandler?.(line.trim())) {
-        // 审批等待或轮次执行中也可切换模式；只有空闲时才重新显示输入提示。
-        if (!this.busy && this.approvals.size === 0 && !this.closed && process.stdin.isTTY) this.prompt();
       } else if (this.approvalMenu) {
         // Enter 由活动中的审批菜单消费，不能变成聊天或审批答复。
       } else if (this.approvals.size > 0) {
@@ -128,7 +131,7 @@ export class CliInput {
     return new Promise<T | undefined>((resolve) => {
       let finished = false;
       const render = (): void => {
-        const columns = Math.max(20, process.stdout.columns || 80);
+        const columns = promptColumns();
         const rows = Math.max(6, process.stdout.rows || 24);
         const visibleCount = Math.max(1, Math.floor((rows - 4) / 2));
         // Keep each choice to two terminal rows so the focused choice cannot scroll off-screen.
@@ -288,7 +291,7 @@ export class CliInput {
     if (!this.promptFrameOpen) return;
     this.promptFrameOpen = false;
     const columns = promptColumns();
-    process.stdout.write(`${'─'.repeat(columns)}\n`);
+    process.stdout.write(`${promptSeparator(columns)}\n`);
     const status = this.promptStatus?.();
     if (status) process.stdout.write(`${fitText(formatPromptStatus(status), columns)}\n`);
   }
@@ -368,7 +371,7 @@ export class CliInput {
   private renderApprovalOptions(): void {
     const menu = this.approvalMenu;
     if (!menu) return;
-    const columns = Math.max(20, process.stdout.columns || 80);
+    const columns = promptColumns();
     if (menu.renderedLines > 0) process.stdout.write('\x1b[1A\x1b[2K'.repeat(menu.renderedLines));
     const lines = menu.options.map((option, index) => {
       const pointer = index === menu.selected ? '❯' : ' ';
@@ -385,7 +388,7 @@ export class CliInput {
     process.stdin.off('keypress', menu.onKeypress);
     try { process.stdin.setRawMode(menu.wasRaw); } catch { /* 输入已关闭时无法恢复模式。 */ }
     this.approvalMenu = undefined;
-    const columns = Math.max(20, process.stdout.columns || 80);
+    const columns = promptColumns();
     const rendered = menu.renderedLines;
     if (rendered > 0) process.stdout.write('\x1b[1A\x1b[2K'.repeat(rendered));
     process.stdout.write(`${fitText(`→ ${note ?? '已处理'}`, columns - 1)}\n\x1b[0J`);
@@ -410,8 +413,8 @@ function promptColumns(): number {
   return Math.max(20, process.stdout.columns || 80);
 }
 
-function promptSeparator(): string {
-  return '─'.repeat(promptColumns());
+function promptSeparator(columns = promptColumns()): string {
+  return '─'.repeat(columns);
 }
 
 /** 状态行只展示可操作的入口：当前审批模式、切换命令，以及运行中的后台任务数。 */
