@@ -15,6 +15,7 @@ import { registerBashTool } from './BashTool/BashTool.js';
 import { registerAgentTool } from './AgentTool/AgentTool.js';
 import type { ApprovalControl } from './tool-approval.js';
 import type { BackgroundAgentTasks } from './AgentTool/background-agent-tasks.js';
+import type { BashJobs } from './BashTool/bash-jobs.js';
 import type { SkillCatalogue } from '../services/skills/skill-registry.js';
 import type { ParentHookScope } from '../services/hooks/hook-scope.js';
 import type { TracingScope } from '../services/observability/langfuse.js';
@@ -30,6 +31,8 @@ export interface BuiltInToolContext {
   /** 当前进程的审批模式，供子 Agent 与主 Agent 使用同一运行时状态。 */
   approvalMode?: () => ApprovalMode;
   backgroundTasks?: BackgroundAgentTasks;
+  /** 当前对话的 Bash 作业池；子 Agent 无会话归属时省略。 */
+  bashJobs?: BashJobs;
   fileBaselines?: WorkspaceFileBaselines;
 /** 成功读取工作区文件后回调规范目标路径，供会话记录最近读取顺序；失败读取不触发。 */
   onFileRead?: (target: string) => void;

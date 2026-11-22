@@ -49,6 +49,8 @@ export class CliInput {
     private readonly humanTimeoutMs: number,
     /** 即时处理的本地命令；返回 true 表示该行已被消费，不作为对话或审批答复。 */
     private readonly localLineHandler?: (line: string) => boolean,
+    /** Ctrl+B：把当前对话的前台 Bash 作业切到后台；没有可切换作业时返回 undefined。 */
+    private readonly detachBashJob?: () => { taskId: string } | undefined,
   ) {
     this.cancelRequest = cancel;
     this.input = createInterface({
@@ -86,7 +88,13 @@ export class CliInput {
         this.queued.push(line);
       }
     });
+    // Ctrl+B 只在真实终端生效；管道输入不会产生按键事件，也不改变原有逐行协议。
+    if (process.stdin.isTTY) {
+      emitKeypressEvents(process.stdin);
+      process.stdin.on('keypress', this.handleKeypress);
+    }
     this.input.on('close', () => {
+      process.stdin.off('keypress', this.handleKeypress);
       this.closed = true;
       this.confirmation?.close();
       this.confirmation = undefined;
@@ -253,6 +261,17 @@ export class CliInput {
   /** 主循环执行轮次或压缩期间不重新显示提示，避免打断流式输出或审批提示。 */
   setBusy(value: boolean): void { this.busy = value; }
   close(): void { this.input.close(); }
+
+  /**
+ * Ctrl+B 把当前前台 Bash 作业切到后台。审批菜单、选择器和信任确认占用键盘时
+ * 按键属于当前交互，不触发作业切换。
+ */
+  private readonly handleKeypress = (_character: string, key: { name?: string; ctrl?: boolean }): void => {
+    if (!key.ctrl || key.name !== 'b') return;
+    if (this.closed || this.confirmation !== undefined || this.selector !== undefined || this.approvalMenu !== undefined) return;
+    const detached = this.detachBashJob?.();
+    if (detached) process.stdout.write(`\n已切换到后台：任务 ${detached.taskId}\n`);
+  };
 
   private startApprovalMenu(): void {
     if (this.approvalMenu || this.closed || !process.stdin.isTTY || !process.stdout.isTTY) return;

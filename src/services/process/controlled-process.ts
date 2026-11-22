@@ -6,7 +6,8 @@ export interface ControlledProcessOptions {
   /** 可选 stdin 内容；省略时子进程的标准输入连接到忽略设备。 */
   stdin?: string | Buffer;
   signal?: AbortSignal;
-  timeoutMs?: number;
+  /** 超时上限；`null` 表示由调用方自行计时（例如可前后台切换的 Bash 作业）。 */
+  timeoutMs?: number | null;
   /** 各自流最多保留的字节数；超出部分继续消费但不保存。 */
   stdoutLimitBytes?: number;
   stderrLimitBytes?: number;
@@ -79,6 +80,162 @@ function destroyStdio(child: ChildProcess): void {
 }
 
 /**
+ * 受控进程的实时句柄。后台 Bash 作业需要保留进程、持续读取已保存输出，
+ * 并在用户停止作业或 CLI 退出时终止整个进程组。
+ */
+export interface ControlledProcessHandle {
+  /** 子进程是否成功启动；无法启动时为 false。 */
+  readonly started: Promise<boolean>;
+  /** 进程组结束后解析，包含完整受限输出与状态。 */
+  readonly completion: Promise<ControlledProcessResult>;
+  /** 读取运行中已保存的输出；未结束时退出状态为 null。 */
+  snapshot(): ControlledProcessResult;
+  /** 终止整个进程组；已结束时无操作，避免 PID 复用后误杀。 */
+  terminate(): void;
+}
+
+/**
+ * 启动受控进程并立即返回句柄。超时、取消、退出码和截断仍作为数据返回；
+ * `timeoutMs: null` 表示不在进程层计时，由调用方（例如可暂停的 Bash 前台预算）负责。
+ */
+export function startControlledProcess(
+  file: string,
+  args: readonly string[],
+  options: ControlledProcessOptions,
+): ControlledProcessHandle {
+  const { cwd, env, stdin, signal } = options;
+  const limits = {
+    stdout: options.stdoutLimitBytes ?? DEFAULT_STREAM_LIMIT_BYTES,
+    stderr: options.stderrLimitBytes ?? DEFAULT_STREAM_LIMIT_BYTES,
+    combined: options.combinedLimitBytes ?? Number.POSITIVE_INFINITY,
+  };
+  const timeoutMs = options.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : options.timeoutMs;
+
+  let resolveStarted!: (started: boolean) => void;
+  const started = new Promise<boolean>((resolve) => { resolveStarted = resolve; });
+  let resolveCompletion!: (result: ControlledProcessResult) => void;
+  const completion = new Promise<ControlledProcessResult>((resolve) => { resolveCompletion = resolve; });
+
+  // 已取消时不再启动：调用方可能依赖“未启动”保证，例如审批后取消不应产生副作用。
+  if (signal?.aborted) {
+    resolveStarted(true);
+    resolveCompletion(emptyResult({ cancelled: true }));
+    return { started, completion, snapshot: () => emptyResult({ cancelled: true }), terminate: () => undefined };
+  }
+
+  let child: ChildProcess;
+  try {
+    child = spawn(file, args, {
+      cwd,
+      detached: true,
+      stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      ...(env === undefined ? {} : { env }),
+    });
+  } catch {
+    resolveStarted(false);
+    resolveCompletion(emptyResult({ startFailed: true }));
+    return { started, completion, snapshot: () => emptyResult({ startFailed: true }), terminate: () => undefined };
+  }
+
+  let timedOut = false;
+  let cancelled = false;
+  let startFailed = false;
+  let stdinFailed = false;
+  let settled = false;
+  let finalResult: ControlledProcessResult | undefined;
+  let closeGrace: NodeJS.Timeout | undefined;
+
+  const active: ActiveProcess = { pid: child.pid ?? -1, child };
+  if (child.pid !== undefined) trackActiveProcess(active);
+
+  const terminate = (): void => {
+    // 结束后不再发送信号，避免 PID 被复用时误杀无关进程组。
+    if (settled) return;
+    killProcessGroup(child.pid);
+  };
+
+  const currentResult = (exitCode: number | null, exitSignal: string | null): ControlledProcessResult => ({
+    stdout: stdout.text(),
+    stderr: stderr.text(),
+    exitCode,
+    signal: exitSignal,
+    stdoutTruncated: stdout.truncated,
+    stderrTruncated: stderr.truncated,
+    timedOut,
+    cancelled,
+    startFailed,
+    stdinFailed,
+  });
+
+  const finish = (result: { exitCode: number | null; signal: string | null }): void => {
+    if (settled) return;
+    settled = true;
+    if (timer !== undefined) clearTimeout(timer);
+    if (closeGrace !== undefined) clearTimeout(closeGrace);
+    signal?.removeEventListener('abort', onAbort);
+    activeProcesses.delete(active);
+    finalResult = currentResult(result.exitCode, result.signal);
+    resolveCompletion(finalResult);
+  };
+
+  const onAbort = (): void => {
+    cancelled = true;
+    terminate();
+  };
+  const timer = timeoutMs === null
+    ? undefined
+    : setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, timeoutMs);
+  signal?.addEventListener('abort', onAbort, { once: true });
+  // 监听器注册前可能已经发生取消；事件不会补发，因此显式补一次。
+  if (signal?.aborted) onAbort();
+
+  const budget = { remaining: limits.combined };
+  const stdout = new StreamCollector(limits.stdout, budget);
+  const stderr = new StreamCollector(limits.stderr, budget);
+  child.stdout?.on('data', (chunk: Buffer) => {
+    const exceeded = stdout.push(chunk);
+    if (exceeded && options.terminateOnStdoutLimit) terminate();
+  });
+  child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
+  if (stdin !== undefined) {
+    // 子进程可能提前退出导致 EPIPE；记录为启动失败，但不让流错误变成未处理的进程错误。
+    child.stdin?.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EPIPE') stdinFailed = true;
+    });
+    child.stdin?.end(stdin);
+  }
+  // spawn 成功事件与 error 事件只发生一个；两者都用于让后台启动方及时得知进程是否真的启动。
+  child.once('spawn', () => resolveStarted(true));
+  child.once('error', () => {
+    startFailed = true;
+    resolveStarted(false);
+  });
+  // 直接子进程退出后，后台孙进程可能仍持有 stdout/stderr 管道，使 close 迟迟不触发。
+  // 启用 reapOnExit 时终止残留进程组并销毁流；close 仍作为正常结束信号，
+  // 宽限定时器只兜底逃出进程组、继续持有管道的后代。
+  child.once('exit', (exitCode, exitSignal) => {
+    if (!options.reapOnExit) return;
+    terminate();
+    // 先让 close 自然结束以读完管道中已缓冲的输出；宽限后才销毁流并兜底结束。
+    closeGrace = setTimeout(() => {
+      destroyStdio(child);
+      finish({ exitCode, signal: exitSignal });
+    }, EXIT_CLOSE_GRACE_MS);
+  });
+  child.once('close', (exitCode, exitSignal) => finish({ exitCode, signal: exitSignal }));
+
+  return {
+    started,
+    completion,
+    snapshot: () => finalResult ?? currentResult(null, null),
+    terminate,
+  };
+}
+
+/**
  * 在独立进程组中启动子进程并收集受限输出。启动失败、超时、取消、退出码和截断均作为数据返回，
  * 调用方按业务语义决定抛错或展示。超时与取消对整个进程组发送 SIGKILL，避免留下子进程。
  */
@@ -87,106 +244,7 @@ export async function runControlledProcess(
   args: readonly string[],
   options: ControlledProcessOptions,
 ): Promise<ControlledProcessResult> {
-  const { cwd, env, stdin, signal } = options;
-  // 已取消时不再启动：调用方可能依赖“未启动”保证，例如审批后取消不应产生副作用。
-  if (signal?.aborted) return emptyResult({ cancelled: true });
-
-  const limits = {
-    stdout: options.stdoutLimitBytes ?? DEFAULT_STREAM_LIMIT_BYTES,
-    stderr: options.stderrLimitBytes ?? DEFAULT_STREAM_LIMIT_BYTES,
-    combined: options.combinedLimitBytes ?? Number.POSITIVE_INFINITY,
-  };
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-
-  return new Promise<ControlledProcessResult>((resolve) => {
-    let child: ChildProcess;
-    try {
-      child = spawn(file, args, {
-        cwd,
-        detached: true,
-        stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-        ...(env === undefined ? {} : { env }),
-      });
-    } catch {
-      resolve(emptyResult({ startFailed: true }));
-      return;
-    }
-
-    let timedOut = false;
-    let cancelled = false;
-    let startFailed = false;
-    let stdinFailed = false;
-    let settled = false;
-    let closeGrace: NodeJS.Timeout | undefined;
-
-    const active: ActiveProcess = { pid: child.pid ?? -1, child };
-    if (child.pid !== undefined) trackActiveProcess(active);
-
-    const terminate = (): void => killProcessGroup(child.pid);
-
-    const finish = (result: { exitCode: number | null; signal: string | null }): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (closeGrace !== undefined) clearTimeout(closeGrace);
-      signal?.removeEventListener('abort', onAbort);
-      activeProcesses.delete(active);
-      resolve({
-        stdout: stdout.text(),
-        stderr: stderr.text(),
-        exitCode: result.exitCode,
-        signal: result.signal,
-        stdoutTruncated: stdout.truncated,
-        stderrTruncated: stderr.truncated,
-        timedOut,
-        cancelled,
-        startFailed,
-        stdinFailed,
-      });
-    };
-
-    const onAbort = (): void => {
-      cancelled = true;
-      terminate();
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      terminate();
-    }, timeoutMs);
-    signal?.addEventListener('abort', onAbort, { once: true });
-    // 监听器注册前可能已经发生取消；事件不会补发，因此显式补一次。
-    if (signal?.aborted) onAbort();
-
-    const budget = { remaining: limits.combined };
-    const stdout = new StreamCollector(limits.stdout, budget);
-    const stderr = new StreamCollector(limits.stderr, budget);
-    child.stdout?.on('data', (chunk: Buffer) => {
-      const exceeded = stdout.push(chunk);
-      if (exceeded && options.terminateOnStdoutLimit) terminate();
-    });
-    child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk));
-    if (stdin !== undefined) {
-      // 子进程可能提前退出导致 EPIPE；记录为启动失败，但不让流错误变成未处理的进程错误。
-      child.stdin?.on('error', (error: NodeJS.ErrnoException) => {
-        if (error.code === 'EPIPE') stdinFailed = true;
-      });
-      child.stdin?.end(stdin);
-    }
-    child.once('error', () => { startFailed = true; });
-    // 直接子进程退出后，后台孙进程可能仍持有 stdout/stderr 管道，使 close 迟迟不触发。
-    // 启用 reapOnExit 时终止残留进程组并销毁流；close 仍作为正常结束信号，
-    // 宽限定时器只兜底逃出进程组、继续持有管道的后代。
-    child.once('exit', (exitCode, exitSignal) => {
-      if (!options.reapOnExit) return;
-      terminate();
-      // 先让 close 自然结束以读完管道中已缓冲的输出；宽限后才销毁流并兜底结束。
-      closeGrace = setTimeout(() => {
-        destroyStdio(child);
-        finish({ exitCode, signal: exitSignal });
-      }, EXIT_CLOSE_GRACE_MS);
-    });
-    child.once('close', (exitCode, exitSignal) => finish({ exitCode, signal: exitSignal }));
-  });
+  return startControlledProcess(file, args, options).completion;
 }
 
 function emptyResult(overrides: Partial<ControlledProcessResult>): ControlledProcessResult {
