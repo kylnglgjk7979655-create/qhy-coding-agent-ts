@@ -275,16 +275,23 @@ async function main(): Promise<void> {
       process.stdout.write(`当前审批模式：${approvalModeLabel(currentApprovalMode())}。\n`);
       return true;
     };
+    const sessionBackgroundTasks = () => {
+      const context = config.context ?? DEFAULT_CONTEXT;
+      return backgroundAgentTasksForSession(conversationId, sessionTaskOutputDirectory(userHome, conversationId), context.capacityTokens - context.answerReserveTokens);
+    };
+    const pendingTaskStatuses = (): readonly BackgroundTaskStatusEntry[] => sessionBackgroundTasks().pendingStatuses();
     // 信任门禁的交互确认需要输入消费者，因此在 Hook 信任判断之前建立。
     if (!smokeTool) {
-      input = new CliInput(
+      const cliInput = new CliInput(
         cancellation.signal,
         cancel,
         config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS,
         executeApprovalModeCommand,
+        () => ({ approvalMode: currentApprovalMode(), runningTasks: sessionBackgroundTasks().runningCount }),
         // 只切换当前对话的前台 Bash 作业；其它对话的后台作业保持运行。
         () => bashJobsForSession(conversationId).detachForeground(),
       );
+      input = cliInput;
       // 后台作业可能在用户切换到其它会话后结束；通知不依赖当前会话，始终显示任务 ID 与退出状态。
       unsubscribeBashNotifications = subscribeBashJobNotifications((notification) => {
         const detail = notification.status === 'succeeded'
@@ -294,7 +301,7 @@ async function main(): Promise<void> {
             : notification.status === 'cancelled'
               ? '已停止'
               : `退出码 ${notification.exitCode ?? '无'}${notification.signal === null ? '' : `，信号 ${notification.signal}`}`;
-        process.stdout.write(`\n[Bash 作业 ${notification.taskId}] 已结束：${notification.status}（${detail}）。\n`);
+        cliInput.writeNotice(`\n[Bash 作业 ${notification.taskId}] 已结束：${notification.status}（${detail}）。\n`);
       });
       config = await applyHookTrust(config);
     }
@@ -445,11 +452,6 @@ async function main(): Promise<void> {
       unsubscribeNotifications = tasks.subscribeNotifications((notification) => input?.enqueueNotification(id, notification));
     };
     bindBackgroundNotifications(conversationId);
-    // 压缩附件只读当前会话任务池，不领取结果或改变通知状态。
-    const pendingTaskStatuses = (): readonly BackgroundTaskStatusEntry[] => {
-      const context = config.context ?? DEFAULT_CONTEXT;
-      return backgroundAgentTasksForSession(conversationId, sessionTaskOutputDirectory(userHome, conversationId), context.capacityTokens - context.answerReserveTokens).pendingStatuses();
-    };
     const switchSession = async (id: string) => {
       const onWarning = (warning: SessionLoadWarning) => reportSessionWarning(id, warning);
       const opened = id === conversationId ? undefined : await openSession(userHome, id, { onWarning });
@@ -627,6 +629,7 @@ async function main(): Promise<void> {
       if (workItem.type === 'notification') {
         const { notification } = workItem;
         if (!backgroundAgentTasksForSession(conversationId).acknowledgeNotification(notification.taskId)) continue;
+        input.suspendPrompt();
         process.stdout.write(`\n[后台任务通知] ${notification.summary}：${notification.status}\n`);
         const notificationPrompt = [
           '后台子 Agent 已完成，请处理以下属于当前会话的通知，并向用户简要汇报结果。',
@@ -634,7 +637,7 @@ async function main(): Promise<void> {
         ].join('\n');
         try {
           activeRound = new AbortController();
-input.setBusy(true);
+          input.setBusy(true);
           history = await runTurn({
             prompt: notificationPrompt,
             config,

@@ -15,6 +15,10 @@ export function visibleText(text: string): string {
   return text.replaceAll('\u001b', '␛').replace(/[\r\n]+/gu, ' ').replace(/[\u0000-\u001a\u001c-\u001f\u007f]/gu, '�');
 }
 
+export function terminalWidth(text: string): number {
+  return Array.from(text).reduce((width, character) => width + characterWidth(character), 0);
+}
+
 /** 按终端显示宽度裁剪文本；preserveEnd 时保留首尾，适合路径和错误。 */
 export function fitText(text: string, columns: number, preserveEnd = false): string {
   const readable = visibleText(text);

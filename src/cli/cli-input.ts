@@ -1,9 +1,11 @@
 import { createInterface, emitKeypressEvents } from 'node:readline';
+import { Writable } from 'node:stream';
 import type { ApprovalControl } from '../tools/tool-approval.js';
 import type { ToolApprovalRequest } from '../tools/tool-registry.js';
 import type { BackgroundAgentTaskNotification } from '../tools/AgentTool/background-agent-tasks.js';
 import { approvalOptionsFor, SessionApprovals } from './approval-policy.js';
 import type { ApprovalOption } from './approval-policy.js';
+import { InputFrame, type InputFrameStatus } from './input-frame.js';
 import { fitText } from './terminal-text.js';
 
 export type CliWorkItem = { type: 'user'; text: string } | { type: 'notification'; conversationId: string; notification: BackgroundAgentTaskNotification } | { type: 'compact' };
@@ -41,6 +43,9 @@ export class CliInput {
   private confirmation: { answer: (line: string) => void; close: () => void } | undefined;
   private compactRequested = false;
   private busy = false;
+  private readonly frame: InputFrame | undefined;
+  private readonly drawPrompt?: (clearScreen?: boolean) => void;
+  private frameSuspended = false;
   private readonly cancelRequest: () => void;
 
   constructor(
@@ -49,23 +54,62 @@ export class CliInput {
     private readonly humanTimeoutMs: number,
     /** 即时处理的本地命令；返回 true 表示该行已被消费，不作为对话或审批答复。 */
     private readonly localLineHandler?: (line: string) => boolean,
+    promptStatus?: () => InputFrameStatus,
     /** Ctrl+B：把当前对话的前台 Bash 作业切到后台；没有可切换作业时返回 undefined。 */
     private readonly detachBashJob?: () => { taskId: string } | undefined,
   ) {
     this.cancelRequest = cancel;
+    const stdout = process.stdout;
+    const frame = promptStatus && process.stdin.isTTY && stdout.isTTY && process.env.TERM !== 'dumb'
+      ? new InputFrame(stdout)
+      : undefined;
+    this.frame = frame;
+    // 输入区拥有屏幕输出，readline 保留按键、历史和行缓冲；其它交互沿用原来的回显。
+    const output = frame ? new Writable({
+      write: (chunk, encoding, done) => {
+        if (!frame.isVisible && !this.frameSuspended) stdout.write(chunk, encoding);
+        done();
+      },
+    }) : stdout;
+    if (frame) Object.defineProperty(output, 'columns', { get: () => stdout.columns });
     this.input = createInterface({
-      input: process.stdin, output: process.stdout, terminal: process.stdin.isTTY, signal,
+      input: process.stdin, output, terminal: process.stdin.isTTY, signal,
     });
+    if (frame && promptStatus) {
+      this.drawPrompt = (clearScreen = false) => frame.render(this.input.line, this.input.cursor, promptStatus(), clearScreen);
+      let repaintPending = false;
+      let clearScreen = false;
+      const repaint = (_character?: string, key?: { name?: string; ctrl?: boolean }): void => {
+        if (!frame.isVisible) return;
+        clearScreen ||= key?.ctrl === true && key.name === 'l';
+        if (repaintPending) return;
+        // 粘贴时 readline 可能在同一个输入块发出多次按键事件。
+        repaintPending = true;
+        queueMicrotask(() => {
+          if (frame.isVisible) this.drawPrompt?.(clearScreen);
+          repaintPending = clearScreen = false;
+        });
+      };
+      process.stdin.on('keypress', repaint);
+      stdout.on('resize', repaint);
+      this.input.once('close', () => {
+        process.stdin.off('keypress', repaint);
+        stdout.off('resize', repaint);
+      });
+    }
     this.input.on('SIGINT', cancel);
     this.input.on('line', (line) => {
+      if (this.frame?.isVisible) this.frame.submit(line);
+      if (!this.confirmation && !this.selector && this.localLineHandler?.(line.trim())) {
+        // 审批等待或轮次执行中也可切换模式；只有空闲时才重新显示输入提示。
+        if (!this.busy && this.approvals.size === 0 && !this.closed && process.stdin.isTTY) this.prompt();
+        return;
+      }
       if (this.confirmation) {
         // 信任确认答复优先于对话消息和审批答复，避免启动输入被当成一次用户请求。
         this.confirmation.answer(line);
       } else if (this.selector) {
         // Enter 由活动中的键盘选择器消费，不能变成聊天或审批答复。
-      } else if (this.localLineHandler?.(line.trim())) {
-        // 审批等待或轮次执行中也可切换模式；只有空闲时才重新显示输入提示。
-        if (!this.busy && this.approvals.size === 0 && !this.closed && process.stdin.isTTY) this.prompt();
       } else if (this.approvalMenu) {
         // Enter 由活动中的审批菜单消费，不能变成聊天或审批答复。
       } else if (this.approvals.size > 0) {
@@ -96,6 +140,7 @@ export class CliInput {
     this.input.on('close', () => {
       process.stdin.off('keypress', this.handleKeypress);
       this.closed = true;
+      this.frame?.hide();
       this.confirmation?.close();
       this.confirmation = undefined;
       this.selector?.();
@@ -121,7 +166,7 @@ export class CliInput {
     return new Promise<T | undefined>((resolve) => {
       let finished = false;
       const render = (): void => {
-        const columns = Math.max(20, process.stdout.columns || 80);
+        const columns = promptColumns();
         const rows = Math.max(6, process.stdout.rows || 24);
         const visibleCount = Math.max(1, Math.floor((rows - 4) / 2));
         // Keep each choice to two terminal rows so the focused choice cannot scroll off-screen.
@@ -257,15 +302,39 @@ export class CliInput {
     });
   };
 
-  prompt(): void { if (!this.closed) this.input.prompt(); }
+  prompt(): void {
+    if (this.closed) return;
+    if (!this.drawPrompt) {
+      this.input.prompt();
+      return;
+    }
+    if (this.queued.length === 0) {
+      this.frameSuspended = false;
+      if (!this.frame?.isVisible) process.stdout.write('\n');
+      this.drawPrompt();
+    }
+  }
+
+  /** 为异步通知让出屏幕，保留 readline 中尚未提交的文字和光标。 */
+  suspendPrompt(): void {
+    if (!this.frame?.isVisible) return;
+    this.frame.hide();
+    this.frameSuspended = true;
+  }
+
+  /** 在输入区上方显示通知，并恢复正在编辑的草稿与光标。 */
+  writeNotice(message: string): void {
+    const restorePrompt = this.frame?.isVisible;
+    if (restorePrompt) this.suspendPrompt();
+    process.stdout.write(message);
+    if (restorePrompt) this.prompt();
+  }
+
   /** 主循环执行轮次或压缩期间不重新显示提示，避免打断流式输出或审批提示。 */
   setBusy(value: boolean): void { this.busy = value; }
   close(): void { this.input.close(); }
 
-  /**
- * Ctrl+B 把当前前台 Bash 作业切到后台。审批菜单、选择器和信任确认占用键盘时
- * 按键属于当前交互，不触发作业切换。
- */
+  // 审批菜单、选择器和信任确认占用键盘时，Ctrl+B 不触发作业切换。
   private readonly handleKeypress = (_character: string, key: { name?: string; ctrl?: boolean }): void => {
     if (!key.ctrl || key.name !== 'b') return;
     if (this.closed || this.confirmation !== undefined || this.selector !== undefined || this.approvalMenu !== undefined) return;
@@ -348,7 +417,7 @@ export class CliInput {
   private renderApprovalOptions(): void {
     const menu = this.approvalMenu;
     if (!menu) return;
-    const columns = Math.max(20, process.stdout.columns || 80);
+    const columns = promptColumns();
     if (menu.renderedLines > 0) process.stdout.write('\x1b[1A\x1b[2K'.repeat(menu.renderedLines));
     const lines = menu.options.map((option, index) => {
       const pointer = index === menu.selected ? '❯' : ' ';
@@ -365,7 +434,7 @@ export class CliInput {
     process.stdin.off('keypress', menu.onKeypress);
     try { process.stdin.setRawMode(menu.wasRaw); } catch { /* 输入已关闭时无法恢复模式。 */ }
     this.approvalMenu = undefined;
-    const columns = Math.max(20, process.stdout.columns || 80);
+    const columns = promptColumns();
     const rendered = menu.renderedLines;
     if (rendered > 0) process.stdout.write('\x1b[1A\x1b[2K'.repeat(rendered));
     process.stdout.write(`${fitText(`→ ${note ?? '已处理'}`, columns - 1)}\n\x1b[0J`);
@@ -384,4 +453,8 @@ export class CliInput {
     ].filter(Boolean).map((line) => `${line}\n`).join('');
     return `\n[人工审批 ${number}] ${call.toolName}（调用 ${call.callId}；最多等待 ${this.humanTimeoutMs}ms${pending}）\n${JSON.stringify(call.input, null, 2)}\n${details}${suffix}`;
   }
+}
+
+function promptColumns(): number {
+  return Math.max(20, process.stdout.columns || 80);
 }

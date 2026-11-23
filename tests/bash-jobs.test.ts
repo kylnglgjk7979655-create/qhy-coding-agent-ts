@@ -155,6 +155,54 @@ it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')('Ctrl+B
   }
 });
 
+it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')('后台 Bash 作业结束时保留交互输入框的草稿与光标', async () => {
+  await setup((_request, index) => index === 1
+    ? { calls: [bash('notify', {
+      command: 'bash finish-job.sh',
+      run_in_background: true,
+    })] }
+    : { content: '已收到。' });
+  await writeFile(join(cwd, 'finish-job.sh'), [
+    'for ((i = 0; i < 100; i++)); do',
+    '  [ ! -f finish ] || exit 0',
+    '  sleep 0.05',
+    'done',
+    'exit 1',
+  ].join('\n'));
+
+  let output = '';
+  const cli = startCLI({
+    cwd,
+    pty: true,
+    env: { TERM: 'xterm-256color', TEST_BASH_JOBS_KEY: 'fake-bash-jobs-key' },
+  }, (stdout) => { output = stdout; });
+  try {
+    cli.send('启动后台作业\n');
+    await waitFor(() => output.includes('已收到。'), `首轮未结束：${output}`);
+    cli.send('草稿后缀\x1b[D\x1b[D');
+    const draftAtCursor = /> 草稿后缀\x1b\[\d+G[^\r\n]*\x1b\[2A\r> 草稿/u;
+    await waitFor(() => draftAtCursor.test(output), `草稿未显示在输入框中：${output}`);
+
+    const launched = toolOutput(fixture.requests[1]!);
+    expect(launched).toMatchObject({ is_error: false, output: { status: 'running' } });
+    const taskId = String(launched.output!.taskId);
+    const notification = `[Bash 作业 ${taskId}] 已结束：succeeded`;
+    await writeFile(join(cwd, 'finish'), '');
+    await waitFor(() => {
+      const position = output.indexOf(notification);
+      return position >= 0 && draftAtCursor.test(output.slice(position));
+    }, `通知后未重绘草稿与光标：${output}`);
+
+    cli.send('中\n');
+    await waitFor(() => fixture.requests.length === 3, `未提交编辑后的草稿：${output}`);
+    expect(fixture.requests[2]!.messages.at(-1)?.content).toBe('草稿中后缀');
+    cli.end('/exit\n');
+    expect((await cli.done).code).toBe(0);
+  } finally {
+    cli.child.kill('SIGKILL');
+  }
+});
+
 it.skipIf(process.platform === 'win32')('接回前台后 Ctrl+C 停止作业并回到空闲输入', async () => {
   await setup((_request, index) => index === 1
     ? { calls: [bash('ctrl-c-stop', {
