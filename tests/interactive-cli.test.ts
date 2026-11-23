@@ -32,6 +32,14 @@ function expectDebugEventsHidden(stdout: string) {
   expect(stdout).not.toContain('"toolSmokePassed"');
 }
 
+async function waitFor(predicate: () => boolean, describe: () => string): Promise<void> {
+  const deadline = Date.now() + 5000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`等待 CLI 状态超时：${describe()}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe('interactive compiled CLI', () => {
   let cwd: string;
   let server: Server;
@@ -125,6 +133,9 @@ describe('interactive compiled CLI', () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('第1轮回答。');
     expect(result.stdout).toContain('第2轮回答。');
+    // 非交互管道不输出输入区装饰与状态行。
+    expect(result.stdout).not.toContain('▸▸');
+    expect(result.stdout).not.toContain('─');
     expect(requests).toHaveLength(2);
     const started = logs(result.stderr).find((event) => event.event === 'run.started');
     const finished = logs(result.stderr).find((event) => event.event === 'run.finished');
@@ -233,6 +244,44 @@ describe('interactive compiled CLI', () => {
     expectDebugEventsHidden(result.stdout);
     expect(result.stderr).toBe('');
     expect(await readFile(join(cwd, 'approved.txt'), 'utf8')).toBe('approved-content');
+  });
+
+  it.skipIf(process.platform === 'win32')('在真实交互终端显示输入框分隔线与审批模式状态行', async () => {
+    reply = (_request, index) => ({ body: response(`第${index}轮回答。`) });
+    let output = '';
+    const initialFrame = /─{20,}\s+>\s+─{20,}\s+▸▸ 审批模式：default（人工审批）/u;
+    const editingFrame = /─{20,}\s+> 你好\s+─{20,}\s+▸▸ 审批模式：default（人工审批）/u;
+    const autoFrame = /─{20,}\s+>\s+─{20,}\s+▸▸ 审批模式：auto（模型审批）/u;
+    const cliProcess = startCLI({ cwd, pty: true, env: { TERM: 'xterm-256color', TEST_MODEL_API_KEY: secret } }, (value) => {
+      output = value.replaceAll(/\x1b\[\d+G/gu, '');
+    });
+    try {
+      await waitFor(() => initialFrame.test(output), () => output);
+      cliProcess.send('你好');
+      await waitFor(() => editingFrame.test(output), () => output);
+      expect(requests).toHaveLength(0);
+      const beforeClear = output.length;
+      cliProcess.send('\x0c');
+      await waitFor(() => editingFrame.test(output.slice(beforeClear)), () => output);
+      cliProcess.send('\n');
+      await waitFor(() => {
+        const reply = output.indexOf('第1轮回答。');
+        return reply >= 0 && initialFrame.test(output.slice(reply));
+      }, () => output);
+      cliProcess.send('/permission-mode auto\n');
+      await waitFor(() => {
+        const confirmation = output.indexOf('当前审批模式：auto（模型审批）。');
+        return confirmation >= 0 && autoFrame.test(output.slice(confirmation));
+      }, () => output);
+      cliProcess.send('第二条\n');
+      await waitFor(() => output.includes('第2轮回答。'), () => output);
+    } finally {
+      cliProcess.end('/exit\n');
+    }
+    const result = await cliProcess.done;
+
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(requests.map(({ messages }) => messages.at(-1)?.content)).toEqual(['你好', '第二条']);
   });
 
   it.skipIf(process.platform === 'win32')('在真实交互终端以可读错误显示启动失败', async () => {

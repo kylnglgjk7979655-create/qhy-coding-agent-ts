@@ -46,19 +46,19 @@ function call(id: string, name: string, input: unknown): FixtureToolCall {
 }
 
 /** 交互式运行；等待提示栏中出现目标文本后再继续。 */
-function runInteractive(args: string[] = []) {
+function runInteractive(args: string[] = [], term = 'xterm-256color') {
   let output = '';
   const waiters = new Set<() => void>();
-  const running = startCLI({ cwd, args, pty: true, env }, (stdout) => {
+  const running = startCLI({ cwd, args, pty: true, env: { ...env, TERM: term } }, (stdout) => {
     output = stdout;
     for (const notify of waiters) notify();
   });
   children.push(running.child);
-  const waitFor = async (text: string): Promise<void> => {
-    if (output.includes(text)) return;
+  const waitFor = async (text: string, start = 0): Promise<void> => {
+    if (output.includes(text, start)) return;
     let notify!: () => void;
     const arrived = new Promise<void>((done) => {
-      notify = () => { if (output.includes(text)) done(); };
+      notify = () => { if (output.includes(text, start)) done(); };
       waiters.add(notify);
     });
     try {
@@ -80,19 +80,20 @@ describe('plan 审批模式', () => {
   it.skipIf(process.platform === 'win32')('Shift+Tab 按 default → auto → plan → default 循环并更新提示栏', async () => {
     await setup(() => ({ content: '不应请求模型' }));
     const running = runInteractive();
-    await running.waitFor('[default（人工审批）] > ');
+    await running.waitFor('▸▸ 审批模式：default（人工审批）');
 
     running.send('\x1b[Z');
     await running.waitFor('当前审批模式：auto（模型审批）。');
-    await running.waitFor('[auto（模型审批）] > ');
+    await running.waitFor('▸▸ 审批模式：auto（模型审批）');
 
     running.send('\x1b[Z');
     await running.waitFor('当前审批模式：plan（只读）。');
-    await running.waitFor('[plan（只读）] > ');
+    await running.waitFor('▸▸ 审批模式：plan（只读）');
 
+    const beforeDefault = running.output().length;
     running.send('\x1b[Z');
-    await running.waitFor('当前审批模式：default（人工审批）。');
-    await running.waitFor('[default（人工审批）] > ');
+    await running.waitFor('当前审批模式：default（人工审批）。', beforeDefault);
+    await running.waitFor('▸▸ 审批模式：default（人工审批）', beforeDefault);
 
     running.end('/exit\n');
     const result = await running.done;
@@ -222,7 +223,7 @@ describe('plan 审批模式', () => {
       ? { calls: [call('pending-write', 'write_file', { path: 'pending.txt', content: '不应写入' })] }
       : { content: '切换后拒绝写入。' });
     const running = runInteractive();
-    await running.waitFor('[default（人工审批）] > ');
+    await running.waitFor('▸▸ 审批模式：default（人工审批）');
     running.send('写入文件\n');
     await running.waitFor('[人工审批 1] write_file');
 
@@ -251,9 +252,9 @@ describe('plan 审批模式', () => {
       : { content: '外部读取完成。' }, { approval: { mode: 'auto', humanTimeoutMs: 5000 } });
 
     const running = runInteractive();
-    await running.waitFor('[auto（模型审批）] > ');
+    await running.waitFor('▸▸ 审批模式：auto（模型审批）');
     running.send('/permission-mode plan\n');
-    await running.waitFor('[plan（只读）] > ');
+    await running.waitFor('▸▸ 审批模式：plan（只读）');
     running.send('读取外部文件\n');
     await running.waitFor('[人工审批 1] Read');
     expect(fixture!.approvalRequests).toHaveLength(0);
@@ -282,11 +283,11 @@ describe('plan 审批模式', () => {
       : index === 2 ? { content: '切回 auto 后读取完成。' } : { content: '意外额外请求。' });
 
     const running = runInteractive();
-    await running.waitFor('[default（人工审批）] > ');
+    await running.waitFor('▸▸ 审批模式：default（人工审批）');
     running.send('/permission-mode plan\n');
-    await running.waitFor('[plan（只读）] > ');
+    await running.waitFor('▸▸ 审批模式：plan（只读）');
     running.send('/permission-mode auto\n');
-    await running.waitFor('[auto（模型审批）] > ');
+    await running.waitFor('▸▸ 审批模式：auto（模型审批）');
     running.send('读取外部文件\n');
     await running.waitFor('切回 auto 后读取完成。');
     running.end('/exit\n');
@@ -332,11 +333,11 @@ describe('plan 审批模式', () => {
     await writeFile(join(cwd, 'note.txt'), '可读内容');
 
     const running = runInteractive(['--permission-mode', 'plan', '--trust-hooks']);
-    await running.waitFor('[plan（只读）] > ');
+    await running.waitFor('▸▸ 审批模式：plan（只读）');
     running.send('第一轮\n');
     await running.waitFor('plan 轮完成。');
     running.send('/permission-mode default\n');
-    await running.waitFor('[default（人工审批）] > ');
+    await running.waitFor('▸▸ 审批模式：default（人工审批）');
     running.send('第二轮\n');
     await running.waitFor('default 轮完成。');
     running.end('/exit\n');
@@ -347,20 +348,29 @@ describe('plan 审批模式', () => {
     expect(await readFile(join(cwd, 'hook-events.txt'), 'utf8')).toBe('upqs');
   });
 
-  it.skipIf(process.platform === 'win32')('Shift+Tab 切换模式时保留输入草稿与光标位置', async () => {
+  it.skipIf(process.platform === 'win32').each([
+    {
+      term: 'xterm-256color', defaultPrompt: '▸▸ 审批模式：default（人工审批）', autoPrompt: '▸▸ 审批模式：auto（模型审批）',
+      moveCursor: '\x1b[D', expectedDraft: '草稿AXB',
+    },
+    // Node 在 TERM=dumb 中只支持在行末追加输入。
+    {
+      term: 'dumb', defaultPrompt: '[default（人工审批）] > ', autoPrompt: '[auto（模型审批）] > 草稿AB',
+      moveCursor: '', expectedDraft: '草稿ABX',
+    },
+  ])('Shift+Tab 切换模式时保留输入草稿（TERM=$term）', async ({ term, defaultPrompt, autoPrompt, moveCursor, expectedDraft }) => {
     await setup(() => ({ content: '草稿已提交。' }));
-    const running = runInteractive();
-    await running.waitFor('[default（人工审批）] > ');
+    const running = runInteractive([], term);
+    await running.waitFor(defaultPrompt);
     running.send('草稿AB');
     await running.waitFor('草稿AB');
-    // 光标移到 A 与 B 之间；切换模式后继续输入应仍插入同一位置。
-    running.send('\x1b[D');
-    running.send('\x1b[Z');
+    // 支持方向键的终端把光标移到 A 与 B 之间；切换后继续输入应仍插入同一位置。
+    running.send(`${moveCursor}\x1b[Z`);
     await running.waitFor('当前审批模式：auto（模型审批）。');
-    await running.waitFor('[auto（模型审批）] > 草稿AB');
+    await running.waitFor(autoPrompt);
     const output = running.output();
     const noticeAt = output.lastIndexOf('当前审批模式：auto（模型审批）。');
-    expect(output.slice(noticeAt)).toContain('[auto（模型审批）] > 草稿AB');
+    expect(output.slice(noticeAt)).toContain('> 草稿AB');
 
     running.send('X\n');
     await running.waitFor('草稿已提交。');
@@ -368,7 +378,7 @@ describe('plan 审批模式', () => {
     const result = await running.done;
 
     expect(result.code, result.stdout + result.stderr).toBe(0);
-    expect(fixture!.requests[0]!.messages.find(({ role }) => role === 'user')?.content).toBe('草稿AXB');
+    expect(fixture!.requests[0]!.messages.find(({ role }) => role === 'user')?.content).toBe(expectedDraft);
   });
 
   it('压缩等待期间切换到 plan 后，实际主请求使用 plan 提示与只读工具', async () => {
