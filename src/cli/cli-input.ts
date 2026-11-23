@@ -10,6 +10,20 @@ import { fitText } from './terminal-text.js';
 
 export type CliWorkItem = { type: 'user'; text: string } | { type: 'notification'; conversationId: string; notification: BackgroundAgentTaskNotification } | { type: 'compact' };
 
+/**
+ * 判定独立 Esc 前等待后续字节的窗口，同时作为 readline 的 escapeCodeTimeout。
+ * 沿用 Node readline 历史的约 500ms 默认值作为唯一权威边界：真实 PTY 中方向键等 CSI/SS3
+ * 序列可能拆成多次写入，实测间隔可达约 400ms；窗口必须覆盖这段间隔，否则 ESC 会被误判为
+ * 独立按键。终端无法区分“拆包较晚的序列”与“Esc 后紧接新输入”，超过窗口的后续字节按历史
+ * 语义视为独立 Esc，无法挽回。判定结果只作用于按下时刻的轮次，避免迟到按键取消下一轮。
+ */
+const ESCAPE_SEQUENCE_TIMEOUT_MS = 500;
+// 从 Esc 按下的时刻起，等 readline 结束判定再重新显示提示，确保提示出现后输入不再被吞。
+const ESCAPE_INPUT_SETTLE_MS = ESCAPE_SEQUENCE_TIMEOUT_MS + 20;
+// readline 在窗口结束时才补发 Esc keypress；登记保留窗口加事件循环余量，供审批菜单与
+// 选择器忽略迟到事件，避免它被算到后续轮次。
+const ESCAPE_KEYPRESS_DELIVERY_MS = ESCAPE_SEQUENCE_TIMEOUT_MS + 200;
+
 interface PendingApproval {
   number: number;
   call: ToolApprovalRequest;
@@ -28,6 +42,17 @@ interface ApprovalMenu {
   onKeypress: (character: string, key: { name?: string; ctrl?: boolean }) => void;
 }
 
+/** 一次尚不能确定是否为独立按键的原始 Esc；轮次身份在按下时固定，最终判定稍后给出。 */
+interface PendingEscape {
+  id: number;
+  roundId: number;
+  pressedAt: number;
+  overlay: boolean;
+  timer: NodeJS.Timeout;
+  /** 工具启动前等待最终判定的调用方；参数表示该 Esc 是否真的取消了当前轮次。 */
+  waiters: Array<(canceled: boolean) => void>;
+}
+
 // 单一输入消费者将对话消息与正在等待的审批答复分开，已排队的消息不会变成批准。
 export class CliInput {
   private readonly input;
@@ -42,7 +67,15 @@ export class CliInput {
   private approvalMenu: ApprovalMenu | undefined;
   private confirmation: { answer: (line: string) => void; close: () => void } | undefined;
   private compactRequested = false;
-  private busy = false;
+  private busy: 'turn' | 'compact' | 'bash-job' | undefined;
+  /** 每次进入忙碌工作时递增，用于把 Esc 归属到按键按下时的轮次。 */
+  private roundId = 0;
+  private escapeId = 0;
+  private pendingEscape: PendingEscape | undefined;
+  /** 已在原始输入阶段处理的独立 Esc 按下事件，用于忽略 readline 迟到补发的 keypress。 */
+  private readonly handledEscapes: Array<{ id: number; pressedAt: number }> = [];
+  private settleInputUntil = 0;
+  private promptTimer: NodeJS.Timeout | undefined;
   private readonly frame: InputFrame | undefined;
   private readonly drawPrompt?: (clearScreen?: boolean) => void;
   private frameSuspended = false;
@@ -74,6 +107,7 @@ export class CliInput {
     if (frame) Object.defineProperty(output, 'columns', { get: () => stdout.columns });
     this.input = createInterface({
       input: process.stdin, output, terminal: process.stdin.isTTY, signal,
+      escapeCodeTimeout: ESCAPE_SEQUENCE_TIMEOUT_MS,
     });
     if (frame && promptStatus) {
       this.drawPrompt = (clearScreen = false) => frame.render(this.input.line, this.input.cursor, promptStatus(), clearScreen);
@@ -98,6 +132,14 @@ export class CliInput {
       });
     }
     this.input.on('SIGINT', cancel);
+    // 直接从原始输入识别独立 Esc：readline 会按 escapeCodeTimeout 缓存按键才发出 keypress，
+    // 若按键时所在轮次在这段时间内结束，迟到的 keypress 会错误取消已排队的下一轮，
+    // 并让尚未启动的工具获得执行机会。按键归属以原始输入到达时的轮次为准。
+    if (process.stdin.isTTY) {
+      process.stdin.on('data', this.onRawInput);
+      // 登记之后的迟到 keypress 若无人消费，就此清除；审批菜单与选择器注册的处理器在其后运行。
+      process.stdin.on('keypress', this.onEscapeKeypress);
+    }
     this.input.on('line', (line) => {
       if (this.frame?.isVisible) this.frame.submit(line);
       if (!this.confirmation && !this.selector && this.localLineHandler?.(line.trim())) {
@@ -140,6 +182,12 @@ export class CliInput {
     this.input.on('close', () => {
       process.stdin.off('keypress', this.handleKeypress);
       this.closed = true;
+      process.stdin.off('data', this.onRawInput);
+      process.stdin.off('keypress', this.onEscapeKeypress);
+      // 输入关闭时结束待判定状态，避免等待工具启动的调用方悬挂。
+      if (this.pendingEscape) this.settlePendingEscape(this.pendingEscape, false);
+      if (this.promptTimer) clearTimeout(this.promptTimer);
+      this.promptTimer = undefined;
       this.frame?.hide();
       this.confirmation?.close();
       this.confirmation = undefined;
@@ -200,7 +248,12 @@ export class CliInput {
           if (typed.trim() === '/cancel') finish(undefined);
           else finish(choices[selected]?.value);
         }
-        else if (key.name === 'escape' || (key.ctrl && key.name === 'c')) finish(undefined);
+        else if (key.name === 'escape') {
+          // 忽略属于先前轮次的迟到 Esc，避免刚打开的选择器被旧按键取消。
+          if (this.takeHandledEscape()) return;
+          finish(undefined);
+        }
+        else if (key.ctrl && key.name === 'c') finish(undefined);
         else if (key.name === 'backspace') typed = typed.slice(0, -1);
         else if (character && !key.ctrl && character.length === 1) typed += character;
         if (!finished) render();
@@ -302,8 +355,20 @@ export class CliInput {
     });
   };
 
+  /** 刚处理过独立 Esc 时稍等 readline 结束按键判定再显示提示，避免提示出现后首字符被吞。 */
   prompt(): void {
     if (this.closed) return;
+    const delay = this.settleInputUntil - Date.now();
+    if (delay > 0) {
+      this.promptTimer ??= setTimeout(() => {
+        this.promptTimer = undefined;
+        // 已排队的工作可能在这段等待内启动；忙碌期间不显示提示。
+        if (!this.busy) this.prompt();
+      }, delay);
+      return;
+    }
+    if (this.promptTimer) clearTimeout(this.promptTimer);
+    this.promptTimer = undefined;
     if (!this.drawPrompt) {
       this.input.prompt();
       return;
@@ -330,8 +395,18 @@ export class CliInput {
     if (restorePrompt) this.prompt();
   }
 
-  /** 主循环执行轮次或压缩期间不重新显示提示，避免打断流式输出或审批提示。 */
-  setBusy(value: boolean): void { this.busy = value; }
+  /**
+   * 忙碌时暂停提示。Esc 取消 `turn`（含轮次内压缩），独立压缩和 `/task` 沿用 Ctrl+C 取消。
+   */
+  setBusy(value: boolean, work: 'turn' | 'compact' | 'bash-job' = 'turn'): void {
+    if (value) {
+      this.roundId += 1;
+      // 新工作开始时取消上一轮延后的提示，避免它在新轮次输出中途出现。
+      if (this.promptTimer) clearTimeout(this.promptTimer);
+      this.promptTimer = undefined;
+    }
+    this.busy = value ? work : undefined;
+  }
   close(): void { this.input.close(); }
 
   // 审批菜单、选择器和信任确认占用键盘时，Ctrl+B 不触发作业切换。
@@ -341,6 +416,102 @@ export class CliInput {
     const detached = this.detachBashJob?.();
     if (detached) process.stdout.write(`\n已切换到后台：任务 ${detached.taskId}\n`);
   };
+
+  /** 观察原始终端输入，只用于判定独立 Esc；不消费数据，readline 仍照常处理行编辑与方向键。 */
+  private readonly onRawInput = (chunk: Buffer | string): void => {
+    const pending = this.pendingEscape;
+    if (pending) {
+      // 与 readline 一致：ESC 后继续到达的字节属于转义序列或 Alt 组合键，不是独立按键。
+      // 先按“非取消”结束判定，放行等待工具启动的调用方；后续字节仍交给 readline 解码。
+      this.settlePendingEscape(pending, false);
+      // 若在按下时就登记了迟到事件（尚未确认），此时撤销，避免误吞之后真正的 Esc。
+      if (!pending.overlay) this.forgetHandledEscape(pending.id);
+    }
+    const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+    for (let index = 0; index < bytes.length; index += 1) {
+      if (bytes[index] !== 0x1b) continue;
+      if (index + 1 < bytes.length) {
+        // ESC 与后续字节同批到达，例如方向键的 CSI/SS3 序列；跳过序列首字节即可。
+        index += 1;
+        continue;
+      }
+      // 只有数据块末尾的 ESC 需要等待后续字节；同一批数据里可能还有新的独立按键。
+      this.beginPendingEscape();
+      return;
+    }
+  };
+
+  /** 记录一次位于数据块末尾、尚不能确定是否为独立按键的 Esc，并固定其轮次身份。 */
+  private beginPendingEscape(): void {
+    const pressedAt = Date.now();
+    // 按键时打开的审批菜单、选择器或信任确认自行消费 Esc，这里不登记也不取消。
+    const overlay = Boolean(this.approvalMenu || this.approvals.size > 0 || this.selector || this.confirmation);
+    const id = ++this.escapeId;
+    this.pendingEscape = {
+      id,
+      roundId: this.roundId,
+      pressedAt,
+      overlay,
+      timer: setTimeout(() => this.finishRawEscape(), ESCAPE_SEQUENCE_TIMEOUT_MS),
+      waiters: [],
+    };
+    // 在按下时刻登记，而不是等确认后：readline 补发的 keypress 可能与确认定时器同刻到达，
+    // 先登记才能保证审批菜单和选择器不会收到属于先前轮次的事件。
+    if (!overlay) this.handledEscapes.push({ id, pressedAt });
+  }
+
+  /** 结束一次 Esc 判定：清除定时器与待判定状态，并唤醒等待工具启动的调用方。 */
+  private settlePendingEscape(pending: PendingEscape, canceled: boolean): void {
+    clearTimeout(pending.timer);
+    if (this.pendingEscape === pending) this.pendingEscape = undefined;
+    for (const resolve of pending.waiters.splice(0)) resolve(canceled);
+  }
+
+  /** 清除已到达且无人消费的登记；审批菜单与选择器会消费的按键保留给它们。 */
+  private readonly onEscapeKeypress = (_character: string, key: { name?: string; ctrl?: boolean }): void => {
+    if (key.name !== 'escape') return;
+    if (this.approvalMenu || this.selector) return;
+    this.takeHandledEscape();
+  };
+
+  private finishRawEscape(): void {
+    const pending = this.pendingEscape;
+    if (!pending) return;
+    if (pending.overlay) {
+      // 审批菜单、选择器与信任确认自行消费 Esc，这里只结束待判定状态。
+      this.settlePendingEscape(pending, false);
+      return;
+    }
+    // 等 readline 结束 Esc 判定后再恢复提示，避免随后的第一个字符被当作 Alt 组合键。
+    this.settleInputUntil = Math.max(this.settleInputUntil, pending.pressedAt + ESCAPE_INPUT_SETTLE_MS);
+    // 轮次身份已在按下时固定；最终判定只决定是否取消该轮次，旧轮次已结束时不得顺延到下一轮。
+    const canceled = pending.roundId === this.roundId && this.busy === 'turn';
+    if (canceled) this.cancelRequest();
+    this.settlePendingEscape(pending, canceled);
+  }
+
+  /**
+   * 工具启动前等待原始 Esc 的最终判定。返回 true 表示该按键确认取消了当前轮次，
+   * 调用方不应再启动工具；没有待判定按键、按键属于审批/选择器，或已判定为转义序列
+   * （包括拆包方向键）与其他轮次时立即返回 false。
+   */
+  async waitForEscapeDecision(): Promise<boolean> {
+    const pending = this.pendingEscape;
+    if (!pending || pending.overlay) return false;
+    return new Promise<boolean>((resolve) => { pending.waiters.push(resolve); });
+  }
+
+  private forgetHandledEscape(id: number): void {
+    const index = this.handledEscapes.findIndex((event) => event.id === id);
+    if (index >= 0) this.handledEscapes.splice(index, 1);
+  }
+
+  /** 读取并清理一个属于先前已消费按键的迟到 Esc；审批菜单与选择器在取消前调用。 */
+  private takeHandledEscape(): boolean {
+    const now = Date.now();
+    while (this.handledEscapes.length > 0 && now - this.handledEscapes[0]!.pressedAt > ESCAPE_KEYPRESS_DELIVERY_MS) this.handledEscapes.shift();
+    return this.handledEscapes.shift() !== undefined;
+  }
 
   private startApprovalMenu(): void {
     if (this.approvalMenu || this.closed || !process.stdin.isTTY || !process.stdout.isTTY) return;
@@ -393,6 +564,8 @@ export class CliInput {
         pending.finish(decision, note);
         return;
       } else if (key.name === 'escape') {
+        // 忽略属于先前轮次的迟到 Esc，避免刚打开的审批菜单被旧按键自动拒绝。
+        if (this.takeHandledEscape()) return;
         pending.finish('deny', '已拒绝本次');
         return;
       } else if (key.ctrl && key.name === 'c') {
