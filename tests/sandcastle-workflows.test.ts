@@ -43,10 +43,11 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const args = process.argv.slice(2);
 fs.readFileSync(0, 'utf8');
+const mode = process.env.FIXTURE_MODE;
 const phase = args.includes('--resume') ? 'extract' : 'main';
 const prior = fs.existsSync(process.env.MOCK_CALLS) ? fs.readFileSync(process.env.MOCK_CALLS,'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse) : [];
 fs.appendFileSync(process.env.MOCK_CALLS, JSON.stringify({
-  phase, args,
+  mode, phase, args,
   model: args[args.indexOf('--model') + 1],
   token: process.env.ANTHROPIC_AUTH_TOKEN,
   baseURL: process.env.ANTHROPIC_BASE_URL,
@@ -59,15 +60,32 @@ fs.mkdirSync(sessionDir, { recursive: true });
 fs.writeFileSync(path.join(sessionDir, sessionId + '.jsonl'), JSON.stringify({type:'assistant',message:{usage:{input_tokens:10,cache_creation_input_tokens:0,cache_read_input_tokens:0}}})+'\\n');
 console.log(JSON.stringify({type:'system',subtype:'init',session_id:sessionId}));
 let text = '<promise>COMPLETE</promise>';
-if (process.env.FIXTURE_MODE === 'implement') {
+if (mode === 'implement') {
   fs.appendFileSync('a.txt', 'implemented\\n');
   cp.execFileSync('git', ['add','a.txt']);
   cp.execFileSync('git', ['commit','-m','fix: implement fixture']);
   fs.writeFileSync(path.join(process.env.OUTPUT_DIR,'pr-metadata.json'),JSON.stringify({prTitle:'fix: fixture',prDescription:'## Summary\\n\\n修复 fixture。\\n\\n## Evidence\\n\\nBefore: 未记录。After: fixture 验证。\\n\\n## Merge Danger\\n\\nDoor: two-way; Blast Radius: fixture'}));
 } else if (phase === 'extract') {
-  const attempts = prior.filter(entry => entry.phase === 'extract').length;
-  const result = attempts === 0 ? {summary:''} : {
+  const attempts = prior.filter(entry => entry.phase === 'extract' && entry.mode === mode).length;
+  const sha = cp.execFileSync('git', ['rev-parse','HEAD'], {encoding:'utf8'}).trim();
+  if (mode === 'review-pass' || mode === 'review-hidden-evidence') {
+    const evidence = path.join(process.env.OUTPUT_DIR, 'review-evidence', sha);
+    fs.mkdirSync(evidence, {recursive:true});
+    const filenames = mode === 'review-pass' ? ['screen.png','flow.webm'] : ['.proof.png','.proof.webm'];
+    for (const file of filenames) fs.writeFileSync(path.join(evidence, file), 'fixture');
+  }
+  const result = mode === 'review-pass' && attempts === 0 ? {summary:''} : {
     summary:'已审查并验证。',
+    reviewedHead:mode === 'review-stale' ? 'a'.repeat(40) : sha,
+    requiredEvidence:['screenshot', 'recording'],
+    checks:{
+      standards:{status:'PASS',details:'规范通过。'},
+      spec:{status:'PASS',details:'需求通过。'},
+      bugs:{status:'PASS',details:'回归检查通过。'},
+      verification:mode === 'review-blocked'
+        ? {status:'BLOCKED',details:'环境不可用。'}
+        : {status:'PASS',details:'UI 与完整流程通过。'}
+    },
     inlineComments:[{path:'a.txt',line:2,body:'有效评论'},{path:'missing.txt',line:99,body:'应被过滤'}],
     replies:[{commentId:'known-comment',body:'已处理'},{commentId:'unknown-comment',body:'应被过滤'}]
   };
@@ -92,11 +110,20 @@ console.log(JSON.stringify({type:'result',result:text}));
     run('implement', 'implement');
     expect(git('log', '-1', '--format=%s')).toBe('fix: implement fixture');
     expect(await readFile(join(output, 'pr_description.txt'), 'utf8')).toContain('Closes #1');
-    run('review', 'review');
+    for (const [mode, reason] of [
+      ['review-blocked', 'verification · BLOCKED'],
+      ['review-missing-evidence', '缺少 screenshot、recording 证据'],
+      ['review-hidden-evidence', '缺少 screenshot、recording 证据'],
+      ['review-stale', '审查结果必须对应干净的当前 HEAD'],
+    ] as const) {
+      expect(() => run('review', mode)).toThrow(reason);
+      await expect(readFile(join(output, 'review_payload.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+    run('review', 'review-pass');
     const events = (await readFile(calls, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as {
-      phase: string; args: string[]; model: string; token: string; baseURL: string; subagent: string;
+      mode: string; phase: string; args: string[]; model: string; token: string; baseURL: string; subagent: string;
     });
-    expect(events.map((event) => event.phase)).toEqual(['main', 'main', 'extract', 'extract']);
+    expect(events.filter((event) => event.mode === 'review-pass').map((event) => event.phase)).toEqual(['main', 'extract', 'extract']);
     for (const event of events) {
       expect(event.model).toBe('deepseek-v4.1-flash');
       expect(event.token).toBe('fixture-token');
@@ -106,10 +133,11 @@ console.log(JSON.stringify({type:'result',result:text}));
       if (event.phase === 'extract') expect(event.args).toContain('fixture-session');
     }
     expect(JSON.parse(await readFile(join(output, 'review_payload.json'), 'utf8'))).toEqual({
-      event: 'COMMENT', commit_id: git('rev-parse', 'HEAD'), body: '已审查并验证。',
+      event: 'COMMENT', commit_id: git('rev-parse', 'HEAD'), body: expect.stringContaining('**verification · PASS**'),
       comments: [{ path: 'a.txt', line: 2, side: 'RIGHT', body: '有效评论' }],
     });
     expect(JSON.parse(await readFile(join(output, 'replies.json'), 'utf8'))).toEqual([{ commentId: 'known-comment', body: '已处理' }]);
+    expect(await readFile(join(output, 'review_evidence_required.txt'), 'utf8')).toBe('true');
     expect(git('status', '--porcelain')).toBe('');
   } finally {
     await rm(directory, { recursive: true, force: true });

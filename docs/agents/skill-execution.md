@@ -7,7 +7,7 @@
 - **拆票**：父 Spec 放在 GitHub Issue 正文，补充要求写评论。`agent:to-issues` 调用 `/to-tickets`，输出带稳定 key 和 blockedBy 的 slices。独立发布 job 校验需求未变化，自动创建原生子 Issue 与阻塞关系；无需审批标签。拆票不会启动实现。
 - **实现**：`agent:implement` 调用 `/implement`，支持独立 Issue、子 Issue 和父需求。父需求按原生依赖逐票实施，共用一个分支和 Draft PR。每张子票成功推送后以 completed 关闭，下一票无需等待 PR 合并。
 - **PR 文案**：实现会话在代码、检查及提交完成后调用 `/pr`。按 skill 的 Summary、Evidence、Merge Danger 模板写出中文 PR 元数据文件；证据来自实际执行，未运行的检查和人工 QA 如实注明。workflow 校验文件并创建或更新 PR。父需求共享 PR 始终包含 `Closes #父编号`，合并到 main 后由 GitHub 自动关闭父 Issue。
-- **整体审查**：全部子票 completed 后调用 `/code-review`，比较基准为 main。上下文显式包含父 PRD、全部子票的正文、状态与评论，按整份需求验收；独立 Issue 按自身验收。审查可修复并提交并发布 COMMENT，完成后标记 PR Ready。
+- **整体审查**：独立 Issue 完成或父需求全部子票 completed 后，workflow 给 Draft PR 添加 `agent:review`。独立会话按固定版本的 PR Review skill 审查当前 HEAD 与 main，并按完整需求验收。审查会话可修复和提交，提交后对新 HEAD 重审。workflow 上传当前 HEAD 的验证证据并在 PR Review 评论中发布链接，所有适用项通过且远端仍指向该 HEAD 时才标记 Ready。
 - **PR 反馈修改**：PR 评论后加 `agent:implement`；需要改代码时调用 `/implement`，workflow 发布提交与回复。
 - **分支更新**：`agent:update-branch` 合并最新基准；有冲突才调用 Agent。
 
