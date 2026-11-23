@@ -50,7 +50,7 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 | --- | --- | --- |
 | 父 Issue：`agent:to-issues` | per Issue | 调用 `/to-tickets`，校验需求后自动创建子 Issue 和原生依赖 |
 | Issue／父 Issue：`agent:implement` | per Issue | 调用 `/implement`；完成后同会话调用 `/pr`，workflow 推送并创建／更新 Draft PR |
-| PR：`agent:review` | per PR | 调用 `/code-review`，读取完整 spec 并发布 COMMENT；完成后标记 Ready |
+| PR：`agent:review` | per PR | 独立运行 PR Review，读取完整 spec，并检查当前 HEAD 的截图和录屏；通过后发布 COMMENT 并标记 Ready |
 | PR 评论后加 `agent:implement` | per PR | 处理反馈，需要改代码时调用 `/implement` |
 | PR：`agent:update-branch` | per PR | 合并最新基准；有冲突时调用 Agent |
 | Issue 以 completed 关闭 | per Issue | Promote Queued 检查直接依赖它的排队任务，不运行模型 |
@@ -74,7 +74,7 @@ Settings → Actions → General 中启用 **Allow GitHub Actions to create and 
 5. workflow 验证 PR 元数据、复查依赖后推送，创建或更新 PR。共享 PR 的正文包含 `Closes #父编号`；独立 Issue 的 PR 关闭自身。
 6. 子票提交到共享 PR 后以 completed 关闭，然后用 `AGENT_PAT` 重新给父 Issue 贴 `agent:implement` 接续下一票。
 7. 全部子票 completed 后移除父需求 queued，给 PR 贴 `agent:review`。审查上下文通过原生父子关系显式读取父 PRD、全部子票及评论。
-8. Review 发布 COMMENT 并标记 Ready；Check 独立执行 `pnpm check` 和 `pnpm demo:test`。维护者决定合并，合入 main 后 GitHub 自动关闭父 Issue。共享 PR 不自动合并。
+8. Review 对最终 HEAD 执行 PR Review。执行 UI 操作时截取关键状态，执行端到端测试时录制全程。workflow 将证据上传为 Actions artifact，并把下载链接和验证的提交、场景、结果发布到 PR 评论。所有适用项通过后才将 Draft 标记 Ready；失败或缺少适用证据时，workflow 标记 `agent:blocked`，并在评论说明原因。Check 独立执行 `pnpm check` 和 `pnpm demo:test`。维护者决定合并，合入 main 后 GitHub 自动关闭父 Issue。共享 PR 不自动合并。
 
 ## 失败、暂停与恢复
 
@@ -97,4 +97,4 @@ ANTHROPIC_AUTH_TOKEN=<key> ISSUE_NUMBER=42 ISSUE_TITLE='修复空输入' BRANCH=
 
 该命令会提交代码，并要求 Agent 使用 `/pr` 写出 PR 文案；推送及 GitHub 发布由工作流负责。本地运行需要全局安装 `@anthropic-ai/claude-code`（`npm install -g @anthropic-ai/claude-code`）。
 
-项目规范的唯一入口是根目录 [CODING_STANDARDS.md](../../CODING_STANDARDS.md)，AGENTS.md、CLAUDE.md 和阶段 prompt 均引用它。skill 调用与交付边界见 [skill-execution.md](skill-execution.md)。
+项目编码规范见根目录 [CODING_STANDARDS.md](../../CODING_STANDARDS.md)，由 AGENTS.md 和阶段 prompt 引用。Claude Code 通过 CLAUDE.md 的 `@AGENTS.md` 导入仓库规则。skill 调用与交付边界见 [skill-execution.md](skill-execution.md)。

@@ -721,14 +721,14 @@ describe('compiled CLI process driver', () => {
       const child = startCLI({ cwd, userDir, pty: true, env: { TEST_MODEL_API_KEY: secret } }, (text) => { output = text; });
       child.send('保留的原对话\n');
       await waitForOutput(() => output, '回答', 1);
-      // 等本轮收尾完成、提示符重新出现后再破坏会话目录，避免与轮次末尾的读取竞争。
-      await waitForOutput(() => output, '> ', 2);
+      // 首次绘制会重复输出提示符。等回复后的提示符出现，确保本轮会话已保存。
+      await waitForOutput(() => output.slice(output.indexOf('回答')), '> ', 1);
       // 用同名普通文件占住会话目录，令新建会话在写盘阶段失败。
       const sessionRoot = join(userDir, '.qhy-coding-agents', 'sessions');
       await rm(sessionRoot, { recursive: true, force: true });
       await writeFile(sessionRoot, 'occupied');
-      child.send('/clear\n');
-      expect((await child.done).code).not.toBe(0);
+      child.end('/clear\n');
+      expect((await child.done).code).toBeGreaterThan(0);
       expect(output).not.toContain('\u001b[2J');
     } finally {
       await model.close();

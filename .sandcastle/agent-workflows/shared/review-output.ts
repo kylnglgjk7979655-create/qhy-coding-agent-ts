@@ -19,8 +19,19 @@ export interface ThreadReply {
 
 export interface ReviewOutput {
   readonly summary: string;
+  readonly reviewedHead: string;
+  readonly checks: readonly ReviewCheck[];
+  readonly requiredEvidence: readonly ('screenshot' | 'recording')[];
   readonly inlineComments: InlineComment[];
   readonly replies: ThreadReply[];
+}
+
+const reviewChecks = ['standards', 'spec', 'bugs', 'verification'] as const;
+
+interface ReviewCheck {
+  readonly name: typeof reviewChecks[number];
+  readonly status: 'PASS' | 'FAIL' | 'BLOCKED' | 'SKIP';
+  readonly details: string;
 }
 
 export interface ImplementPrOutput {
@@ -62,8 +73,21 @@ const parseReply = (value: unknown): ThreadReply => {
 
 export const reviewOutputSchema = standardSchema<ReviewOutput>((value) => {
   const record = asRecord(value, "review output");
+  const checks = asRecord(record.checks, 'review checks');
   return {
     summary: asString(record.summary, "summary"),
+    reviewedHead: asString(record.reviewedHead, 'reviewed HEAD'),
+    checks: reviewChecks.map((name): ReviewCheck => {
+      const { status, details } = asRecord(checks[name], name);
+      if (status !== 'PASS' && status !== 'FAIL' && status !== 'BLOCKED' && status !== 'SKIP') {
+        throw new Error(`${name} must report PASS, FAIL, BLOCKED, or SKIP`);
+      }
+      return { name, status, details: asString(details, `${name} details`) };
+    }),
+    requiredEvidence: asArray(record.requiredEvidence, 'requiredEvidence').map((kind) => {
+      if (kind === 'screenshot' || kind === 'recording') return kind;
+      throw new Error('requiredEvidence entries must be screenshot or recording');
+    }),
     inlineComments: asArray(record.inlineComments ?? [], "inlineComments").map(
       (comment) => parseInlineComment(comment),
     ),

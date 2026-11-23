@@ -8,8 +8,8 @@
 
 - `shared/common.ts` 的 `claudeAgent()` 使用官方 `sandcastle.claudeCode()`，通过 Anthropic 兼容端点（百度千帆 Token Plan）调用 Claude Code；认证只用 `ANTHROPIC_AUTH_TOKEN`，不使用订阅登录，也不回存登录态。
 - 标签直接触发 workflow；每个 workflow 用 `concurrency` group 按 Issue 或 PR 串行，不同 Issue/PR 可以并行。同一父需求共享分支的子票通过 `AGENT_PAT` 重新贴 `agent:implement` 接续，没有持久队列或仓库级锁。
-- 阶段 prompt 调用仓库固定版本的 `/to-tickets`、`/implement`、`/pr` 和 `/code-review`；项目规范统一在仓库根目录 `CODING_STANDARDS.md`。详细职责见 [skill-execution.md](../docs/agents/skill-execution.md)。
-- 技能原文固定在 `.agents/skills/`，同时复制到 `.claude/skills/` 供 Claude Code 发现；两处内容必须一致（`pnpm test` 会校验）。根目录 `CLAUDE.md` 与 `AGENTS.md` 内容一致。
+- 阶段 prompt 使用仓库固定版本的 `/to-tickets`、`/implement`、`/pr` 和 PR Review；项目规范统一在仓库根目录 `CODING_STANDARDS.md`。详细职责见 [skill-execution.md](../docs/agents/skill-execution.md)。
+- 技能原文固定在 `.agents/skills/`，同时复制到 `.claude/skills/` 供 Claude Code 发现；两处内容必须一致（`pnpm test` 会校验）。根目录 `CLAUDE.md` 使用 `@AGENTS.md` 导入仓库规则。
 - CR 与分支更新保留 workflow 对应提交的 runner、依赖和 skill，在独立的 PR `worktree/` 中运行；旧 PR 无需包含新增命令。
 - 实现会话末尾用 `/pr` 编写文案，workflow 创建或更新 Draft PR；没有独立的 write-pr 模型会话。
 - 父需求按原生依赖逐票实施，共享分支与 PR。整体审查读取父需求及全部子票；合并 PR 后关闭父 Issue。

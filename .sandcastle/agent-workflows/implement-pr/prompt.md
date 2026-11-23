@@ -9,6 +9,8 @@ Linked issue: #{{ISSUE_NUMBER}} {{ISSUE_TITLE}}
 
 This is not a fresh review. Focus on the PR conversation and unresolved feedback.
 
+本阶段交付反馈修复和改动验证。整体 PR Review、截图与录屏的交付由独立的 `agent:review` 阶段负责。
+
 # LINKED ISSUE
 
 {{LINKED_ISSUE}}

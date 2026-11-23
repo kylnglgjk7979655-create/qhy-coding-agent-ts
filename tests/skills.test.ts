@@ -40,9 +40,12 @@ describe('仓库固定的 skill 原文', () => {
     expect((await readdir(skillsCopy)).sort()).toEqual([...skills].sort());
   });
 
-  it('CLAUDE.md 与 AGENTS.md 内容一致', async () => {
-    const agents = await readFile(fileURLToPath(new URL('../AGENTS.md', import.meta.url)));
-    const claude = await readFile(fileURLToPath(new URL('../CLAUDE.md', import.meta.url)));
-    expect(digest(claude)).toBe(digest(agents));
+  it('CLAUDE.md 直接导入 AGENTS.md', async () => {
+    const [claude, agents] = await Promise.all([
+      readFile(new URL('../CLAUDE.md', import.meta.url), 'utf8'),
+      readFile(new URL('../AGENTS.md', import.meta.url), 'utf8'),
+    ]);
+    expect(claude.trim()).toBe('@AGENTS.md');
+    expect(agents.trim()).not.toBe('');
   });
 });

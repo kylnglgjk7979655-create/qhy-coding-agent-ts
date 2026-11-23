@@ -6,6 +6,19 @@
 
 新增、修改或审查代码前，读取并遵循 [编码规范](CODING_STANDARDS.md)。
 
+## PR 提交门槛
+
+- **GitHub Actions**：当 `GITHUB_ACTIONS=true` 且当前任务由仓库 workflow 的阶段 prompt 启动时，由 workflow 的发布步骤按阶段职责创建、更新或发布 PR，无需另行请求用户授权。
+- **本地及来源无法确认的会话**：只有用户明确要求发 PR 时，Agent 才可创建或发布 PR。Draft PR 同样需要用户授权。
+
+本地创建 PR 前，自动对分支 HEAD 运行仓库 PR Review（Claude Code 用 `/review-pr`，Codex 用 `$pr-review`）。GitHub Actions 中，`agent:implement` 交付实现和 Draft PR，`agent:review` 独立运行 PR Review 并负责将草稿标为 Ready。修复问题后对新的 HEAD 重跑，所有适用项通过后才可发布本地 PR 或将云端草稿标为 Ready。确实不适用的项记为 `SKIP` 并说明原因。
+
+## 验证证据
+
+- 涉及 UI 操作时，在运行中的界面执行受影响的流程，截取关键状态并对照预期检查截图。终端界面同样适用。
+- 涉及端到端测试时，录制实际运行过程，覆盖从进入流程、执行操作到观察最终结果。
+- 在对应 PR 评论中附上截图和录屏，或贴出审查者可以打开的链接。注明验证的提交、场景与结果。缺少适用的证据时报告 `BLOCKED` 并说明原因。云端交付证据由 `agent:review` 采集，workflow 发布。
+
 ## Agent skills
 
 ### Issue tracker

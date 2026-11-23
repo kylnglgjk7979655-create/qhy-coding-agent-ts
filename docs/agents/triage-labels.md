@@ -17,7 +17,7 @@
 | `agent:to-issues` | 父 Issue：拆分后自动创建子 Issue 和原生依赖 |
 | `agent:implement` | Issue：开始或恢复实现；PR：处理已有反馈 |
 | `agent:queued` | Issue／父 Issue：保留实现授权，等待依赖或下一张子票 |
-| `agent:review` | PR：整体审查、允许修复并发布 COMMENT，完成后标记 Ready |
+| `agent:review` | PR：独立审查、允许修复并发布 COMMENT，通过后标记 Ready |
 | `agent:update-branch` | 同仓库 PR：合并基准分支并处理冲突 |
 | `agent:in-progress` | 当前任务执行中 |
 | `agent:blocked` | 运行失败、人工暂停或存在外部阻塞，等待处理 |

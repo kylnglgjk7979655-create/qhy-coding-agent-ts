@@ -33,6 +33,8 @@ Do not improvise new test seams, such as extracting out a function so that it ca
 
 Before committing, run `pnpm check` and ensure it passes. Fix failures and rerun before declaring completion.
 
+云端实现阶段交付代码、改动验证和 Draft PR 文案。整体 PR Review、截图与录屏的交付由独立的 `agent:review` 阶段负责。
+
 # COMMIT
 
 Make one or more commits on `{{BRANCH}}` with conventional commit messages.
