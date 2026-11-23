@@ -1,11 +1,13 @@
-import { createInterface, emitKeypressEvents } from 'node:readline';
+import { clearScreenDown, createInterface, cursorTo, emitKeypressEvents, moveCursor } from 'node:readline';
 import { Writable } from 'node:stream';
 import type { ApprovalControl } from '../tools/tool-approval.js';
 import type { ToolApprovalRequest } from '../tools/tool-registry.js';
 import type { BackgroundAgentTaskNotification } from '../tools/AgentTool/background-agent-tasks.js';
+import { approvalModeLabel } from '../tools/approval-mode.js';
+import type { ApprovalModeState } from '../tools/approval-mode.js';
 import { approvalOptionsFor, SessionApprovals } from './approval-policy.js';
 import type { ApprovalOption } from './approval-policy.js';
-import { InputFrame, type InputFrameStatus } from './input-frame.js';
+import { InputFrame } from './input-frame.js';
 import { fitText } from './terminal-text.js';
 
 export type CliWorkItem = { type: 'user'; text: string } | { type: 'notification'; conversationId: string; notification: BackgroundAgentTaskNotification } | { type: 'compact' };
@@ -86,14 +88,15 @@ export class CliInput {
     cancel: () => void,
     private readonly humanTimeoutMs: number,
     /** 即时处理的本地命令；返回 true 表示该行已被消费，不作为对话或审批答复。 */
-    private readonly localLineHandler?: (line: string) => boolean,
-    promptStatus?: () => InputFrameStatus,
+    localLineHandler: (line: string) => boolean,
+    private readonly approvalMode: ApprovalModeState,
+    runningTasks: () => number,
     /** Ctrl+B：把当前对话的前台 Bash 作业切到后台；没有可切换作业时返回 undefined。 */
     private readonly detachBashJob?: () => { taskId: string } | undefined,
   ) {
     this.cancelRequest = cancel;
     const stdout = process.stdout;
-    const frame = promptStatus && process.stdin.isTTY && stdout.isTTY && process.env.TERM !== 'dumb'
+    const frame = process.stdin.isTTY && stdout.isTTY && process.env.TERM !== 'dumb'
       ? new InputFrame(stdout)
       : undefined;
     this.frame = frame;
@@ -109,8 +112,11 @@ export class CliInput {
       input: process.stdin, output, terminal: process.stdin.isTTY, signal,
       escapeCodeTimeout: ESCAPE_SEQUENCE_TIMEOUT_MS,
     });
-    if (frame && promptStatus) {
-      this.drawPrompt = (clearScreen = false) => frame.render(this.input.line, this.input.cursor, promptStatus(), clearScreen);
+    if (frame) {
+      this.drawPrompt = (clearScreen = false) => frame.render(this.input.line, this.input.cursor, {
+        approvalMode: this.approvalMode.current(),
+        runningTasks: runningTasks(),
+      }, clearScreen);
       let repaintPending = false;
       let clearScreen = false;
       const repaint = (_character?: string, key?: { name?: string; ctrl?: boolean }): void => {
@@ -130,7 +136,7 @@ export class CliInput {
         process.stdin.off('keypress', repaint);
         stdout.off('resize', repaint);
       });
-    }
+    } else if (process.stdin.isTTY) this.setFallbackPrompt();
     this.input.on('SIGINT', cancel);
     // 直接从原始输入识别独立 Esc：readline 会按 escapeCodeTimeout 缓存按键才发出 keypress，
     // 若按键时所在轮次在这段时间内结束，迟到的 keypress 会错误取消已排队的下一轮，
@@ -142,7 +148,7 @@ export class CliInput {
     }
     this.input.on('line', (line) => {
       if (this.frame?.isVisible) this.frame.submit(line);
-      if (!this.confirmation && !this.selector && this.localLineHandler?.(line.trim())) {
+      if (!this.confirmation && !this.selector && localLineHandler(line.trim())) {
         // 审批等待或轮次执行中也可切换模式；只有空闲时才重新显示输入提示。
         if (!this.busy && this.approvals.size === 0 && !this.closed && process.stdin.isTTY) this.prompt();
         return;
@@ -174,7 +180,7 @@ export class CliInput {
         this.queued.push(line);
       }
     });
-    // Ctrl+B 只在真实终端生效；管道输入不会产生按键事件，也不改变原有逐行协议。
+    // 终端快捷键只通过 keypress 处理，管道输入仍沿用逐行协议。
     if (process.stdin.isTTY) {
       emitKeypressEvents(process.stdin);
       process.stdin.on('keypress', this.handleKeypress);
@@ -196,6 +202,10 @@ export class CliInput {
       this.wakeNext?.();
       this.wakeNext = undefined;
     });
+  }
+
+  private setFallbackPrompt(): void {
+    this.input.setPrompt(`[${approvalModeLabel(this.approvalMode.current())}] > `);
   }
 
   async select<T>(title: string, choices: Array<{ label: string; detail: string; value: T }>): Promise<T | undefined> {
@@ -370,6 +380,7 @@ export class CliInput {
     if (this.promptTimer) clearTimeout(this.promptTimer);
     this.promptTimer = undefined;
     if (!this.drawPrompt) {
+      this.setFallbackPrompt();
       this.input.prompt();
       return;
     }
@@ -409,13 +420,36 @@ export class CliInput {
   }
   close(): void { this.input.close(); }
 
-  // 审批菜单、选择器和信任确认占用键盘时，Ctrl+B 不触发作业切换。
-  private readonly handleKeypress = (_character: string, key: { name?: string; ctrl?: boolean }): void => {
-    if (!key.ctrl || key.name !== 'b') return;
+  // 审批菜单、选择器和信任确认占用键盘时，不处理模式或作业切换。
+  private readonly handleKeypress = (_character: string, key: { name?: string; ctrl?: boolean; shift?: boolean }): void => {
     if (this.closed || this.confirmation !== undefined || this.selector !== undefined || this.approvalMenu !== undefined) return;
-    const detached = this.detachBashJob?.();
-    if (detached) process.stdout.write(`\n已切换到后台：任务 ${detached.taskId}\n`);
+    if (key.name === 'tab' && key.shift) {
+      this.cycleApprovalMode();
+    } else if (key.name === 'b' && key.ctrl) {
+      const detached = this.detachBashJob?.();
+      if (detached) this.writeNotice(`\n已切换到后台：任务 ${detached.taskId}\n`);
+    }
   };
+
+  private cycleApprovalMode(): void {
+    const mode = this.approvalMode.cycle();
+    const notice = `\n当前审批模式：${approvalModeLabel(mode)}。\n`;
+    if (this.frame || this.busy || this.approvals.size > 0) {
+      this.writeNotice(notice);
+      return;
+    }
+    // 简易提示符由 readline 绘制，清除旧行后保留草稿与光标重画。
+    const input = this.input as typeof this.input & { prevRows?: number; _refreshLine?: () => void };
+    if (input.prevRows) moveCursor(process.stdout, 0, -input.prevRows);
+    cursorTo(process.stdout, 0);
+    clearScreenDown(process.stdout);
+    input.prevRows = 0;
+    process.stdout.write(notice);
+    this.setFallbackPrompt();
+    // TERM=dumb 时 prompt() 只输出提示符，不显示 readline 缓存中的草稿。
+    if (input._refreshLine) input._refreshLine();
+    else process.stdout.write(`${input.getPrompt()}${input.line}`);
+  }
 
   /** 观察原始终端输入，只用于判定独立 Esc；不消费数据，readline 仍照常处理行编辑与方向键。 */
   private readonly onRawInput = (chunk: Buffer | string): void => {

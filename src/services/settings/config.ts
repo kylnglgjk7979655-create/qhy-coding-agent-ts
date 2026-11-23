@@ -92,8 +92,8 @@ const sandboxConfigSchema = z.strictObject({
 export type SandboxConfig = z.infer<typeof sandboxConfigSchema>;
 export const DEFAULT_SANDBOX = sandboxConfigSchema.parse({});
 
-/** 审批模式：default 为人工审批，auto 为独立模型审批。 */
-export const APPROVAL_MODES = ['default', 'auto'] as const;
+/** 审批模式：default 为人工审批，auto 为独立模型审批，plan 为只读调查。 */
+export const APPROVAL_MODES = ['default', 'auto', 'plan'] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
 
 /** 沙箱数组字段在三层 settings 中始终取并集，项目层不能借覆盖移除上层保护。 */

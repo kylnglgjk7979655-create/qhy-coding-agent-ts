@@ -7,6 +7,7 @@ import { AgentError } from '../utils/errors.js';
 import type { ToolApprovalRequest } from './tool-registry.js';
 import { assertInputBudget } from '../services/compact/context-summary.js';
 import { evaluatePermission, toPermissionRuleSet } from './tool-permission-policy.js';
+import { isPlanModeToolAllowed, usesHumanApproval } from './approval-mode.js';
 import { AgentObservations } from '../services/observability/agent-observations.js';
 import type { TracingScope } from '../services/observability/langfuse.js';
 
@@ -39,6 +40,8 @@ export async function approveToolCall(
   tracing?: TracingScope,
 ): Promise<boolean> {
   signal.throwIfAborted();
+  // plan 的能力范围先于规则、Hook 与会话批准：即使配置允许，也不让范围外工具进入执行。
+  if (config.approval.mode === 'plan' && !isPlanModeToolAllowed(call.toolName)) return false;
   const decision = evaluatePermission({
     rules: toPermissionRuleSet(config.permissions),
     workspace: config.workspace,
@@ -61,7 +64,7 @@ export async function approveToolCall(
   if (decision.outcome === 'deny') return false;
   if (!hookAsk && hookAllowSkipsDefaultApproval) return true;
 
-  if (config.approval.mode === 'default') {
+  if (usesHumanApproval(config.approval.mode)) {
     if (!control) return false;
     humanWait?.pause();
     const timeout = new AbortController();

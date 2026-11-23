@@ -93,12 +93,12 @@ matcher 不是 glob，按以下顺序解析：
 | `session_id` | string | 对话标识；子 Agent 工具事件使用父对话标识 |
 | `transcript_path` | string | 会话记录路径；子 Agent 指向父对话记录 |
 | `cwd` | string | 工作区绝对路径，同时是 Hook 进程的工作目录 |
-| `approval_mode` | `'model' \| 'human'` | 由 `approval.mode` 映射：`auto` → `model`，`default` → `human` |
+| `approval_mode` | `'model' \| 'human'` | 由 `approval.mode` 映射：`auto` → `model`，`default` → `human`；`plan` 期间不执行 Hook，不会出现 plan 映射 |
 | `hook_event_name` | 事件名 | 当前事件字面量 |
 | `agent_id` | string，可选 | 仅子 Agent 工具事件 |
 | `agent_type` | string，可选 | 仅子 Agent 工具事件 |
 
-`approval_mode` 不沿用 Claude Code 的 `permission_mode`。本仓库的审批模式只有 `default`（人工）与 `auto`（模型），三态或多态权限模式无法无歧义映射，因此使用两值字段。`hook_event_name` 是相对早期 QA 清单的补充；它使同一个命令可以安全地挂在多个事件下，不必靠事件专有字段推断。
+`approval_mode` 不沿用 Claude Code 的 `permission_mode`。审批模式为 `default`（人工）、`auto`（模型）与 `plan`（只读）；`plan` 期间所有命令型 Hook 暂停，不产生 Hook 进程，因此 stdin 契约仍保持 `model` / `human` 两值，避免 Hook 依赖不会出现的第三态。`hook_event_name` 是相对早期 QA 清单的补充；它使同一个命令可以安全地挂在多个事件下，不必靠事件专有字段推断。
 
 事件专有字段：
 
@@ -279,7 +279,7 @@ Hook 是用户配置的任意 shell 命令，等价于以当前用户权限执�
 | 事件集 | 还覆盖 `SessionEnd`、`Notification`、`PreCompact`、`SubagentStart`、`SubagentStop`、`StopFailure`、`PermissionRequest` 等 | 只开放六个事件；`SessionStart` 只支持 `startup` / `resume`；smoke 不触发；后台通知轮次只触发 `Stop` |
 | 配置载体 | `.claude/settings.json`、`.claude/settings.local.json` 及用户级同类 | 用户级 `~/.agent/settings.json`、项目级 `<workspace>/.agent/settings.json`、项目本地 `.agent/settings.local.json`；旧 `agent.config.json` 只提示迁移，不加载 |
 | 三层合并与去重 | 常用宽去重并保留最后一条 | 按事件拼接用户级 → 项目级 → 项目本地；按事件 + matcher + command + timeoutMs 完全相同的 Hook 去重，保留第一条并输出 warning；同一层内重复项也去除 |
-| `approval_mode` | 使用 `permission_mode` 表示多态权限模式 | 只传 `approval_mode: 'model' \| 'human'`，由 `approval.mode` 的 `auto` / `default` 映射；不提供 `permission_mode` |
+| `approval_mode` | 使用 `permission_mode` 表示多态权限模式 | 只传 `approval_mode: 'model' \| 'human'`，由 `approval.mode` 的 `auto` / `default` 映射；`plan` 期间不运行 Hook；不提供 `permission_mode` |
 | 子 Agent 的 `session_id` 与记录路径 | 子 Agent 可有独立会话或独立 transcript | 工具事件沿用父 `session_id` 和父 JSON 会话记录路径，附加 `agent_id` / `agent_type`；不持久化子 Agent 独立会话；子 Agent 不触发会话级事件 |
 | `hook_event_name` | 每个事件的 stdin 都带事件名字面量 | 对齐：每个 stdin 都带 `hook_event_name`；这是相对早期 QA 清单的补充，使同一命令可安全挂在多个事件下 |
 | matcher | 常见 glob 或正则语义 | 非 glob：精确名、`A\|B` 名称列表、JS 正则、空串/`*`；`UserPromptSubmit` 与 `Stop` 没有查询字段，matcher 不生效 |

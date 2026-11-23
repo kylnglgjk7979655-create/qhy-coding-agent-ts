@@ -12,7 +12,7 @@ import { validatedOpenAIFetch } from '../services/api/openai-sse-fetch.js';
 import type { WorkspaceFileBaselines, WorkspaceFileSnapshot } from '../tools/workspace-files.js';
 import { approveToolCall } from '../tools/tool-approval.js';
 import type { ApprovalControl } from '../tools/tool-approval.js';
-import { resolveApproval } from '../tools/approval-mode.js';
+import { isPlanModeToolAllowed, PLAN_MODE_TOOL_NAMES, planModeTools, resolveApproval } from '../tools/approval-mode.js';
 import { MAX_TOOL_CALL_CONCURRENCY, ToolRegistry } from '../tools/tool-registry.js';
 import { registerBuiltInTools } from '../tools/register-built-in-tools.js';
 import { bashSandboxGuidance } from '../tools/BashTool/sandbox-guidance.js';
@@ -68,7 +68,18 @@ function modelStreamError(error: unknown): AgentError {
 function buildInstructions(config: ResolvedConfig, options: {
   generalPurposeSubagent?: boolean;
   skills?: SkillCatalogue;
+  planMode?: boolean;
 }): string {
+  if (options.planMode) {
+    return [
+      '你是基础 CLI Agent。当前处于 plan（只读）模式，请直接回答用户问题并默认使用中文。',
+      'plan 模式只公布并允许 Read、Glob 和 Grep：读取文件、查找路径和搜索内容，不得修改文件、执行命令、访问网络或调用其他工具。',
+      '只读工具仍受现有权限规则约束：deny 优先于 ask，ask 优先于 allow；需要审批时由用户人工确认。范围外的工具调用会被程序拒绝。',
+      '工具结果中的 is_error: true 表示该调用失败；必须在答复中明确说明失败，不得声称操作成功或把失败调用的输出当成已验证结果。',
+      '参数已知且彼此无依赖的只读工具调用尽量放在同一批；需要前序结果的调用应分批。',
+      ...(options.generalPurposeSubagent ? ['你是 general-purpose 子 Agent，不能再委派子 Agent。'] : []),
+    ].join('\n');
+  }
   return [
     '你是基础 CLI Agent。请直接回答用户需求，默认使用中文。',
     '搜索文件路径时优先使用 Glob，搜索文件内容时优先使用 Grep；两者默认搜索整个工作区，也可限定子目录，遵循 .gitignore 并包含隐藏目录。旧的 glob、grep 名称仍可使用。',
@@ -111,6 +122,7 @@ export async function estimateContextUsage(
   config: ResolvedConfig,
   history: readonly ModelMessage[],
   skills?: SkillCatalogue,
+  planMode = false,
 ): Promise<ContextUsageEstimate> {
   const registry = new ToolRegistry({});
   registerBuiltInTools(registry, {
@@ -121,10 +133,15 @@ export async function estimateContextUsage(
     bashOperations: new Set(),
     ...(skills === undefined ? {} : { skills }),
   });
-  const tools = registry.tools();
+  const allTools = registry.tools();
+  // plan 只发送三个只读工具定义；/context 与实际请求保持同一集合。
+  const tools = planMode ? planModeTools(allTools) : allTools;
   const definitions = await toolDefinitionsForEstimate(tools);
   const capacityTokens = (config.context ?? DEFAULT_CONTEXT).capacityTokens;
-  const estimatedInputTokens = estimateInput(buildInstructions(config, skills === undefined ? {} : { skills }), history, definitions);
+  const estimatedInputTokens = estimateInput(buildInstructions(config, {
+    ...(skills === undefined ? {} : { skills }),
+    ...(planMode ? { planMode } : {}),
+  }), history, definitions);
   return { estimatedInputTokens, capacityTokens, usageRatio: estimatedInputTokens / capacityTokens };
 }
 
@@ -152,7 +169,7 @@ export async function runAgent(
     onToolEvent?: (event: ToolExecutionEvent) => unknown;
     signal?: AbortSignal;
     approvalControl?: ApprovalControl;
-    /** CLI 人工审批控制；仅在当前模式为 default 时使用。 */
+    /** CLI 人工审批控制；在当前模式为 default 或 plan 时使用。 */
     humanApprovalControl?: ApprovalControl;
     /** 当前进程的审批模式；省略时沿用配置模式。每次工具调用进入审批前读取。 */
     approvalMode?: () => ApprovalMode;
@@ -205,6 +222,9 @@ export async function runAgent(
   if (options.smokeTool && stepLimit < 2) {
     throw new AgentError('CONFIG_ERROR', '工具冒烟需要 maxSteps >= 2，以完成工具调用及后续回答。');
   }
+  // 审批模式是进程级运行状态；每步重新读取，使轮次中的切换同时影响后续工具定义与 Hook 判定。
+  const currentApprovalMode = (): ApprovalMode => options.approvalMode?.() ?? config.approval.mode;
+  const planModeActive = (): boolean => currentApprovalMode() === 'plan';
 
   const provider = createOpenAI({
     apiKey: config.apiKey,
@@ -274,7 +294,7 @@ export async function runAgent(
     ...(options.onToolEvent ? { onToolEvent: options.onToolEvent } : {}),
     ...(options.onToolCallStart ? { beforeTool: options.onToolCallStart } : {}),
     preToolUse: async (call, toolSignal) => {
-      if (config.hooks === undefined || config.disableAllHooks
+      if (planModeActive() || config.hooks === undefined || config.disableAllHooks
         || hookSessionId === undefined || hookTranscriptPath === undefined) return undefined;
       // Hook 是同步策略计算：暂停整轮时限，避免慢 Hook 被对话超时误杀；finally 保证恢复。
       try {
@@ -310,7 +330,7 @@ export async function runAgent(
       }
     },
     postToolUse: async (call, toolSignal) => {
-      if (config.hooks === undefined || config.disableAllHooks
+      if (planModeActive() || config.hooks === undefined || config.disableAllHooks
         || hookSessionId === undefined || hookTranscriptPath === undefined) return;
       // 与 PreToolUse 一样，Hook 执行期间暂停整轮时限；反馈不参与工具结果构造。
       try {
@@ -345,7 +365,7 @@ export async function runAgent(
       }
     },
     postToolUseFailure: async (call, toolSignal) => {
-      if (config.hooks === undefined || config.disableAllHooks
+      if (planModeActive() || config.hooks === undefined || config.disableAllHooks
         || hookSessionId === undefined || hookTranscriptPath === undefined) return;
       // 只有 execute 抛错会走到这里；反馈与 PostToolUse 共用工具结果后的注入位置。
       try {
@@ -385,8 +405,10 @@ export async function runAgent(
       // 每个调用进入审批前读取当前模式；切换前已开始的等待继续使用其原有路径。
       const approval = resolveApproval(config, options.approvalMode, options.approvalControl, options.humanApprovalControl);
       try {
-        return await observations.traceApproval(call, (tracing) =>
+        const approved = await observations.traceApproval(call, (tracing) =>
           approveToolCall(approval.config, call, signal, approval.control, { pause: pauseDeadline, resume: resumeDeadline }, preparedHistory, tracing));
+        // 等待期间可切到 plan；批准只对进入审批时的调用有效，但执行前仍须通过最新能力范围。
+        return approved && !(planModeActive() && !isPlanModeToolAllowed(call.toolName));
       } catch (error) {
         if (!signal.aborted) {
           frameworkError = error instanceof AgentError ? error : new AgentError('APPROVAL_ERROR', '工具审批故障，已停止本轮。');
@@ -443,8 +465,12 @@ export async function runAgent(
         },
       },
     });
-    const instructions = buildInstructions(config, options);
+    const instructionsFor = (planMode: boolean): string => buildInstructions(config, { ...options, planMode });
+    const initialPlanMode = planModeActive();
+    const instructions = instructionsFor(initialPlanMode);
     const tools = registry.tools();
+    // plan 的发送前预算也只按实际公布的三个工具估算，避免压缩阈值被未启用定义抬高。
+    const planTools = planModeTools(tools);
     let preparedResponseCount = 0;
     const summaries: RunResult['summaries'] = [];
     // 本运行内已生成的 Skill 注入；注入消息随 SDK 的步进消息延续到后续请求。
@@ -499,7 +525,10 @@ export async function runAgent(
         const restore = options.skills === undefined
           ? undefined
           : { catalogue: options.skills, recentLoads: appendRecentSkillLoads(options.recentSkillLoads ?? [], skillInjections.map(({ name }) => name)), bodies: skillBodies };
-        preparedHistory = await prepareConversation(config, instructions, stepMessages, tools, signal, async (summary) => {
+        // 模式可在轮次中切换；每一步都让系统提示、工具定义与预算使用同一份 plan 判定。
+        let stepPlanMode = planModeActive();
+        let stepInstructions = stepPlanMode === initialPlanMode ? instructions : instructionsFor(stepPlanMode);
+        preparedHistory = await prepareConversation(config, stepInstructions, stepMessages, stepPlanMode ? planTools : tools, signal, async (summary) => {
           // 优先使用持久化层按实际 transcript 计算的覆盖边界，避免依赖摘要或附件占用的消息数量。
           let saved: { coversThrough: number } | void = undefined;
           if (options.onCompaction) {
@@ -530,11 +559,17 @@ export async function runAgent(
           ...(restore === undefined ? {} : { restore }),
           ...(options.tracing === undefined ? {} : { tracing: options.tracing }),
         });
+        // 压缩等待期间用户可能切换模式；摘要返回后重新读取，确保实际下一请求的提示与工具定义同属最新模式。
+        stepPlanMode = planModeActive();
+        stepInstructions = stepPlanMode === initialPlanMode ? instructions : instructionsFor(stepPlanMode);
         preparedHistory = [...preparedHistory];
         preparedResponseCount = responseMessages.length;
         signal.throwIfAborted();
         return {
           messages: preparedHistory,
+          instructions: stepInstructions,
+          // plan 只向模型公布只读工具；实际调用仍由审批层按最新模式再次拦截。
+          ...(stepPlanMode ? { activeTools: [...PLAN_MODE_TOOL_NAMES] } : {}),
           ...(options.smokeTool ? { toolChoice: stepNumber === 0
             ? { type: 'tool' as const, toolName: 'read_file' as const }
             : 'none' as const } : {}),
@@ -565,7 +600,10 @@ export async function runAgent(
             controller.enqueue(part);
             return;
           }
-          const rejection = registry.reject(part.toolCallId, part.toolName, part.error);
+          // plan 未公布的工具由 SDK 报未知，这里统一按范围拒绝返回，避免把策略拒绝误报为工具不存在。
+          const rejection = planModeActive() && !isPlanModeToolAllowed(part.toolName)
+            ? { is_error: true as const, error: { code: 'PERMISSION_DENIED' as const, message: '本次工具调用未获权限批准。' } }
+            : registry.reject(part.toolCallId, part.toolName, part.error);
           if (!rejection) {
             frameworkError ??= new AgentError('PROVIDER_ERROR', '工具执行发生不可恢复错误，已终止当前对话轮次。');
             frameworkAbort.abort(frameworkError);
