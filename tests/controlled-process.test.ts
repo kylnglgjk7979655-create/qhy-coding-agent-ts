@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { runControlledProcess } from '../src/services/process/controlled-process.js';
+import { runControlledProcess, startControlledProcess } from '../src/services/process/controlled-process.js';
 import type { ControlledProcessResult } from '../src/services/process/controlled-process.js';
 
 let cwd = '';
@@ -93,6 +93,29 @@ it('合并上限跨 stdout 与 stderr 共同生效', async () => {
   const saved = Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr);
   expect(saved).toBe(10);
   expect(result.stdoutTruncated || result.stderrTruncated).toBe(true);
+});
+
+it('最近输出窗口保留末尾字节，跳过截断的多字节字符并按游标增量读取', async () => {
+  const handle = startControlledProcess(process.execPath, ['-e', "process.stdout.write('界'.repeat(40))"], {
+    cwd, stdoutLimitBytes: 1024, recentOutputLimitBytes: 20,
+  });
+  const result = await handle.completion;
+  expect(result.stdout).toBe('界'.repeat(40));
+
+  // 20 字节窗口从第 41 个字符前截断：开头两个续字节被跳过，只返回完整的 6 个字符。
+  const first = handle.readRecent({ stdout: 0, stderr: 0 });
+  expect(first).toMatchObject({ stdout: '界'.repeat(6), stderr: '', dropped: true, cursor: { stdout: 120, stderr: 0 } });
+  expect(first.stdout).not.toContain('�');
+  // 已读到末尾时再次读取没有新增内容。
+  expect(handle.readRecent(first.cursor)).toMatchObject({ stdout: '', stderr: '', dropped: false, cursor: first.cursor });
+});
+
+it('未启用最近输出窗口时读取返回空文本且不推进游标', async () => {
+  const handle = startControlledProcess(process.execPath, ['-e', "process.stdout.write('plain')"], { cwd });
+  await handle.completion;
+  expect(handle.readRecent({ stdout: 0, stderr: 0 })).toEqual({
+    stdout: '', stderr: '', cursor: { stdout: 0, stderr: 0 }, dropped: false,
+  });
 });
 
 it('通过可选 stdin 向子进程写入数据', async () => {
