@@ -8,6 +8,8 @@ import type { FixtureRequest } from './helpers/local-openai-fixture.js';
 import { readStoredSession } from './helpers/session-store.js';
 
 const secret = 'escape-interrupt-test-key';
+// 覆盖真实 PTY 中明显低于和接近 readline 历史判定窗口的拆包间隔。
+const splitEscapeGaps = [40, 100, 225, 250, 400];
 const roots: string[] = [];
 const fixtures: Awaited<ReturnType<typeof startLocalOpenAIModel>>[] = [];
 
@@ -62,7 +64,10 @@ async function setup(
     ...extra,
   }));
   let output = '';
-  const cli = startCLI({ cwd, userDir, conversationId: 'escape', pty: true, env: { TEST_MODEL_API_KEY: secret } }, (value) => { output = value; });
+  const cli = startCLI({
+    cwd, userDir, conversationId: 'escape', pty: true,
+    env: { TERM: 'xterm-256color', TEST_MODEL_API_KEY: secret },
+  }, (value) => { output = value; });
   return { cwd, userDir, model, cli, output: () => output };
 }
 
@@ -243,48 +248,44 @@ describe.skipIf(process.platform === 'win32')('交互终端 Esc 中断', () => {
     expect(model.requests).toHaveLength(1);
   });
 
-  it('轮次执行中拆包方向键不会触发取消（历史窗口内的 40/100/225/250/400ms 间隔）', async () => {
-    // 真实 PTY 会把方向键拆成 ESC 与 [D 两次写入；历史 readline 窗口（约 500ms）内
-    // 的间隔不能决定它是不是独立 Esc，否则会收窄原始实现可用的兼容区间。
-    for (const gap of [40, 100, 225, 250, 400]) {
-      const marker = `长流完成_${gap}ms_MARKER`;
-      const { model, cli, output } = await setup(() => ({ frames: [
-        { delta: { content: '长流开始' } },
-        { delta: { content: marker }, finish_reason: 'stop', delayMs: 1200 },
-      ] }));
-      await waitForPrompt(output);
-      cli.send('长流请求\n');
-      await waitFor(() => output().includes('长流开始'), () => `间隔=${gap}ms，输出=${output()}`);
-      await sleep(60);
-      cli.send('\x1b');
-      await sleep(gap);
-      cli.send('[D');
-      await waitFor(() => output().includes(marker), () => `间隔=${gap}ms，输出=${output()}`, 8000);
-      expect(output(), `间隔=${gap}ms 不应取消轮次`).not.toContain('用户中断');
-      cli.end('/exit\n');
-      const result = await cli.done;
-      expect(result.code, `间隔=${gap}ms：${result.stdout}${result.stderr}`).toBe(0);
-      expect(model.requests, `间隔=${gap}ms`).toHaveLength(1);
-    }
+  it.each(splitEscapeGaps)('轮次执行中拆包方向键不会触发取消（间隔 %dms）', async (gap) => {
+    const marker = `长流完成_${gap}ms_MARKER`;
+    const { model, cli, output } = await setup(() => ({ frames: [
+      { delta: { content: '长流开始' } },
+      { delta: { content: marker }, finish_reason: 'stop', delayMs: 1200 },
+    ] }));
+    await waitForPrompt(output);
+    cli.send('长流请求\n');
+    await waitFor(() => output().includes('长流开始'), () => `输出=${output()}`);
+    await sleep(60);
+    cli.send('\x1b');
+    await sleep(gap);
+    cli.send('[D');
+    await waitFor(() => output().includes(marker), () => `输出=${output()}`);
+    expect(output()).not.toContain('用户中断');
+    await waitForPrompt(output);
+    cli.end('/exit\n');
+    const result = await cli.done;
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(model.requests).toHaveLength(1);
   });
 
-  it('空闲草稿中拆包方向键仍按光标移动处理（历史窗口内的 40/100/225/250/400ms 间隔）', async () => {
-    for (const gap of [40, 100, 225, 250, 400]) {
-      const { model, cli, output } = await setup((request) => ({ content: `收到:${lastUserText(request)}` }));
-      await waitForPrompt(output);
-      cli.send('AB');
-      await sleep(120);
-      cli.send('\x1b');
-      await sleep(gap);
-      cli.send('[D');
-      await sleep(150);
-      cli.send('Z\r');
-      await waitFor(() => output().includes('收到:AZB'), () => `间隔=${gap}ms，输出=${output()}`);
-      cli.end('/exit\n');
-      const result = await cli.done;
-      expect(result.code, `间隔=${gap}ms：${result.stdout}${result.stderr}`).toBe(0);
-      expect(model.requests.map(lastUserText), `间隔=${gap}ms`).toEqual(['AZB']);
-    }
+  it.each(splitEscapeGaps)('空闲草稿中拆包方向键仍按光标移动处理（间隔 %dms）', async (gap) => {
+    const { model, cli, output } = await setup((request) => ({ content: `收到:${lastUserText(request)}` }));
+    await waitForPrompt(output);
+    cli.send('AB');
+    await sleep(120);
+    cli.send('\x1b');
+    await sleep(gap);
+    cli.send('[D');
+    await sleep(150);
+    cli.send('Z\r');
+    await waitFor(() => output().includes('收到:AZB'), () => `输出=${output()}`);
+    await waitForPrompt(output);
+    cli.end('/exit\n');
+    const result = await cli.done;
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(model.requests.map(lastUserText)).toEqual(['AZB']);
   });
 
   it('Esc 判定期内尚未启动的工具等待判定，确认独立 Esc 后不执行', async () => {
@@ -292,7 +293,7 @@ describe.skipIf(process.platform === 'win32')('交互终端 Esc 中断', () => {
       ? { frames: [
         { delta: { content: '准备调用工具' } },
         // 工具计划在按键判定窗口内启动：若不先等判定，就会在取消生效前执行。
-        { delta: { tool_calls: [{ index: 0, id: 'gate-tool', type: 'function', function: { name: 'Bash', arguments: JSON.stringify({ command: 'touch gate-tool.txt' }) } }] }, delayMs: 120 },
+        { delta: { tool_calls: [{ index: 0, id: 'gate-tool', type: 'function', function: { name: 'Bash', arguments: JSON.stringify({ command: 'touch gate-tool.txt' }) } }] }, delayMs: 250 },
         { delta: {}, finish_reason: 'tool_calls' },
       ] }
       : { content: '取消后继续完成' }, { permissions: { allow: ['Bash(touch:*)'] } });
