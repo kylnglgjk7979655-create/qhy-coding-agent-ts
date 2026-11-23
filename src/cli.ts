@@ -8,6 +8,8 @@ import type { ModelMessage } from 'ai';
 import { estimateContextUsage, runAgent } from './query/agent.js';
 import type { ContextUsageEstimate } from './query/agent.js';
 import { abortAllBackgroundAgentTasks, backgroundAgentTasksForSession, type BackgroundTaskStatusEntry } from './tools/AgentTool/background-agent-tasks.js';
+import { abortAllBashJobs, bashJobsForSession, subscribeBashJobNotifications } from './tools/BashTool/bash-jobs.js';
+import type { BashJobSnapshot } from './tools/BashTool/bash-jobs.js';
 import { DEFAULT_CONTEXT, DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS, isMissing, loadConfig, loggableConfig, persistableSessionConfig, restoreSessionConfig } from './services/settings/config.js';
 import type { ApprovalMode } from './services/settings/config.js';
 import { approvalModeLabel, createApprovalModeState, parseApprovalModeCommand } from './tools/approval-mode.js';
@@ -51,6 +53,8 @@ const help = `用法：node dist/cli.js [选项]
   /compact             压缩当前有效历史并保存；空闲时立即生效，执行中在当前工具完成后生效
   /context             显示当前有效历史的估算输入用量、配置容量与使用比例
   /permission-mode [模式]  查看或切换当前进程的审批模式（default / auto）
+  /tasks [stop <任务 ID>]  查看当前会话的 Bash 作业，或停止运行中的作业
+  /task <任务 ID>      接回 Bash 作业并继续显示输出
 
 选项：
   --workspace <目录>  覆盖配置的工作区（相对当前目录）
@@ -135,6 +139,7 @@ async function main(): Promise<void> {
   const cancellation = new AbortController();
   let activeRound: AbortController | undefined;
   let input: CliInput | undefined;
+  let unsubscribeBashNotifications: (() => void) | undefined;
   const cancel = (): void => {
     if (activeRound) activeRound.abort(new AgentError('CANCELLED', 'Interrupt by user'));
     else if (input) input.close();
@@ -277,13 +282,27 @@ async function main(): Promise<void> {
     const pendingTaskStatuses = (): readonly BackgroundTaskStatusEntry[] => sessionBackgroundTasks().pendingStatuses();
     // 信任门禁的交互确认需要输入消费者，因此在 Hook 信任判断之前建立。
     if (!smokeTool) {
-      input = new CliInput(
+      const cliInput = new CliInput(
         cancellation.signal,
         cancel,
         config.approval.humanTimeoutMs ?? DEFAULT_HUMAN_APPROVAL_TIMEOUT_MS,
         executeApprovalModeCommand,
         () => ({ approvalMode: currentApprovalMode(), runningTasks: sessionBackgroundTasks().runningCount }),
+        // 只切换当前对话的前台 Bash 作业；其它对话的后台作业保持运行。
+        () => bashJobsForSession(conversationId).detachForeground(),
       );
+      input = cliInput;
+      // 后台作业可能在用户切换到其它会话后结束；通知不依赖当前会话，始终显示任务 ID 与退出状态。
+      unsubscribeBashNotifications = subscribeBashJobNotifications((notification) => {
+        const detail = notification.status === 'succeeded'
+          ? `退出码 ${notification.exitCode ?? 0}`
+          : notification.status === 'timed_out'
+            ? '前台时限已用尽'
+            : notification.status === 'cancelled'
+              ? '已停止'
+              : `退出码 ${notification.exitCode ?? '无'}${notification.signal === null ? '' : `，信号 ${notification.signal}`}`;
+        cliInput.writeNotice(`\n[Bash 作业 ${notification.taskId}] 已结束：${notification.status}（${detail}）。\n`);
+      });
       config = await applyHookTrust(config);
     }
     if (session && !releaseSession) releaseSession = await acquireSessionLock(userHome, conversationId);
@@ -519,6 +538,72 @@ async function main(): Promise<void> {
         process.stdout.write(formatContextUsage(usage, config));
       },
     });
+    // Bash 作业归属于当前对话；列表与接回都只读取当前对话的作业池。
+    const listBashJobs = (): void => {
+      const jobs = bashJobsForSession(conversationId).list();
+      if (jobs.length === 0) {
+        process.stdout.write('当前会话没有 Bash 作业。\n');
+        return;
+      }
+      process.stdout.write('当前会话的 Bash 作业：\n');
+      for (const job of jobs) {
+        const command = job.command.replace(/[\r\n]+/gu, ' ').trim().slice(0, 100);
+        process.stdout.write(`- ${job.taskId} [${job.status}] 退出码：${job.exitCode ?? '-'}${job.signal === null ? '' : `，信号：${job.signal}`} 命令：${command}\n`);
+      }
+      process.stdout.write('使用 /task <任务 ID> 接回前台；使用 /tasks stop <任务 ID> 停止运行中的作业。\n');
+    };
+    /** 接回已结束作业时的终态说明；启动前读取与 attach 结束都使用同一排版。 */
+    const formatBashJobEnd = (snapshot: BashJobSnapshot): string =>
+      `已结束：${snapshot.status}，退出码 ${snapshot.exitCode ?? '无'}${snapshot.signal === null ? '' : `，信号 ${snapshot.signal}`}${snapshot.truncated ? '，输出已截断' : ''}。`;
+    /** 接回前台时先显示保留输出，再由作业层继续追加；结束、停止和再次切后台都会返回输入。 */
+    const attachBashJob = async (taskId: string): Promise<void> => {
+      const jobs = bashJobsForSession(conversationId);
+      const snapshot = jobs.get(taskId);
+      if (!snapshot) {
+        process.stdout.write(`未找到 Bash 作业：${taskId}\n`);
+        return;
+      }
+      if (snapshot.status !== 'running') {
+        process.stdout.write(`\n[Bash 作业 ${taskId}] ${formatBashJobEnd(snapshot)}\n`);
+        if (snapshot.notice !== undefined) process.stdout.write(`${snapshot.notice}\n`);
+        if (snapshot.stdout !== '') process.stdout.write(snapshot.stdout.endsWith('\n') ? snapshot.stdout : `${snapshot.stdout}\n`);
+        if (snapshot.stderr !== '') process.stdout.write(snapshot.stderr.endsWith('\n') ? snapshot.stderr : `${snapshot.stderr}\n`);
+        return;
+      }
+      process.stdout.write(`\n[Bash 作业 ${taskId}] 接回前台，显示最近输出：\n`);
+      // 运行中的快照同样携带计划里的沙箱状态与说明；首次接回就应看到豁免或未隔离原因。
+      let noticeShown = false;
+      if (snapshot.notice !== undefined) {
+        noticeShown = true;
+        process.stdout.write(`${snapshot.notice}\n`);
+      }
+      const controller = new AbortController();
+      activeRound = controller;
+      input!.setBusy(true);
+      try {
+        const outcome = await jobs.attach(taskId, {
+          signal: AbortSignal.any([cancellation.signal, controller.signal]),
+          write: (text) => process.stdout.write(text),
+        });
+        if (outcome.kind === 'not_found') process.stdout.write(`\n未找到 Bash 作业：${taskId}\n`);
+        else if (outcome.kind === 'ended') {
+          const final = outcome.snapshot;
+          process.stdout.write(`\n[Bash 作业 ${taskId}] ${formatBashJobEnd(final)}\n`);
+          // 接回时已在开头展示过的说明不再重复；未展示过（已结束作业）时仍需显示。
+          if (!noticeShown && final.notice !== undefined) process.stdout.write(`${final.notice}\n`);
+          // 代理拒绝汇总不在进程流里，只随终态出现；首次接回就交付，避免等到第二次 /task。
+          if (final.diagnostics !== undefined) process.stdout.write(`${final.diagnostics}\n`);
+        } else if (outcome.kind === 'aborted') process.stdout.write(`\n已停止 Bash 作业：${taskId}\n`);
+        else if (outcome.kind === 'busy') process.stdout.write(`\n当前已有 Bash 作业在前台运行，请等待其结束或按 Ctrl+B 切到后台。\n`);
+        // 切到后台时由按键处理统一提示一次；这里不再重复输出同一任务 ID。
+      } catch (error) {
+        if (cancellation.signal.aborted) throw error;
+        process.stdout.write(`\n${formatUserError(error)}\n`);
+      } finally {
+        input!.setBusy(false);
+        activeRound = undefined;
+      }
+    };
     if (process.stdin.isTTY) input.prompt();
     // 执行中登记的请求由 Agent 在下次主模型请求前消费；空闲时从工作项进入手动压缩。
     const consumeCompactionRequest = (): boolean => input?.consumeCompactRequest() ?? false;
@@ -626,6 +711,25 @@ async function main(): Promise<void> {
           process.stdout.write(`文件检查点恢复失败：${error instanceof Error ? error.message : '无法保存恢复结果。'}\n`);
           rewindSelection = undefined;
         }
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
+      // Bash 作业命令带参数，按前缀解析；其它斜杠命令仍走精确名称查找。
+      if (prompt === '/tasks' || prompt.startsWith('/tasks ')) {
+        const rest = prompt.slice('/tasks'.length).trim();
+        if (rest === '') listBashJobs();
+        else {
+          const stop = /^stop\s+(\S+)$/u.exec(rest);
+          if (stop) process.stdout.write(`${bashJobsForSession(conversationId).stop(stop[1]!)}\n`);
+          else process.stdout.write('用法：/tasks 或 /tasks stop <任务 ID>\n');
+        }
+        if (process.stdin.isTTY) input.prompt();
+        continue;
+      }
+      if (prompt === '/task' || prompt.startsWith('/task ')) {
+        const taskId = prompt.slice('/task'.length).trim();
+        if (taskId === '') process.stdout.write('用法：/task <任务 ID>\n');
+        else await attachBashJob(taskId);
         if (process.stdin.isTTY) input.prompt();
         continue;
       }
@@ -778,6 +882,9 @@ const submitted = await runUserPromptSubmit(prompt, turnSignal);
     process.exitCode = failure.exitCode;
   } finally {
     abortAllBackgroundAgentTasks();
+    // 正常退出时停止仍在运行的 Bash 作业与受管进程组，并等待沙箱资源收尾；进程 exit 清理仍然兜底。
+    await abortAllBashJobs();
+    unsubscribeBashNotifications?.();
     input?.close();
     await releaseSession?.().catch(() => undefined);
     process.removeListener('SIGINT', cancel);
@@ -1026,6 +1133,8 @@ async function runTurn(options: TurnOptions): Promise<ModelMessage[]> {
         sessionTaskOutputDirectory(userHome, conversationId),
         (config.context ?? DEFAULT_CONTEXT).capacityTokens - (config.context ?? DEFAULT_CONTEXT).answerReserveTokens,
       ) } : {}),
+      // Bash 作业池按对话共享；前台调用、Ctrl+B 切换与 /task 接回都使用同一实例。
+      ...(!smokeTool ? { bashJobs: bashJobsForSession(conversationId) } : {}),
       onText: async (chunk) => {
         if (!smokeTool && roundId) await appendRoundText(userHome, conversationId, roundId, chunk);
         // 模型开始输出前固定工具块，后续文本不会再触发块内重绘。
